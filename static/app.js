@@ -68,6 +68,11 @@ function formatProvenanceParts(locator) {
         label: 'Archival Web Snapshot',
         coord: locator.locator_key || '',
       };
+    case 'markdown':
+      return {
+        label: locator.file_name || 'Document.md',
+        coord: locator.locator_key || '',
+      };
     default:
       return { label: locator.source_type, coord: '' };
   }
@@ -350,6 +355,25 @@ function SourceInspectorDrawer({ node, onClose }) {
             </div>
           `}
 
+          ${loc.source_type === 'markdown' && html`
+            <div class="pdf-page-simulator">
+              <div class="card-meta-row">
+                <span class="kicker-label">${loc.file_name}</span>
+                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                  ${loc.locator_key || 'BLOCK'}
+                </span>
+              </div>
+              <div class="pdf-bbox-highlight">
+                “${node.quote}”
+              </div>
+              ${loc.payload_hash && html`
+                <p class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                  ${loc.payload_hash}
+                </p>
+              `}
+            </div>
+          `}
+
           ${!loc.source_type && html`
             <figure class="evidence-figure">
               ${node.quote && html`
@@ -380,6 +404,109 @@ function SourceInspectorDrawer({ node, onClose }) {
 }
 
 /**
+ * Reusable Antigravity-style inline comment thread & composer anchored to a node.
+ */
+function InlineCommentPanel({
+  node,
+  comments,
+  isOpen,
+  onClose,
+  onSubmit,
+  onDelete,
+  submitting,
+}) {
+  const [draftText, setDraftText] = useState('');
+  const [suggestedStatus, setSuggestedStatus] = useState('');
+
+  const nodeComments = (comments || []).filter((c) => c.node_id === node.id);
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!draftText.trim()) return;
+    await onSubmit({
+      node_id: node.id,
+      section_id: node.section_id,
+      comment_text: draftText.trim(),
+      suggested_status: suggestedStatus || null,
+    });
+    setDraftText('');
+    setSuggestedStatus('');
+    onClose();
+  };
+
+  if (nodeComments.length === 0 && !isOpen) return null;
+
+  return html`
+    <div class="inline-comment-well">
+      ${nodeComments.length > 0 && html`
+        <div class="comment-thread-list">
+          ${nodeComments.map(
+            (c) => html`
+              <div key=${c.comment_id} class="comment-item ${c.resolved ? 'is-resolved' : ''}">
+                <div class="card-meta-row">
+                  <span class="kicker-label">
+                    ${c.resolved ? '▪ Resolved Feedback' : '▪ Queued Review Note'}
+                    ${c.suggested_status ? ` · ${formatAuditStatus(c.suggested_status)}` : ''}
+                  </span>
+                  ${!c.resolved && html`
+                    <button
+                      type="button"
+                      class="btn-link"
+                      onClick=${() => onDelete(c.comment_id)}
+                    >
+                      × Remove
+                    </button>
+                  `}
+                </div>
+                <p class="comment-item-text">${c.comment_text}</p>
+              </div>
+            `
+          )}
+        </div>
+      `}
+
+      ${isOpen && html`
+        <form onSubmit=${handleSave} style="display: flex; flex-direction: column; gap: 8px;">
+          <label for=${`cmt-input-${node.id}`} class="control-label">
+            Add Feedback for Regeneration
+          </label>
+          <textarea
+            id=${`cmt-input-${node.id}`}
+            class="comment-textarea"
+            placeholder="E.g., Check board minutes for treasury location, or soften to extrapolation..."
+            value=${draftText}
+            onInput=${(e) => setDraftText(e.target.value)}
+            required
+          ></textarea>
+          <div class="card-meta-row" style="flex-wrap: wrap;">
+            <select
+              class="select-control"
+              aria-label="Optional audit status override"
+              value=${suggestedStatus}
+              onChange=${(e) => setSuggestedStatus(e.target.value)}
+            >
+              <option value="">Keep / Auto-Detect Status</option>
+              <option value="verified">Mark as Verified</option>
+              <option value="extrapolation">Flag as Extrapolation</option>
+              <option value="assumption">Flag as Assumption</option>
+              <option value="disputed">Flag as Disputed</option>
+            </select>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn" onClick=${onClose}>
+                Cancel
+              </button>
+              <button type="submit" class="btn btn-primary" disabled=${submitting}>
+                ${submitting ? 'Saving…' : 'Queue Comment'}
+              </button>
+            </div>
+          </div>
+        </form>
+      `}
+    </div>
+  `;
+}
+
+/**
  * Renders an individual reasoning, evidence, authority, calculation, or assumption node
  * framed as an Economist / Broadsheet Editorial Plate (ben-design-prefs Section 4).
  */
@@ -392,6 +519,12 @@ function SpatialNodeCard({
   expandedLevel2Ids,
   tensionClaimIds,
   auditFilter,
+  comments,
+  commentingNodeId,
+  onToggleComment,
+  onSubmitComment,
+  onDeleteComment,
+  submittingComment,
   onHoverRef,
   onLeaveRef,
   onClickRef,
@@ -423,6 +556,10 @@ function SpatialNodeCard({
     : isAuthority
     ? 'kicker-copper'
     : '';
+
+  const nodeComments = (comments || []).filter((c) => c.node_id === node.id);
+  const pendingCount = nodeComments.filter((c) => !c.resolved).length;
+  const isCommentOpen = commentingNodeId === node.id;
 
   return html`
     <article
@@ -508,6 +645,17 @@ function SpatialNodeCard({
         </span>
 
         <div style="display: flex; align-items: center; gap: 12px;">
+          <button
+            type="button"
+            class="btn-link"
+            onClick=${() => onToggleComment(isCommentOpen ? null : node.id)}
+          >
+            ${isCommentOpen
+              ? 'Close Note'
+              : pendingCount > 0
+              ? `Comment (${pendingCount})`
+              : 'Comment'}
+          </button>
           ${(node.locator || node.url || node.quote) && html`
             <button
               type="button"
@@ -530,6 +678,16 @@ function SpatialNodeCard({
           `}
         </div>
       </div>
+
+      <${InlineCommentPanel}
+        node=${node}
+        comments=${comments}
+        isOpen=${isCommentOpen}
+        onClose=${() => onToggleComment(null)}
+        onSubmit=${onSubmitComment}
+        onDelete=${onDeleteComment}
+        submitting=${submittingComment}
+      />
     </article>
   `;
 }
@@ -587,6 +745,376 @@ const SAMPLE_TIER1_COMPILE_PAYLOAD = {
 };
 
 /**
+ * Slide-Over Batch Review Queue Drawer allowing reviewers to jump to anchored nodes
+ * or remove comments before clicking Apply Feedback & Re-compile.
+ */
+function ReviewQueueDrawer({
+  isOpen,
+  pendingComments,
+  nodesMap,
+  onClose,
+  onJumpToNode,
+  onDeleteComment,
+  onRegenerate,
+  regenerating,
+}) {
+  if (!isOpen) return null;
+
+  return html`
+    <div
+      class="inspector-backdrop"
+      onClick=${(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <aside class="source-inspector-drawer" aria-labelledby="review-queue-title">
+        <div class="drawer-header">
+          <div>
+            <span class="kicker-label kicker-accent">▪ Antigravity-Style Batch Review Queue</span>
+            <h2 id="review-queue-title" class="card-heading" style="margin-top: 3px; font-size: 18px;">
+              Queued Review Notes (${pendingComments.length})
+            </h2>
+          </div>
+          <button type="button" class="btn" onClick=${onClose}>Close</button>
+        </div>
+
+        <div class="drawer-body">
+          <p class="provenance-caption">
+            Reviewers can anchor feedback across any L0 claim or L1/L2+ support plate.
+            Applying feedback triages each section: prose/caveat edits re-run Stage 3→4,
+            while factual requests trigger Stage 2 re-harvesting.
+          </p>
+
+          ${pendingComments.length === 0 ? html`
+            <p class="card-body-prose" style="color: var(--color-text-muted);">
+              No pending comments queued. Click any claim or support plate and select “Comment”.
+            </p>
+          ` : html`
+            <div class="comment-thread-list">
+              ${pendingComments.map((c) => {
+                const targetNode = nodesMap[c.node_id];
+                return html`
+                  <div key=${c.comment_id} class="comment-item">
+                    <div class="card-meta-row">
+                      <span class="kicker-label">
+                        ${targetNode ? `${targetNode.type} · ${targetNode.title}` : c.node_id}
+                      </span>
+                      <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                        ${c.section_id}
+                      </span>
+                    </div>
+                    <p class="comment-item-text">${c.comment_text}</p>
+                    <div class="card-meta-row" style="margin-top: 4px;">
+                      <button
+                        type="button"
+                        class="btn-link"
+                        onClick=${() => {
+                          onJumpToNode(c.node_id);
+                          onClose();
+                        }}
+                      >
+                        Jump to Node →
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-link"
+                        onClick=${() => onDeleteComment(c.comment_id)}
+                      >
+                        × Remove
+                      </button>
+                    </div>
+                  </div>
+                `;
+              })}
+            </div>
+          `}
+
+          ${pendingComments.length > 0 && html`
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${regenerating}
+              onClick=${async () => {
+                await onRegenerate();
+                onClose();
+              }}
+            >
+              ${regenerating
+                ? 'Triaging & Regenerating…'
+                : `Apply Feedback & Re-compile (${pendingComments.length}) →`}
+            </button>
+          `}
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+/**
+ * Native <dialog> for selecting/creating a Project Matter, uploading inputs (a),
+ * inspecting canonical authorities (b), and running the 4-stage pipeline for question (c).
+ */
+function AskPipelineDialog({ dialogRef, onBundleCreated }) {
+  const [matters, setMatters] = useState([]);
+  const [canonicalAuths, setCanonicalAuths] = useState([]);
+  const [selectedMatter, setSelectedMatter] = useState('legal_motion_1332');
+  const [newMatterName, setNewMatterName] = useState('');
+  const [question, setQuestion] = useState('');
+  const [bundleSlug, setBundleSlug] = useState('');
+  const [progressEvents, setProgressEvents] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  const refreshMatters = useCallback(async () => {
+    const res = await fetch('/api/matters');
+    if (res.ok) {
+      const data = await res.json();
+      setMatters(data.matters || []);
+      setCanonicalAuths(data.canonical_authorities || []);
+      if (data.matters?.length > 0 && !data.matters.some((m) => m.matter_id === selectedMatter)) {
+        setSelectedMatter(data.matters[0].matter_id);
+      }
+    }
+  }, [selectedMatter]);
+
+  useEffect(() => {
+    refreshMatters();
+  }, [refreshMatters]);
+
+  const activeMatterObj = matters.find((m) => m.matter_id === selectedMatter);
+
+  const handleCreateMatter = async () => {
+    if (!newMatterName.trim()) return;
+    setErrorMsg(null);
+    const res = await fetch('/api/matters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ matter_id: newMatterName.trim() }),
+    });
+    if (res.ok) {
+      const created = await res.json();
+      setNewMatterName('');
+      await refreshMatters();
+      setSelectedMatter(created.matter_id);
+    } else {
+      const err = await res.json();
+      setErrorMsg(JSON.stringify(err.detail || err));
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedMatter) return;
+    setUploading(true);
+    setErrorMsg(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`/api/matters/${selectedMatter}/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setErrorMsg(JSON.stringify(err.detail || err));
+      } else {
+        await refreshMatters();
+      }
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRunAsk = async (e) => {
+    e.preventDefault();
+    if (!question.trim() || !selectedMatter) return;
+    setRunning(true);
+    setErrorMsg(null);
+    setProgressEvents([{ stage: 'init', message: 'Starting 4-stage pipeline...' }]);
+
+    try {
+      const res = await fetch(`/api/matters/${selectedMatter}/ask/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: question.trim(),
+          bundle_id: bundleSlug.trim() || null,
+          smooth_transitions: true,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(JSON.stringify(errData.detail || `HTTP ${res.status}`));
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+        for (const chunk of parts) {
+          const dataLine = chunk.split('\n').find((ln) => ln.startsWith('data: '));
+          if (!dataLine) continue;
+          const evt = JSON.parse(dataLine.slice(6));
+          if (evt.event === 'progress') {
+            setProgressEvents((prev) => [...prev, { stage: evt.stage, message: evt.message }]);
+          } else if (evt.event === 'error') {
+            throw new Error(evt.detail || 'Pipeline failed');
+          } else if (evt.event === 'bundle') {
+            await onBundleCreated(evt.bundle);
+            dialogRef.current?.close();
+          }
+        }
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return html`
+    <dialog
+      ref=${dialogRef}
+      class="compiler-dialog"
+      closedby="any"
+      aria-labelledby="ask-dialog-title"
+    >
+      <div class="dialog-inner">
+        <div class="card-meta-row">
+          <div>
+            <span class="kicker-label kicker-accent">▪ Agentic Q&A Pipeline (Stages 1 → 4)</span>
+            <h2 id="ask-dialog-title" class="card-heading" style="font-size: 18px; margin-top: 2px;">
+              Ask Question Against Project & Canonical Corpus
+            </h2>
+          </div>
+          <form method="dialog">
+            <button type="submit" class="btn" disabled=${running}>Close</button>
+          </form>
+        </div>
+
+        <div class="form-field">
+          <label for="matter-select" class="control-label">1. Project / Matter (a)</label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <select
+              id="matter-select"
+              class="select-control"
+              style="flex: 1;"
+              value=${selectedMatter}
+              onChange=${(e) => setSelectedMatter(e.target.value)}
+            >
+              ${matters.map(
+                (m) => html`
+                  <option key=${m.matter_id} value=${m.matter_id}>
+                    ${m.matter_id} (${m.raw_files?.length || 0} files${m.indexed ? ' · indexed' : ''})
+                  </option>
+                `
+              )}
+            </select>
+            <input
+              type="text"
+              class="text-input"
+              style="width: 170px;"
+              placeholder="New matter slug..."
+              value=${newMatterName}
+              onInput=${(e) => setNewMatterName(e.target.value)}
+            />
+            <button type="button" class="btn" onClick=${handleCreateMatter}>
+              + Create
+            </button>
+          </div>
+          ${activeMatterObj && html`
+            <div class="provenance-caption">
+              Raw files: ${(activeMatterObj.raw_files || []).join(', ') || 'None yet'}
+            </div>
+          `}
+        </div>
+
+        <div class="form-field">
+          <label for="matter-file-upload" class="control-label">
+            Upload Task Input (.pdf, .xlsx, .csv, .md)
+          </label>
+          <input
+            id="matter-file-upload"
+            type="file"
+            accept=".pdf,.xlsx,.xlsm,.csv,.md,.txt"
+            disabled=${uploading || running}
+            onChange=${handleFileUpload}
+          />
+          ${uploading && html`<span class="provenance-caption">Indexing uploaded file coordinates…</span>`}
+        </div>
+
+        <div class="provenance-caption">
+          <strong>Canonical Authorities (b):</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
+          from <code class="font-mono-data">canonical/INDEX.md</code>
+          (${canonicalAuths.slice(0, 3).map((a) => a.auth_id).join(', ')}${canonicalAuths.length > 3 ? '…' : ''})
+        </div>
+
+        <form onSubmit=${handleRunAsk} style="display: flex; flex-direction: column; gap: 10px;">
+          <div class="form-field">
+            <label for="ask-question-input" class="control-label">2. Analytical Question (c)</label>
+            <textarea
+              id="ask-question-input"
+              class="comment-textarea"
+              style="min-block-size: 84px;"
+              placeholder="E.g., Evaluate whether complete diversity and the $75,000 threshold are satisfied under 28 U.S.C. § 1332..."
+              value=${question}
+              onInput=${(e) => setQuestion(e.target.value)}
+              required
+            ></textarea>
+          </div>
+
+          <div class="form-field">
+            <label for="ask-bundle-slug" class="control-label">Optional Output Bundle Slug</label>
+            <input
+              id="ask-bundle-slug"
+              type="text"
+              class="text-input"
+              placeholder="Auto-generated if left blank"
+              value=${bundleSlug}
+              onInput=${(e) => setBundleSlug(e.target.value)}
+            />
+          </div>
+
+          ${progressEvents.length > 0 && html`
+            <div class="stage-progress-box">
+              ${progressEvents.map(
+                (ev, idx) => html`
+                  <div key=${idx}>
+                    <span class="font-mono-data" style="color: var(--color-accent-primary);">[${ev.stage}]</span> ${ev.message}
+                  </div>
+                `
+              )}
+            </div>
+          `}
+
+          ${errorMsg && html`
+            <pre
+              tabindex="0"
+              class="formula-box"
+              style="border-color: var(--color-danger); color: var(--color-danger); background-color: var(--color-danger-subtle);"
+            ><code>${errorMsg}</code></pre>
+          `}
+
+          <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <button type="submit" class="btn btn-primary" disabled=${running}>
+              ${running ? 'Running 4-Stage Pipeline…' : 'Run 4-Stage Pipeline →'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+  `;
+}
+
+/**
  * Main Application Component.
  * Follows the `ben-design-prefs` Swiss Quantitative Broadsheet + Archival Press system,
  * starting cleanly at L0 and expanding progressively to L1 and L2+ on click.
@@ -604,8 +1132,16 @@ function App() {
   const [auditFilter, setAuditFilter] = useState('all');
   const [inspectorNode, setInspectorNode] = useState(null);
 
-  // Native <dialog> ref for live compiler / custom JSON loader
+  // Antigravity-style inline review & batch regeneration state
+  const [commentingNodeId, setCommentingNodeId] = useState(null);
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [queueDrawerOpen, setQueueDrawerOpen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [actionError, setActionError] = useState(null);
+
+  // Native <dialog> refs for JSON compiler and Ask Pipeline modal
   const dialogRef = useRef(null);
+  const askDialogRef = useRef(null);
   const [compilerJsonText, setCompilerJsonText] = useState(
     JSON.stringify(SAMPLE_TIER1_COMPILE_PAYLOAD, null, 2)
   );
@@ -647,12 +1183,16 @@ function App() {
     loadBundle('legal_motion_1332');
   }, [fetchBundlesList, loadBundle]);
 
-  // Progressive Escape key handling: close Drawer -> close L2+ -> close L1
+  // Progressive Escape key handling: close Drawer/Queue/Comment -> close L2+ -> close L1
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key !== 'Escape') return;
-      if (inspectorNode) {
+      if (queueDrawerOpen) {
+        setQueueDrawerOpen(false);
+      } else if (inspectorNode) {
         setInspectorNode(null);
+      } else if (commentingNodeId) {
+        setCommentingNodeId(null);
       } else if (expandedLevel2Ids.length > 0) {
         setExpandedLevel2Ids([]);
       } else if (pinnedClaimId) {
@@ -661,7 +1201,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [inspectorNode, expandedLevel2Ids, pinnedClaimId]);
+  }, [queueDrawerOpen, inspectorNode, commentingNodeId, expandedLevel2Ids, pinnedClaimId]);
 
   const nodesMap = useMemo(() => bundle?.nodes || {}, [bundle]);
 
@@ -840,10 +1380,12 @@ function App() {
         const inlineTrigger = container.querySelector(
           `article .clause-highlight[data-ref-node-id="${l2Node.id}"]`
         );
-        const fallbackParentCard =
-          !inlineTrigger && l2Node.parent_ids?.[0]
-            ? container.querySelector(`article[data-card-node-id="${l2Node.parent_ids[0]}"]`)
-            : null;
+        const parentL1 = !inlineTrigger
+          ? level1Nodes.find((n) => (n.direct_child_ids || []).includes(l2Node.id))
+          : null;
+        const fallbackParentCard = parentL1
+          ? container.querySelector(`article[data-card-node-id="${parentL1.id}"]`)
+          : null;
 
         const srcEl = inlineTrigger || fallbackParentCard;
         if (srcEl) {
@@ -906,6 +1448,89 @@ function App() {
     }
   };
 
+  const handleSubmitComment = useCallback(
+    async ({ node_id, section_id, comment_text, suggested_status }) => {
+      if (!currentBundleId) return;
+      setSubmittingComment(true);
+      setActionError(null);
+      try {
+        const res = await fetch(`/api/bundles/${currentBundleId}/comments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ node_id, section_id, comment_text, suggested_status }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setActionError(JSON.stringify(data.detail || data));
+          return;
+        }
+        setBundle(data);
+        await fetchBundlesList();
+      } finally {
+        setSubmittingComment(false);
+      }
+    },
+    [currentBundleId, fetchBundlesList]
+  );
+
+  const handleDeleteComment = useCallback(
+    async (commentId) => {
+      if (!currentBundleId) return;
+      const res = await fetch(`/api/bundles/${currentBundleId}/comments/${commentId}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setBundle(data);
+        await fetchBundlesList();
+      }
+    },
+    [currentBundleId, fetchBundlesList]
+  );
+
+  const handleRegenerateBatch = useCallback(async () => {
+    if (!currentBundleId) return;
+    setRegenerating(true);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/bundles/${currentBundleId}/regenerate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ smooth_transitions: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setActionError(JSON.stringify(data.detail || data));
+        return;
+      }
+      setBundle(data);
+      setCommentingNodeId(null);
+      await fetchBundlesList();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setRegenerating(false);
+    }
+  }, [currentBundleId, fetchBundlesList]);
+
+  const handleJumpToNode = useCallback(
+    (nodeId) => {
+      const target = nodesMap[nodeId];
+      if (!target) return;
+      if (target.type === 'claim') {
+        setPinnedClaimId(target.id);
+        setExpandedLevel2Ids([]);
+      } else if (target.parent_claim_ids?.length > 0) {
+        const rootClaimId = target.parent_claim_ids[0];
+        setPinnedClaimId(rootClaimId);
+        const rootNode = nodesMap[rootClaimId];
+        const isDirectL1 = (rootNode?.direct_child_ids || []).includes(target.id);
+        setExpandedLevel2Ids(isDirectL1 ? [] : [target.id]);
+      }
+    },
+    [nodesMap]
+  );
+
   if (loading || !bundle) {
     return html`
       <div class="app-shell" style="padding: 48px; text-align: center; color: var(--color-text-secondary);">
@@ -918,6 +1543,9 @@ function App() {
   const caveatCount = (summary.extrapolation_count || 0) + (summary.assumption_count || 0);
   const tensionCount = (summary.cross_section_tensions || []).length;
   const hoveredNode = hoveredRef ? nodesMap[hoveredRef.nodeId] : null;
+  const allComments = bundle.comments || [];
+  const pendingComments = allComments.filter((c) => !c.resolved);
+  const affectedSectionsCount = new Set(pendingComments.map((c) => c.section_id)).size;
 
   return html`
     <div class="app-shell">
@@ -984,6 +1612,14 @@ function App() {
               `}
             </select>
           </div>
+
+          <button
+            type="button"
+            class="btn btn-primary"
+            onClick=${() => askDialogRef.current?.showModal()}
+          >
+            Ask Question
+          </button>
 
           <button
             type="button"
@@ -1161,12 +1797,27 @@ function App() {
                 <div class="claim-context-bar">
                   <div class="card-meta-row">
                     <span class="kicker-label kicker-accent">▪ Selected Claim</span>
-                    <span
-                      class="arch-stamp ${isCaveatStatus(activeClaimNode.audit?.status) ? 'is-caveat' : ''}"
-                    >
-                      ${isCaveatStatus(activeClaimNode.audit?.status) ? '▪ ' : ''}
-                      ${formatAuditStatus(activeClaimNode.audit?.status || 'verified')}
-                    </span>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                      <button
+                        type="button"
+                        class="btn-link"
+                        onClick=${() =>
+                          setCommentingNodeId(
+                            commentingNodeId === activeClaimNode.id ? null : activeClaimNode.id
+                          )
+                        }
+                      >
+                        ${commentingNodeId === activeClaimNode.id
+                          ? 'Close Note'
+                          : '+ Comment on Claim'}
+                      </button>
+                      <span
+                        class="arch-stamp ${isCaveatStatus(activeClaimNode.audit?.status) ? 'is-caveat' : ''}"
+                      >
+                        ${isCaveatStatus(activeClaimNode.audit?.status) ? '▪ ' : ''}
+                        ${formatAuditStatus(activeClaimNode.audit?.status || 'verified')}
+                      </span>
+                    </div>
                   </div>
                   <div class="card-heading">${activeClaimNode.title}</div>
                   ${activeClaimNode.audit?.evaluator_note && html`
@@ -1174,6 +1825,15 @@ function App() {
                       ${activeClaimNode.audit.evaluator_note}
                     </div>
                   `}
+                  <${InlineCommentPanel}
+                    node=${activeClaimNode}
+                    comments=${allComments}
+                    isOpen=${commentingNodeId === activeClaimNode.id}
+                    onClose=${() => setCommentingNodeId(null)}
+                    onSubmit=${handleSubmitComment}
+                    onDelete=${handleDeleteComment}
+                    submitting=${submittingComment}
+                  />
                 </div>
 
                 ${level1Nodes.map(
@@ -1188,6 +1848,12 @@ function App() {
                       expandedLevel2Ids=${expandedLevel2Ids}
                       tensionClaimIds=${tensionClaimIds}
                       auditFilter=${auditFilter}
+                      comments=${allComments}
+                      commentingNodeId=${commentingNodeId}
+                      onToggleComment=${setCommentingNodeId}
+                      onSubmitComment=${handleSubmitComment}
+                      onDeleteComment=${handleDeleteComment}
+                      submittingComment=${submittingComment}
                       onHoverRef=${handleHoverRef}
                       onLeaveRef=${handleLeaveRef}
                       onClickRef=${handleClickRef}
@@ -1234,6 +1900,12 @@ function App() {
                       expandedLevel2Ids=${expandedLevel2Ids}
                       tensionClaimIds=${tensionClaimIds}
                       auditFilter=${auditFilter}
+                      comments=${allComments}
+                      commentingNodeId=${commentingNodeId}
+                      onToggleComment=${setCommentingNodeId}
+                      onSubmitComment=${handleSubmitComment}
+                      onDeleteComment=${handleDeleteComment}
+                      submittingComment=${submittingComment}
                       onHoverRef=${handleHoverRef}
                       onLeaveRef=${handleLeaveRef}
                       onClickRef=${handleClickRef}
@@ -1275,10 +1947,72 @@ function App() {
         </div>
       `}
 
+      <!-- STICKY BATCH REVIEW QUEUE BAR (Antigravity-Style Regeneration) -->
+      ${(pendingComments.length > 0 || regenerating || actionError) && html`
+        <footer class="review-queue-bar" inert=${Boolean(inspectorNode || queueDrawerOpen)}>
+          <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+            <span class="kicker-label kicker-accent">
+              ▪ ${pendingComments.length} Queued Review Note${pendingComments.length === 1 ? '' : 's'}
+            </span>
+            <span class="provenance-caption">
+              Across <span class="font-mono-data">${affectedSectionsCount}</span> section${affectedSectionsCount === 1 ? '' : 's'}
+            </span>
+            ${actionError && html`
+              <span class="provenance-caption" style="color: var(--color-danger);">
+                Error: ${actionError}
+              </span>
+            `}
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <button
+              type="button"
+              class="btn"
+              onClick=${() => setQueueDrawerOpen(true)}
+            >
+              Inspect Queue
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${regenerating || pendingComments.length === 0}
+              onClick=${handleRegenerateBatch}
+            >
+              ${regenerating
+                ? 'Triaging & Regenerating…'
+                : `Apply Feedback & Re-compile (${pendingComments.length}) →`}
+            </button>
+          </div>
+        </footer>
+      `}
+
       <!-- SLIDE-OVER SOURCE INSPECTOR DRAWER -->
       <${SourceInspectorDrawer}
         node=${inspectorNode}
         onClose=${() => setInspectorNode(null)}
+      />
+
+      <!-- SLIDE-OVER BATCH REVIEW QUEUE DRAWER -->
+      <${ReviewQueueDrawer}
+        isOpen=${queueDrawerOpen}
+        pendingComments=${pendingComments}
+        nodesMap=${nodesMap}
+        onClose=${() => setQueueDrawerOpen(false)}
+        onJumpToNode=${handleJumpToNode}
+        onDeleteComment=${handleDeleteComment}
+        onRegenerate=${handleRegenerateBatch}
+        regenerating=${regenerating}
+      />
+
+      <!-- NATIVE DIALOG FOR ASKING A NEW QUESTION / RUNNING 4-STAGE PIPELINE -->
+      <${AskPipelineDialog}
+        dialogRef=${askDialogRef}
+        onBundleCreated=${async (newBundle) => {
+          await fetchBundlesList();
+          setBundle(newBundle);
+          setCurrentBundleId(newBundle.bundle_id);
+          setPinnedClaimId(null);
+          setExpandedLevel2Ids([]);
+        }}
       />
 
       <!-- NATIVE DIALOG FOR TIER-1 COMPILER & CUSTOM BUNDLE LOADER -->

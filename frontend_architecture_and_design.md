@@ -118,36 +118,45 @@ Loaded via Google Fonts in [templates/index.html](file:///home/ben/restructure/j
 
 ```text
 ~/restructure/jd_screen/
-├── main.py                              # FastAPI entrypoint + CLI args (--host, --port, --name) + timestamped file logging
-├── pyproject.toml                       # uv project metadata & dependencies (FastAPI, Uvicorn, Pydantic, Jinja2, pytest, httpx)
+├── main.py                              # FastAPI entrypoint + CLI runner (--provider, --model, --ingest-matter, --ask)
+├── pyproject.toml                       # uv project metadata & dependencies (FastAPI, google-genai, pdfplumber, openpyxl, etc.)
 ├── README.md                            # Quickstart & WSL2 execution commands
 ├── audit_pipeline_specification.md      # Data contracts, storage architecture, 4-stage prompts & verification code
 ├── frontend_architecture_and_design.md  # This frontend architecture & design specification
+├── canonical/                           # Standing canonical corpus (b): INDEX.md + [AUTH:...] domain markdown files
+├── matters/                             # Isolated project/task workspaces (<matter_id>/inputs/raw, indexed, bundles)
 ├── app/
 │   ├── __init__.py
-│   ├── models.py                        # Pydantic schemas (Tier-1 SectionOutput & Tier-2 CompiledBundle) + Validator/Gate/Compiler
-│   ├── routes.py                        # FastAPI HTTP routes (/, /api/bundles, /api/compile)
+│   ├── models.py                        # Pydantic schemas (Tier-1/Tier-2, stage plans, ReviewComment) + Validator/Gate/Compiler
+│   ├── llm.py                           # Provider-agnostic LLMProvider (Gemini Interactions API, Anthropic, OpenAI, Mock)
+│   ├── ingest.py                        # CanonicalRouter + MatterIngestor (pdfplumber, openpyxl, CSV, Markdown + Stage 2 tools)
+│   ├── pipeline.py                      # 4-stage AuditPipelineRunner + FeedbackTriageDecision smart batch regenerator
+│   ├── routes.py                        # FastAPI HTTP & SSE routes (/api/bundles, /api/matters, /api/bundles/*/comments|regenerate)
 │   └── sample_data.py                   # Pre-loaded legal motion (28 U.S.C. § 1332) & executive candidate screen bundles
 ├── templates/
 │   └── index.html                       # HTML5 shell, Google Fonts, local ESM importmap
 ├── static/
 │   ├── styles.css                       # Layered CSS (@layer tokens, base, layout, components, utilities)
-│   ├── app.js                           # Preact + HTM spatial canvas application
+│   ├── app.js                           # Preact + HTM spatial canvas, inline comment composers, review queue & Ask modal
 │   └── vendor/                          # Locally vendored ESM modules (zero external CDN dependency at runtime)
 │       ├── preact.mjs
 │       ├── hooks.mjs
 │       └── htm.mjs
 └── tests/
-    ├── test_api.py                      # FastAPI route & asset serving integration tests
+    ├── test_api.py                      # FastAPI route, ingestion, /ask, comment/regenerate & CLI integration tests
+    ├── test_ingest.py                   # CanonicalRouter, MatterIngestor & Stage 2 tool unit tests
+    ├── test_llm.py                      # LLMProvider, Gemini Interactions API & MockLLMProvider unit tests
+    ├── test_pipeline.py                 # 4-stage pipeline & smart Stage-2 fallback unit tests
     └── test_models_and_compiler.py      # Unit tests for SectionValidator, StitchInvariantGate, CompiledGraphBuilder
 ```
 
 ### Backend Endpoints ([app/routes.py](file:///home/ben/restructure/jd_screen/app/routes.py))
 - `GET /`: Serves [templates/index.html](file:///home/ben/restructure/jd_screen/templates/index.html).
-- `GET /api/bundles`: Lists available compiled bundles in memory (`legal_motion_1332`, `candidate_exec_screen`, plus any dynamically compiled bundles).
-- `GET /api/bundles/{bundle_id}`: Returns the full Tier-2 `CompiledBundle` JSON for the selected matter.
-- `POST /api/bundles`: Validates and registers a pre-compiled Tier-2 `CompiledBundle` JSON payload.
-- `POST /api/compile`: Accepts a `CompilePipelineRequest` containing raw Tier-1 `SectionOutput` blocks and optional `smoothed_text`, runs `SectionValidator`, `StitchInvariantGate`, and `CompiledGraphBuilder`, registers the resulting Tier-2 bundle, and returns it to the frontend canvas.
+- `GET /api/bundles` / `GET /api/bundles/{bundle_id}` / `POST /api/bundles`: Lists, retrieves, and registers Tier-2 `CompiledBundle` JSON payloads (including persisted bundles from `matters/*/bundles/`).
+- `POST /api/compile`: Compiles Tier-1 `SectionOutput` blocks through `SectionValidator`, `StitchInvariantGate`, and `CompiledGraphBuilder`.
+- `GET /api/matters` / `POST /api/matters` / `POST /api/matters/{matter_id}/upload` / `POST /api/matters/{matter_id}/ingest`: Lists/creates project matters, uploads task inputs, and runs deterministic coordinate stamping.
+- `POST /api/matters/{matter_id}/ask` & `POST /api/matters/{matter_id}/ask/stream`: Executes the 4-stage agentic pipeline for a question `(c)` (with SSE stage progress streaming).
+- `POST /api/bundles/{bundle_id}/comments`, `DELETE /api/bundles/{bundle_id}/comments/{comment_id}`, and `POST /api/bundles/{bundle_id}/regenerate`: Anchors Antigravity-style inline comments onto `L0`/`L1`/`L2+` nodes and executes batched regeneration with smart Stage-2 fallback.
 
 ---
 
@@ -156,14 +165,17 @@ Loaded via Google Fonts in [templates/index.html](file:///home/ben/restructure/j
 ```bash
 cd ~/restructure/jd_screen
 
-# Run the test suite (8 tests covering schemas, validator, stitch gate, compiler, and HTTP routes)
+# Run the full test suite
 uv run pytest tests/ -v
 
+# Ingest raw project inputs deterministically
+uv run python main.py --ingest-matter legal_motion_1332
+
 # Start the development server
-uv run python main.py --host 127.0.0.1 --port 8000 --name jd_screen
+uv run python main.py --host 127.0.0.1 --port 8000 --name jd_screen --provider gemini --model gemini-4-argon
 ```
 
-### Recommended Next Steps for Future Sessions
-1. **Matter & Canonical Ingestion Harness (`app/ingest.py`):** Implement deterministic parsers for `matters/<matter_id>/inputs/` (PDF page/bounding-box extractor via `pypdf`/`pdfplumber` and Excel formula/value indexer via `openpyxl`) and `canonical/INDEX.md` loader.
-2. **Four-Stage Agentic Runner (`app/pipeline.py`):** Wire the 4-stage prompt pipeline (Outline & Canonical Mapping → Agentic Fact Ledger Extraction → Constrained `SectionOutput` Drafting → 3-Point Section Auditor & Stitcher) to compile new matters directly into `/api/compile`.
-3. **Interactive Audit Override in UI:** Allow a reviewing lawyer to click an `Extrapolation` or `Assumption` stamp inside an `L1` plate to record a human sign-off (`evaluator_type: "human"`) and persist the updated bundle to disk.
+### Completed Interactive Workflows
+1. **Matter & Canonical Ingestion Harness (`app/ingest.py`):** Deterministic parsers for `matters/<matter_id>/inputs/` (PDF bounding-box extraction via `pdfplumber`, Excel/CSV formula/value indexing via `openpyxl`, Markdown block locators) and `canonical/INDEX.md` loader.
+2. **Four-Stage Agentic Runner (`app/pipeline.py`):** Full 4-stage pipeline via `LLMProvider` (defaulting to the Gemini Interactions API) runnable via CLI or the UI's **Ask Question** modal.
+3. **Antigravity-Style Inline Review & Batch Regeneration:** Reviewers can queue comments and optional status overrides on any `L0` claim or `L1`/`L2+` plate, inspect the batch queue, and click **Apply Feedback & Re-compile** to incrementally regenerate affected sections.

@@ -1,0 +1,18 @@
+{
+  "matter_id": "legal_motion_1332",
+  "ingested_at": "2026-11-12T08:02:09.543617+00:00",
+  "files_processed": 2,
+  "spreadsheet_cells_indexed": 18,
+  "files": [
+    {
+      "raw": "Exhibits_A_B_D.md",
+      "indexed": "Exhibits_A_B_D.md.indexed.md",
+      "blocks": 7
+    },
+    {
+      "raw": "Financial_Ledger_2026.csv",
+      "indexed": "sheets_index.jsonl",
+      "cells": 18
+    }
+  ]
+}

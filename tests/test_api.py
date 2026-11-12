@@ -3,8 +3,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from fastapi.testclient import TestClient
-from main import app
+
+from app.ingest import CanonicalRouter, MatterIngestor
+from app.llm import MockLLMProvider
+from app.pipeline import CrossSectionAuditOutput, FeedbackTriageDecision, StitchedDocumentOutput
+from app.routes import BUNDLE_STORE
+from main import app, parse_args
 
 client = TestClient(app)
 
@@ -95,3 +101,213 @@ def test_compile_endpoint_validates_and_registers_bundle() -> None:
     bad_req["smoothed_text"] = "Following the Q3 rollout, system latency dropped."
     bad_res = client.post("/api/compile", json=bad_req)
     assert bad_res.status_code == 422
+
+
+def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path) -> None:
+    """Verifies matter creation, file upload, ingest, 4-stage /ask, and batched /regenerate."""
+    canonical_dir = tmp_path / "canonical"
+    (canonical_dir / "legal").mkdir(parents=True)
+    (canonical_dir / "INDEX.md").write_text(
+        "# Index\n- `[AUTH:RULE-1]` — Test governing rule.\n", encoding="utf-8"
+    )
+    (canonical_dir / "legal" / "rules.md").write_text(
+        "## [AUTH:RULE-1] Governing Rule\n"
+        "- **Title:** Governing Rule\n"
+        "- **Verbatim Rule:** Contracts require written notice.\n",
+        encoding="utf-8",
+    )
+
+    matters_root = tmp_path / "matters"
+    app.state.canonical_router = CanonicalRouter(canonical_dir)
+    app.state.matter_ingestor = MatterIngestor(matters_root)
+    app.state.llm_provider = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Notice Compliance Memo",
+                "executive_summary_intent": "Verify written notice compliance.",
+                "sections": [
+                    {
+                        "section_id": "sec_01_notice",
+                        "section_title": "I. Written Notice",
+                        "stated_intention": "Confirm notice date.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:RULE-1",
+                                "title": "Governing Rule",
+                                "verbatim_quote": "Contracts require written notice.",
+                            }
+                        ],
+                        "required_fact_queries": ["When was notice sent?"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01_notice",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "When was notice sent?",
+                        "title": "Notice Letter",
+                        "quote": "Written notice delivered October 12, 2026.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Notice.md",
+                            "locator_key": "NOTICE-SEC-1",
+                        },
+                    }
+                ],
+                "unresolved_gaps": [],
+            },
+            "SectionOutput": [
+                {
+                    "section_id": "sec_01_notice",
+                    "section_title": "I. Written Notice",
+                    "text": "Plaintiff <ref n='1'>delivered written notice on Oct 12</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "October 12 Written Notice",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Notice Letter",
+                                    "quote": "Written notice delivered October 12, 2026.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Notice.md",
+                                        "locator_key": "NOTICE-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "section_id": "sec_01_notice",
+                    "section_title": "I. Written Notice",
+                    "text": "Plaintiff <ref n='1'>timely delivered written notice on October 12, 2026</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "Timely Notice Confirmed",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Notice Letter",
+                                    "quote": "Written notice delivered October 12, 2026.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Notice.md",
+                                        "locator_key": "NOTICE-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "SectionAuditResult": [
+                {
+                    "section_id": "sec_01_notice",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                },
+                {
+                    "section_id": "sec_01_notice",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                },
+            ],
+            "CrossSectionAuditOutput": CrossSectionAuditOutput(tensions=[]),
+            "StitchedDocumentOutput": StitchedDocumentOutput(
+                sections=[
+                    {
+                        "section_id": "sec_01_notice",
+                        "smoothed_text": "Plaintiff <ref n='sec_01_notice:1'>delivered written notice on Oct 12</ref>.",
+                    }
+                ]
+            ),
+            "FeedbackTriageDecision": FeedbackTriageDecision(
+                needs_stage2_reharvest=False,
+                rationale="Reviewer wants full year included in the claim clause.",
+                additional_fact_queries=[],
+            ),
+        }
+    )
+
+    try:
+        # 1. Create matter & upload a markdown file
+        create_res = client.post("/api/matters", json={"matter_id": "notice_case"})
+        assert create_res.status_code == 200
+
+        upload_res = client.post(
+            "/api/matters/notice_case/upload",
+            files={"file": ("Notice.md", b"Written notice delivered October 12, 2026.\n", "text/markdown")},
+        )
+        assert upload_res.status_code == 200
+        assert upload_res.json()["manifest"]["files_processed"] == 1
+
+        matters_res = client.get("/api/matters")
+        assert matters_res.status_code == 200
+        assert any(m["matter_id"] == "notice_case" for m in matters_res.json()["matters"])
+
+        # 2. Ask a question -> runs 4-stage pipeline
+        ask_res = client.post(
+            "/api/matters/notice_case/ask",
+            json={"question": "Was written notice satisfied?", "bundle_id": "notice_bundle_api"},
+        )
+        assert ask_res.status_code == 200
+        bundle_json = ask_res.json()
+        assert bundle_json["bundle_id"] == "notice_bundle_api"
+        assert "claim_sec_01_notice_1" in bundle_json["nodes"]
+
+        # 3. Queue an inline comment on the claim & regenerate
+        cmt_res = client.post(
+            "/api/bundles/notice_bundle_api/comments",
+            json={
+                "node_id": "claim_sec_01_notice_1",
+                "section_id": "sec_01_notice",
+                "comment_text": "Spell out the full date October 12, 2026.",
+            },
+        )
+        assert cmt_res.status_code == 200
+        assert len(cmt_res.json()["comments"]) == 1
+
+        regen_res = client.post(
+            "/api/bundles/notice_bundle_api/regenerate",
+            json={"smooth_transitions": False},
+        )
+        assert regen_res.status_code == 200
+        regen_json = regen_res.json()
+        assert "October 12, 2026" in regen_json["artifact"]["sections"][0]["content"]
+        assert regen_json["comments"][0]["resolved"] is True
+    finally:
+        BUNDLE_STORE.pop("notice_bundle_api", None)
+        app.state.canonical_router = None
+        app.state.matter_ingestor = None
+        app.state.llm_provider = None
+
+
+def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
+    """Verifies CLI flags for `--provider`, `--model`, `--ingest-matter`, and `--ask`."""
+    ns = parse_args(
+        [
+            "--provider",
+            "gemini",
+            "--model",
+            "gemini-4-argon",
+            "--matter",
+            "legal_motion_1332",
+            "--ask",
+            "Evaluate complete diversity",
+        ]
+    )
+    assert ns.provider == "gemini"
+    assert ns.model == "gemini-4-argon"
+    assert ns.matter == "legal_motion_1332"
+    assert ns.ask == "Evaluate complete diversity"
+

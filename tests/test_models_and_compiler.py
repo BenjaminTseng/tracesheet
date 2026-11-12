@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 from app.models import (
+    CompiledBundle,
     CompiledGraphBuilder,
+    OutlinePlan,
+    ReviewComment,
+    SectionAuditResult,
     SectionOutput,
     SectionValidator,
     StitchInvariantGate,
+    VerifiedFactLedger,
 )
 from app.sample_data import get_sample_bundles
 
@@ -183,3 +188,194 @@ def test_compiled_graph_builder_flattens_and_namespaces() -> None:
 
     calc_node = bundle.nodes["cal_sec_test_1_1"]
     assert "<ref id='evi_sec_test_1_1_sub101'>audited ledger</ref>" in (calc_node.body or "")
+
+
+def test_multi_section_stitch_and_compile_avoids_local_n_collision() -> None:
+    """Verifies that two sections both using local n=1 do not collide during global stitch/compile."""
+    sec1 = SectionOutput.model_validate(
+        {
+            "section_id": "sec_01",
+            "section_title": "I. Standing",
+            "text": "Standing fails because <ref n='1'>diversity is absent</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "title": "Diversity Absent",
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "DE Filing",
+                            "quote": "Wilmington HQ.",
+                            "locator": {"source_type": "pdf", "file_name": "ExA.pdf", "page": 1},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    sec2 = SectionOutput.model_validate(
+        {
+            "section_id": "sec_02",
+            "section_title": "II. Damages",
+            "text": "Damages fail because <ref n='1'>invoices total $42,150</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "title": "Invoice Balance",
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "AR Ledger",
+                            "quote": "$42,150.00",
+                            "locator": {
+                                "source_type": "spreadsheet",
+                                "file_name": "AR.xlsx",
+                                "sheet": "Summary",
+                                "cell_range": "G14",
+                                "raw_value": 42150.0,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    pre_stitched = StitchInvariantGate.prepare_for_stitch([sec1, sec2])
+    assert "<ref n='sec_01:1'>" in pre_stitched
+    assert "<ref n='sec_02:1'>" in pre_stitched
+
+    smoothed = (
+        "First, standing fails because <ref n='sec_01:1'>diversity is absent</ref>.\n\n"
+        "Second, damages fail because <ref n='sec_02:1'>invoices total $42,150</ref>."
+    )
+    passed, violations = StitchInvariantGate.verify_stitch(pre_stitched, smoothed)
+    assert passed is True, f"Unexpected violations: {violations}"
+
+    builder = CompiledGraphBuilder(document_title="Multi-Section Stitch Test")
+    bundle = builder.compile_sections([sec1, sec2], final_smoothed_text=smoothed)
+
+    assert "claim_sec_01_1" in bundle.nodes
+    assert "claim_sec_02_1" in bundle.nodes
+    unified_content = bundle.artifact.sections[0].content
+    assert "<ref id='claim_sec_01_1'>diversity is absent</ref>" in unified_content
+    assert "<ref id='claim_sec_02_1'>invoices total $42,150</ref>" in unified_content
+
+
+def test_compiled_graph_builder_supports_per_section_smoothed_texts() -> None:
+    """Verifies that `smoothed_sections` preserves section boundaries while rewriting namespaced tags."""
+    sec1 = SectionOutput.model_validate(
+        {
+            "section_id": "sec_01",
+            "section_title": "I. Standing",
+            "text": "Standing fails because <ref n='1'>diversity is absent</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "DE Filing",
+                            "quote": "Wilmington HQ.",
+                            "locator": {"source_type": "pdf", "file_name": "ExA.pdf", "page": 1},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    sec2 = SectionOutput.model_validate(
+        {
+            "section_id": "sec_02",
+            "section_title": "II. Damages",
+            "text": "Damages fail because <ref n='1'>invoices total $42,150</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "AR Ledger",
+                            "quote": "$42,150.00",
+                            "locator": {"source_type": "spreadsheet", "file_name": "AR.xlsx", "sheet": "Summary", "cell_range": "G14", "raw_value": 42150.0},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    builder = CompiledGraphBuilder(document_title="Per-Section Smoothed Test")
+    bundle = builder.compile_sections(
+        [sec1, sec2],
+        smoothed_sections={
+            "sec_01": "At the outset, standing fails because <ref n='sec_01:1'>diversity is absent</ref>.",
+            "sec_02": "Turning to damages, they fail because <ref n='sec_02:1'>invoices total $42,150</ref>.",
+        },
+    )
+
+    assert len(bundle.artifact.sections) == 2
+    assert bundle.artifact.sections[0].section_id == "sec_01"
+    assert "<ref id='claim_sec_01_1'>diversity is absent</ref>" in bundle.artifact.sections[0].content
+    assert bundle.artifact.sections[1].section_id == "sec_02"
+    assert "<ref id='claim_sec_02_1'>invoices total $42,150</ref>" in bundle.artifact.sections[1].content
+
+
+def test_pipeline_and_review_comment_schemas() -> None:
+    """Verifies serialization of stage contracts (`OutlinePlan`, `VerifiedFactLedger`, `ReviewComment`)."""
+    plan = OutlinePlan.model_validate(
+        {
+            "document_title": "Jurisdiction Memo",
+            "executive_summary_intent": "Assess diversity and amount in controversy.",
+            "sections": [
+                {
+                    "section_id": "sec_01",
+                    "section_title": "I. Diversity",
+                    "stated_intention": "Determine corporate citizenship.",
+                    "governing_authorities": [
+                        {
+                            "auth_id": "AUTH:HERTZ-2010",
+                            "title": "Hertz Corp. v. Friend",
+                            "url": "https://supreme.justia.com/cases/federal/us/559/77/",
+                            "verbatim_quote": "Principal place of business is the nerve center.",
+                        }
+                    ],
+                    "required_fact_queries": ["Where is corporate HQ located?"],
+                }
+            ],
+        }
+    )
+    ledger = VerifiedFactLedger.model_validate(
+        {
+            "section_id": "sec_01",
+            "verified_facts": [
+                {
+                    "fact_id": "f1",
+                    "query_addressed": "Where is corporate HQ located?",
+                    "title": "DE Registry",
+                    "quote": "1209 North Orange St, Wilmington, DE.",
+                    "locator": {"source_type": "pdf", "file_name": "ExB.pdf", "page": 2},
+                }
+            ],
+            "unresolved_gaps": [],
+        }
+    )
+    audit_res = SectionAuditResult(
+        section_id="sec_01",
+        check_a_relevance=True,
+        check_b_congruence=True,
+        check_c_intent=True,
+        passed=True,
+    )
+    comment = ReviewComment(
+        comment_id="cmt_1",
+        node_id="claim_sec_01_1",
+        section_id="sec_01",
+        comment_text="Clarify whether LLC members are also in Delaware.",
+        suggested_status="extrapolation",
+    )
+    assert plan.sections[0].governing_authorities[0].auth_id == "AUTH:HERTZ-2010"
+    assert ledger.verified_facts[0].locator.page == 2
+    assert audit_res.passed is True
+    assert comment.resolved is False
+    assert CompiledBundle.model_fields["comments"] is not None

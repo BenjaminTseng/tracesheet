@@ -44,6 +44,7 @@ SourceType = Literal[
     "web",
     "api",
     "internal_db",
+    "markdown",
 ]
 
 AuditStatus = Literal[
@@ -330,20 +331,179 @@ class GraphNode(BaseModel):
     audit: NodeAudit = Field(default_factory=NodeAudit)
 
 
+class ReviewComment(BaseModel):
+    """Human inline comment anchored to a specific graph node (`L0`, `L1`, or `L2+`).
+
+    Attributes:
+        comment_id: Unique identifier for the review comment.
+        node_id: Target node ID in `CompiledBundle.nodes`.
+        section_id: Section ID that owns or renders the target node.
+        comment_text: Reviewer's feedback, critique, or instruction for regeneration.
+        suggested_status: Optional human audit status override.
+        created_at: ISO-8601 timestamp when the comment was created.
+        resolved: Whether a regeneration pass has addressed this comment.
+    """
+
+    comment_id: str
+    node_id: str
+    section_id: str
+    comment_text: str
+    suggested_status: Optional[AuditStatus] = None
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    resolved: bool = False
+
+
 class CompiledBundle(BaseModel):
     """Complete compiled payload consumed by the bounded spatial canvas UI.
 
     Attributes:
         bundle_id: Optional slug identifying the bundle in the viewer library.
+        matter_id: Optional project/matter directory identifier owning this bundle.
+        question: Optional user prompt `(c)` that generated this artifact.
         artifact: Document envelope containing metadata and ordered sections.
         audit_summary: Document-wide audit counts and tension alerts.
         nodes: Flat lookup dictionary mapping `node_id` to `GraphNode`.
+        comments: Queued and resolved human review comments anchored to nodes.
+        stage_artifacts: Intermediate pipeline state (`outline_plan`, `ledgers`,
+            `sections`) preserved for surgical feedback regeneration.
     """
 
     bundle_id: Optional[str] = None
+    matter_id: Optional[str] = None
+    question: Optional[str] = None
     artifact: ArtifactEnvelope
     audit_summary: AuditSummary
     nodes: Dict[str, GraphNode]
+    comments: List[ReviewComment] = Field(default_factory=list)
+    stage_artifacts: Dict[str, Any] = Field(default_factory=dict)
+
+
+# =====================================================================
+# Pipeline Stage Contracts
+# =====================================================================
+
+
+class CanonicalAuthorityRef(BaseModel):
+    """Canonical authority entry mapped during Stage 1 from `canonical/`.
+
+    Attributes:
+        auth_id: Stable `[AUTH:...]` identifier from the canonical library.
+        title: Display title of the statute, rule, or precedent.
+        url: Optional external or canonical reference URL.
+        verbatim_quote: Exact authoritative holding or policy excerpt.
+        source_file: Relative path to the canonical Markdown file.
+    """
+
+    auth_id: str
+    title: str
+    url: Optional[str] = None
+    verbatim_quote: str
+    source_file: Optional[str] = None
+
+
+class SectionPlan(BaseModel):
+    """Stage 1 outline plan for an individual section of the response.
+
+    Attributes:
+        section_id: Unique section slug.
+        section_title: Human-readable section heading.
+        stated_intention: Exact analytical or legal question the section must resolve.
+        governing_authorities: Canonical `[AUTH:...]` entries governing this section.
+        required_fact_queries: Specific factual questions to answer from inputs `(a)`.
+    """
+
+    section_id: str
+    section_title: str
+    stated_intention: str
+    governing_authorities: List[CanonicalAuthorityRef] = Field(default_factory=list)
+    required_fact_queries: List[str] = Field(default_factory=list)
+
+
+class OutlinePlan(BaseModel):
+    """Complete Stage 1 plan decomposing user request `(c)` against corpus `(b)`.
+
+    Attributes:
+        document_title: Proposed title for the synthesized broadsheet artifact.
+        executive_summary_intent: Core thesis or synthesis objective.
+        sections: Ordered list of planned document sections.
+    """
+
+    document_title: str
+    executive_summary_intent: str
+    sections: List[SectionPlan] = Field(min_length=1)
+
+
+class ExtractedFactItem(BaseModel):
+    """Single coordinate-stamped fact extracted from project inputs `(a)`.
+
+    Attributes:
+        fact_id: Local identifier within the section's fact ledger.
+        query_addressed: Which Stage 1 fact query this item answers.
+        title: Concise descriptive title for the extracted fact.
+        quote: Verbatim quote or formatted value copied from the indexed source.
+        formula: Optional spreadsheet or mathematical formula string.
+        locator: Exact pre-computed `SourceLocator` copied from the indexed source.
+    """
+
+    fact_id: str
+    query_addressed: str
+    title: str
+    quote: str
+    formula: Optional[str] = None
+    locator: SourceLocator
+
+
+class UnresolvedGapItem(BaseModel):
+    """Records a required fact query that could not be confirmed in inputs `(a)`.
+
+    Attributes:
+        query: The factual question that lacked direct verification.
+        recommended_handling: Whether downstream drafting should flag as `assumption`
+            or `extrapolation`.
+        rationale: Explanation of what was searched and why it remains unresolved.
+    """
+
+    query: str
+    recommended_handling: Literal["assumption", "extrapolation"]
+    rationale: str
+
+
+class VerifiedFactLedger(BaseModel):
+    """Stage 2 output ledger containing harvested facts and gaps for one section.
+
+    Attributes:
+        section_id: Identifier of the section this ledger supports.
+        verified_facts: Coordinate-stamped facts harvested from `(a)`.
+        unresolved_gaps: Queries that could not be directly verified in `(a)`.
+    """
+
+    section_id: str
+    verified_facts: List[ExtractedFactItem] = Field(default_factory=list)
+    unresolved_gaps: List[UnresolvedGapItem] = Field(default_factory=list)
+
+
+class SectionAuditResult(BaseModel):
+    """Stage 4 section-level 3-point audit verdict.
+
+    Attributes:
+        section_id: Audited section identifier.
+        check_a_relevance: Whether every support node directly bears on its clause.
+        check_b_congruence: Whether source quotes strictly entail the drafted claims.
+        check_c_intent: Whether the section satisfies its Stage 1 `stated_intention`.
+        passed: Overall pass/fail gate decision.
+        critique_for_retry: Specific actionable critique if `passed` is False.
+        node_verdicts: Per-claim (`n`) `NodeAudit` overrides produced by the auditor.
+    """
+
+    section_id: str
+    check_a_relevance: bool
+    check_b_congruence: bool
+    check_c_intent: bool
+    passed: bool
+    critique_for_retry: Optional[str] = None
+    node_verdicts: Dict[int, NodeAudit] = Field(default_factory=dict)
 
 
 # =====================================================================
@@ -430,7 +590,42 @@ class SectionValidator:
 class StitchInvariantGate:
     """Validates that a whole-document smoothing pass preserved all citations."""
 
-    TAG_PATTERN = re.compile(r"<ref\s+n=['\"](\d+)['\"]>(.*?)</ref>", re.DOTALL)
+    TAG_PATTERN = re.compile(r"<ref\s+n=['\"]([\w:.-]+)['\"]>(.*?)</ref>", re.DOTALL)
+    LOCAL_TAG_PATTERN = re.compile(r"<ref\s+n=['\"](\d+)['\"]>(.*?)</ref>", re.DOTALL)
+
+    @classmethod
+    def prepare_section_for_stitch(cls, section: SectionOutput) -> str:
+        """Namespaces local `<ref n='X'>` tags in a section to `<ref n='sec_id:X'>`.
+
+        Args:
+            section: Validated `SectionOutput` whose local indices should be isolated.
+
+        Returns:
+            Section text with section-namespaced reference keys preventing cross-section
+            collisions during whole-document smoothing.
+        """
+        return cls.LOCAL_TAG_PATTERN.sub(
+            lambda m: f"<ref n='{section.section_id}:{m.group(1)}'>{m.group(2)}</ref>",
+            section.text,
+        )
+
+    @classmethod
+    def prepare_for_stitch(cls, sections: List[SectionOutput]) -> str:
+        """Concatenates all sections with section-namespaced `<ref n='sec_id:X'>` tags.
+
+        Args:
+            sections: Ordered list of validated `SectionOutput` objects.
+
+        Returns:
+            Combined pre-stitched text safe for multi-section editorial smoothing.
+        """
+        return "\n\n".join(cls.prepare_section_for_stitch(sec) for sec in sections)
+
+    @staticmethod
+    def _format_ref_keys(keys: Set[str]) -> List[Any]:
+        """Formats reference keys as integers when purely numeric for readable error output."""
+        formatted: List[Any] = [int(k) if k.isdigit() else k for k in keys]
+        return sorted(formatted, key=lambda x: (isinstance(x, str), str(x)))
 
     @classmethod
     def verify_stitch(
@@ -450,8 +645,8 @@ class StitchInvariantGate:
         pre_matches = cls.TAG_PATTERN.findall(pre_stitched_text)
         post_matches = cls.TAG_PATTERN.findall(post_stitched_text)
 
-        pre_dict: Dict[int, str] = {int(n): text.strip() for n, text in pre_matches}
-        post_dict: Dict[int, str] = {int(n): text.strip() for n, text in post_matches}
+        pre_dict: Dict[str, str] = {n.strip(): text.strip() for n, text in pre_matches}
+        post_dict: Dict[str, str] = {n.strip(): text.strip() for n, text in post_matches}
 
         pre_ids = set(pre_dict.keys())
         post_ids = set(post_dict.keys())
@@ -459,13 +654,13 @@ class StitchInvariantGate:
         missing = pre_ids - post_ids
         if missing:
             violations.append(
-                f"Editorial pass removed citations with n={sorted(list(missing))}"
+                f"Editorial pass removed citations with n={cls._format_ref_keys(missing)}"
             )
 
         added = post_ids - pre_ids
         if added:
             violations.append(
-                f"Editorial pass invented ungrounded citations with n={sorted(list(added))}"
+                f"Editorial pass invented ungrounded citations with n={cls._format_ref_keys(added)}"
             )
 
         for n, original_clause in pre_dict.items():
@@ -505,6 +700,31 @@ class CompiledGraphBuilder:
         self.metadata = metadata or {}
         self.sections_payload: List[SectionObject] = []
         self.nodes_registry: Dict[str, GraphNode] = {}
+
+    @staticmethod
+    def _rewrite_section_tags(
+        text: str,
+        section_id: str,
+        global_ref_map: Dict[Tuple[str, int], str],
+    ) -> str:
+        """Rewrites both namespaced (`sec_id:n`) and local (`n`) ref tags for one section."""
+        updated = text
+        for (s_id, n), global_id in global_ref_map.items():
+            if s_id != section_id:
+                continue
+            updated = re.sub(
+                rf"<ref\s+n=['\"]{re.escape(s_id)}:{n}['\"]>(.*?)</ref>",
+                lambda m, gid=global_id: f"<ref id='{gid}'>{m.group(1)}</ref>",
+                updated,
+                flags=re.DOTALL,
+            )
+            updated = re.sub(
+                rf"<ref\s+n=['\"]{n}['\"]>(.*?)</ref>",
+                lambda m, gid=global_id: f"<ref id='{gid}'>{m.group(1)}</ref>",
+                updated,
+                flags=re.DOTALL,
+            )
+        return updated
 
     def _compile_sub_supports(
         self,
@@ -573,8 +793,9 @@ class CompiledGraphBuilder:
 
             updated_body = re.sub(
                 rf"<ref\s+n=['\"]{sub.n}['\"]>(.*?)</ref>",
-                rf"<ref id='{sub_id}'>\1</ref>",
+                lambda m, sid=sub_id: f"<ref id='{sid}'>{m.group(1)}</ref>",
                 updated_body,
+                flags=re.DOTALL,
             )
 
         return updated_body, sub_child_ids
@@ -584,6 +805,7 @@ class CompiledGraphBuilder:
         sections: List[SectionOutput],
         final_smoothed_text: Optional[str] = None,
         tensions: Optional[List[TensionObject]] = None,
+        smoothed_sections: Optional[Dict[str, str]] = None,
     ) -> CompiledBundle:
         """Compiles validated sections into a `CompiledBundle` instance.
 
@@ -591,11 +813,14 @@ class CompiledGraphBuilder:
             sections: Ordered list of `SectionOutput` objects from section workers.
             final_smoothed_text: Optional unified document text if smoothed globally.
             tensions: Optional list of cross-section tension warnings from Step 4.
+            smoothed_sections: Optional mapping of `section_id -> smoothed_text`
+                preserving individual section boundaries.
 
         Returns:
             Validated `CompiledBundle` ready for frontend rendering.
         """
         global_ref_map: Dict[Tuple[str, int], str] = {}
+        claim_ref_map: Dict[Tuple[str, int], str] = {}
 
         for sec in sections:
             sec_matches = {
@@ -607,6 +832,7 @@ class CompiledGraphBuilder:
                 n = support_group.n
                 claim_id = f"claim_{sec.section_id}_{n}"
                 global_ref_map[(sec.section_id, n)] = claim_id
+                claim_ref_map[(sec.section_id, n)] = claim_id
 
                 clause_text = sec_matches.get(n, "")
                 child_node_ids: List[str] = []
@@ -652,9 +878,26 @@ class CompiledGraphBuilder:
 
                 # Determine claim audit status based on explicit group audit or child types
                 has_assumption = any(i.type == "assumption" for i in support_group.items)
+                has_extrapolation = any(
+                    i.audit is not None and i.audit.status == "extrapolation"
+                    for i in support_group.items
+                )
+                default_claim_status: AuditStatus = (
+                    "assumption"
+                    if has_assumption
+                    else "extrapolation"
+                    if has_extrapolation
+                    else "verified"
+                )
                 claim_audit = support_group.audit or NodeAudit(
-                    status="assumption" if has_assumption else "verified",
-                    score=0.75 if has_assumption else 0.98,
+                    status=default_claim_status,
+                    score=(
+                        0.75
+                        if default_claim_status == "assumption"
+                        else 0.80
+                        if default_claim_status == "extrapolation"
+                        else 0.98
+                    ),
                     evaluator_type="deterministic",
                     evaluator_note="Verified across attached local support nodes.",
                 )
@@ -674,14 +917,24 @@ class CompiledGraphBuilder:
                     audit=claim_audit,
                 )
 
-        # Rewrite inline text tags from `<ref n="X">` to `<ref id="global_id">`
-        if final_smoothed_text:
+        # Rewrite inline text tags from `<ref n="...">` to `<ref id="global_id">`
+        if final_smoothed_text and not smoothed_sections:
             compiled_text = final_smoothed_text
-            for (_sec_id, n), global_id in global_ref_map.items():
+            # First pass: replace section-namespaced tags `<ref n='sec_id:n'>`
+            for (s_id, n), global_id in claim_ref_map.items():
+                compiled_text = re.sub(
+                    rf"<ref\s+n=['\"]{re.escape(s_id)}:{n}['\"]>(.*?)</ref>",
+                    lambda m, gid=global_id: f"<ref id='{gid}'>{m.group(1)}</ref>",
+                    compiled_text,
+                    flags=re.DOTALL,
+                )
+            # Second pass: fallback for legacy un-namespaced `<ref n='n'>`
+            for (_s_id, n), global_id in claim_ref_map.items():
                 compiled_text = re.sub(
                     rf"<ref\s+n=['\"]{n}['\"]>(.*?)</ref>",
-                    rf"<ref id='{global_id}'>\1</ref>",
+                    lambda m, gid=global_id: f"<ref id='{gid}'>{m.group(1)}</ref>",
                     compiled_text,
+                    flags=re.DOTALL,
                 )
             self.sections_payload.append(
                 SectionObject(
@@ -693,14 +946,14 @@ class CompiledGraphBuilder:
             )
         else:
             for order_idx, sec in enumerate(sections, start=1):
-                compiled_sec_text = sec.text
-                for (s_id, n), global_id in global_ref_map.items():
-                    if s_id == sec.section_id:
-                        compiled_sec_text = re.sub(
-                            rf"<ref\s+n=['\"]{n}['\"]>(.*?)</ref>",
-                            rf"<ref id='{global_id}'>\1</ref>",
-                            compiled_sec_text,
-                        )
+                raw_sec_text = (
+                    smoothed_sections.get(sec.section_id, sec.text)
+                    if smoothed_sections
+                    else sec.text
+                )
+                compiled_sec_text = self._rewrite_section_tags(
+                    raw_sec_text, sec.section_id, claim_ref_map
+                )
                 self.sections_payload.append(
                     SectionObject(
                         section_id=sec.section_id,

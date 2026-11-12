@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -25,6 +26,7 @@ from pydantic import BaseModel, Field
 from app.ingest import CanonicalRouter, MatterIngestor
 from app.llm import LLMProvider
 from app.models import (
+    AuditStatus,
     CompiledBundle,
     CompiledGraphBuilder,
     ExtractedFactItem,
@@ -396,6 +398,138 @@ class AuditPipelineRunner:
             f"Expanded Source Context (a):\n{expanded_context or '(No external block context)'}\n\n"
             f"Canonical Authorities (b):\n{auth_context}"
         )
+
+        questions: Dict[str, Dict[str, Any]] = {
+            "check_a_relevance": {
+                "type": "noul",
+                "instructions": (
+                    "Does every support item (including commonsense/arithmetic reasoning) "
+                    "directly back its paired <ref n> claim without irrelevant padding?"
+                ),
+            },
+            "check_b_congruence": {
+                "type": "noul",
+                "instructions": (
+                    "Do the verbatim source quotes and expanded source context strictly entail "
+                    "every number, entity, and claim without distortion or omitted disqualifiers?"
+                ),
+            },
+            "check_c_intent": {
+                "type": "noul",
+                "instructions": "Does the drafted section directly answer its stated_intention?",
+            },
+        }
+        for grp in draft.supports:
+            questions[f"claim_{grp.n}_entailment"] = {
+                "type": "noul",
+                "instructions": (
+                    f"Is claim n={grp.n} ('{grp.title or grp.n}') strictly supported by its "
+                    "attached evidence, calculations, and canonical authority items?"
+                ),
+            }
+            questions[f"claim_{grp.n}_status"] = {
+                "type": "choice",
+                "instructions": f"Classify the epistemic audit status of claim n={grp.n}.",
+                "criteria": {
+                    "verified": "Directly entailed by source quote/formula or valid step-by-step arithmetic.",
+                    "extrapolation": "Reasonable inference extending slightly beyond literal quote.",
+                    "assumption": "Unverified premise or missing supporting link.",
+                    "disputed": "Contradicted by surrounding source context or cited values.",
+                },
+            }
+
+        decision_model = os.environ.get("JD_SCREEN_DECISION_MODEL", "models/gemini-decision-1")
+        batch = self.llm.evaluate_decisions(
+            input_text=prompt,
+            questions=questions,
+            decision_model=decision_model,
+        )
+
+        if batch.answers:
+            ans = batch.answers
+            probs: Dict[str, float] = {}
+            for qid, item in ans.items():
+                if item.question_type == "noul" and item.noul is not None:
+                    probs[qid] = float(item.noul)
+                else:
+                    probs[qid] = float(item.confidence)
+
+            check_a = (ans["check_a_relevance"].noul or 0.0) >= 0.80 if "check_a_relevance" in ans else True
+            check_b = (ans["check_b_congruence"].noul or 0.0) >= 0.80 if "check_b_congruence" in ans else True
+            check_c = (ans["check_c_intent"].noul or 0.0) >= 0.80 if "check_c_intent" in ans else True
+
+            all_claims_entailed = True
+            failing_reasons: List[str] = []
+            if not check_a:
+                failing_reasons.append(f"check_a_relevance={probs.get('check_a_relevance', 0.0):.2f} < 0.80")
+            if not check_b:
+                failing_reasons.append(f"check_b_congruence={probs.get('check_b_congruence', 0.0):.2f} < 0.80")
+            if not check_c:
+                failing_reasons.append(f"check_c_intent={probs.get('check_c_intent', 0.0):.2f} < 0.80")
+
+            node_verdicts: Dict[int, NodeAudit] = {}
+            for grp in draft.supports:
+                ent_key = f"claim_{grp.n}_entailment"
+                st_key = f"claim_{grp.n}_status"
+                ent_prob = float(ans[ent_key].noul or 0.0) if ent_key in ans else 1.0
+                if ent_key in ans and ent_prob < 0.75:
+                    all_claims_entailed = False
+                    failing_reasons.append(f"{ent_key}={ent_prob:.2f} < 0.75")
+                if st_key in ans and ans[st_key].choice:
+                    raw_choice = ans[st_key].choice
+                    valid_statuses = ("verified", "extrapolation", "assumption", "disputed")
+                    status_val = (
+                        raw_choice
+                        if raw_choice in valid_statuses
+                        else ("verified" if ent_prob >= 0.75 else "extrapolation")
+                    )
+                    conf_val = float(ans[st_key].confidence)
+                    node_verdicts[grp.n] = NodeAudit(
+                        status=status_val,
+                        score=round(conf_val, 3),
+                        evaluator_type="llm_auditor",
+                        evaluator_note=(
+                            f"Decisions API ({raw_choice}): confidence={conf_val:.2f}, "
+                            f"entailment={ent_prob:.2f}"
+                        ),
+                    )
+
+            if check_a and check_b and check_c and all_claims_entailed:
+                return SectionAuditResult(
+                    section_id=draft.section_id,
+                    check_a_relevance=True,
+                    check_b_congruence=True,
+                    check_c_intent=True,
+                    passed=True,
+                    audit_rationale=(
+                        "All Stage 4 audit invariants (Checks A/B/C >= 0.80) and per-claim "
+                        "entailment scores (>= 0.75) cleared via Gemini Decisions API."
+                    ),
+                    node_verdicts=node_verdicts,
+                    decision_probabilities=probs,
+                )
+
+            rejection_prompt = (
+                f"{prompt}\n\n"
+                f"### Decisions API Rejection Flags\n"
+                + "\n".join(f"- {r}" for r in failing_reasons)
+                + "\nExplain the failure in `audit_rationale` and emit a concrete `critique_for_retry`."
+            )
+            result = self.llm.generate_structured(
+                prompt=rejection_prompt,
+                system_instruction=system_instruction,
+                response_model=SectionAuditResult,
+            )
+            result.section_id = draft.section_id
+            result.passed = False
+            result.check_a_relevance = result.check_a_relevance and check_a
+            result.check_b_congruence = result.check_b_congruence and check_b
+            result.check_c_intent = result.check_c_intent and check_c
+            result.decision_probabilities = probs
+            if not result.node_verdicts and node_verdicts:
+                result.node_verdicts = node_verdicts
+            return result
+
         result = self.llm.generate_structured(
             prompt=prompt,
             system_instruction=system_instruction,
@@ -800,11 +934,50 @@ class AuditPipelineRunner:
             f"Current Draft:\n{section_draft.model_dump_json(indent=2)}\n\n"
             f"Reviewer Comments:\n{formatted}"
         )
-        return self.llm.generate_structured(
+        decision_model = os.environ.get("JD_SCREEN_DECISION_MODEL", "models/gemini-decision-1")
+        batch = self.llm.evaluate_decisions(
+            input_text=prompt,
+            questions={
+                "route": {
+                    "type": "choice",
+                    "instructions": (
+                        "Does addressing these reviewer comments only require editing prose, "
+                        "reasoning, or caveats from existing harvested facts (stage_3_redraft), "
+                        "or does it require searching project files for new facts/numbers (stage_2_reharvest)?"
+                    ),
+                    "criteria": {
+                        "stage_3_redraft": (
+                            "Rephrase, formatting, date/title wording, logic adjustment, or audit "
+                            "status change using already harvested facts."
+                        ),
+                        "stage_2_reharvest": (
+                            "Requires looking up new facts, documents, spreadsheet cells, or "
+                            "unharvested evidence."
+                        ),
+                    },
+                }
+            },
+            decision_model=decision_model,
+        )
+        route_ans = batch.answers.get("route")
+        if route_ans is not None and route_ans.choice == "stage_3_redraft":
+            return FeedbackTriageDecision(
+                needs_stage2_reharvest=False,
+                rationale=(
+                    f"Decisions API classified feedback as stage_3_redraft "
+                    f"(confidence={route_ans.confidence:.2f})."
+                ),
+                additional_fact_queries=[],
+            )
+
+        decision = self.llm.generate_structured(
             prompt=prompt,
             system_instruction=system_instruction,
             response_model=FeedbackTriageDecision,
         )
+        if route_ans is not None and route_ans.choice == "stage_2_reharvest":
+            decision.needs_stage2_reharvest = True
+        return decision
 
     def apply_comments_and_recompile(
         self,

@@ -722,3 +722,153 @@ def test_stage1_catalog_isolation_stage2_canonical_discovery_and_trace_artifacts
     assert "Transfers made within 90 days" in sa["ledgers"]["sec_01_stay"]["additional_authorities"][0]["verbatim_quote"]
     assert sa["sections"][0]["drafting_notes"].startswith("Combined Docket dates")
     assert sa["audits"]["sec_01_stay"]["audit_rationale"].startswith("All dates match")
+
+
+def test_stage4_auditor_and_triage_use_decisions_api_zero_token_fast_path(
+    tmp_path: Path,
+) -> None:
+    """Verifies Decisions API clears Stage 4 audit and stage_3_redraft triage with zero structured output calls."""
+    router, ingestor = _setup_workspace(tmp_path)
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Fast Gate Memo",
+                "executive_summary_intent": "Verify HQ.",
+                "sections": [
+                    {
+                        "section_id": "sec_01",
+                        "section_title": "I. HQ",
+                        "stated_intention": "Locate corporate HQ.",
+                        "routing_rationale": "Uses Exhibit_B with Hertz nerve center test.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:HERTZ-2010",
+                                "title": "Hertz Corp. v. Friend, 559 U.S. 77 (2010)",
+                                "verbatim_quote": "Placeholder",
+                            }
+                        ],
+                        "required_fact_queries": ["Where is HQ registered?"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01",
+                "harvest_summary": "Found registered Wilmington office in Exhibit_B.",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Where is HQ registered?",
+                        "title": "Exhibit B",
+                        "quote": "1209 North Orange St, Wilmington, DE.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Exhibit_B.md",
+                            "locator_key": "EXHIBIT_B-SEC-1",
+                        },
+                    }
+                ],
+                "unresolved_gaps": [],
+            },
+            "SectionOutput": [
+                {
+                    "section_id": "sec_01",
+                    "section_title": "I. HQ",
+                    "drafting_notes": "Initial draft.",
+                    "text": "The company is <ref n='1'>headquartered in Wilmington</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "HQ Fact",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Exhibit B",
+                                    "quote": "1209 North Orange St, Wilmington, DE.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Exhibit_B.md",
+                                        "locator_key": "EXHIBIT_B-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "section_id": "sec_01",
+                    "section_title": "I. HQ",
+                    "drafting_notes": "Edited prose to include full street address.",
+                    "text": "The company is <ref n='1'>headquartered at 1209 North Orange St, Wilmington, DE</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "HQ Fact",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Exhibit B",
+                                    "quote": "1209 North Orange St, Wilmington, DE.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Exhibit_B.md",
+                                        "locator_key": "EXHIBIT_B-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            # Deliberately omit SectionAuditResult & FeedbackTriageDecision to prove zero-token Decisions fast path!
+        },
+        decision_responses=[
+            # Call 1: Stage 4 initial audit
+            {
+                "check_a_relevance": {"question_id": "check_a_relevance", "question_type": "noul", "noul": 0.96, "confidence": 0.96},
+                "check_b_congruence": {"question_id": "check_b_congruence", "question_type": "noul", "noul": 0.97, "confidence": 0.97},
+                "check_c_intent": {"question_id": "check_c_intent", "question_type": "noul", "noul": 0.95, "confidence": 0.95},
+                "claim_1_entailment": {"question_id": "claim_1_entailment", "question_type": "noul", "noul": 0.98, "confidence": 0.98},
+                "claim_1_status": {"question_id": "claim_1_status", "question_type": "choice", "choice": "verified", "probabilities": {"verified": 0.94}, "confidence": 0.94},
+            },
+            # Call 2: Feedback triage -> stage_3_redraft
+            {
+                "route": {"question_id": "route", "question_type": "choice", "choice": "stage_3_redraft", "probabilities": {"stage_3_redraft": 0.92, "stage_2_reharvest": 0.08}, "confidence": 0.92},
+            },
+            # Call 3: Stage 4 re-audit after regeneration
+            {
+                "check_a_relevance": {"question_id": "check_a_relevance", "question_type": "noul", "noul": 0.97, "confidence": 0.97},
+                "check_b_congruence": {"question_id": "check_b_congruence", "question_type": "noul", "noul": 0.98, "confidence": 0.98},
+                "check_c_intent": {"question_id": "check_c_intent", "question_type": "noul", "noul": 0.96, "confidence": 0.96},
+                "claim_1_entailment": {"question_id": "claim_1_entailment", "question_type": "noul", "noul": 0.99, "confidence": 0.99},
+                "claim_1_status": {"question_id": "claim_1_status", "question_type": "choice", "choice": "verified", "probabilities": {"verified": 0.96}, "confidence": 0.96},
+            },
+        ],
+    )
+
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    bundle = runner.run_full_pipeline(
+        matter_id="m_test",
+        question="Where is HQ?",
+        bundle_id="fast_gate_bundle",
+        smooth_transitions=False,
+    )
+    assert bundle.nodes["claim_sec_01_1"].audit.status == "verified"
+    assert "Decisions API" in bundle.nodes["claim_sec_01_1"].audit.evaluator_note
+    assert bundle.stage_artifacts["audits"]["sec_01"]["decision_probabilities"]["check_b_congruence"] == 0.97
+
+    updated = runner.apply_comments_and_recompile(
+        bundle=bundle,
+        new_comments=[
+            ReviewComment(
+                comment_id="c_fast",
+                node_id="claim_sec_01_1",
+                section_id="sec_01",
+                comment_text="Include the full street address.",
+            )
+        ],
+        smooth_transitions=False,
+    )
+    assert "1209 North Orange St" in updated.artifact.sections[0].content
+    assert not any(c.get("model") in ("SectionAuditResult", "FeedbackTriageDecision") for c in mock_llm.call_log)
+    assert sum(1 for c in mock_llm.call_log if c.get("method") == "evaluate_decisions") == 3

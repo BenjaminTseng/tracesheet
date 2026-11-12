@@ -523,6 +523,23 @@ class VerifiedFactLedger(BaseModel):
     additional_authorities: List[CanonicalAuthorityRef] = Field(default_factory=list)
 
 
+class DecisionAnswerItem(BaseModel):
+    """Normalized answer for a single question from the Gemini Decisions API."""
+
+    question_id: str
+    question_type: Literal["noul", "choice", "score"]
+    noul: Optional[float] = None
+    choice: Optional[str] = None
+    probabilities: Dict[str, float] = Field(default_factory=dict)
+    confidence: float = 1.0
+
+
+class DecisionBatchResult(BaseModel):
+    """Normalized batch response from `LLMProvider.evaluate_decisions`."""
+
+    answers: Dict[str, DecisionAnswerItem] = Field(default_factory=dict)
+
+
 class SectionAuditResult(BaseModel):
     """Stage 4 section-level 3-point audit verdict.
 
@@ -535,6 +552,7 @@ class SectionAuditResult(BaseModel):
         audit_rationale: Plain-English explanation of why the section passed or failed audit.
         critique_for_retry: Specific actionable critique if `passed` is False.
         node_verdicts: Per-claim (`n`) `NodeAudit` overrides produced by the auditor.
+        decision_probabilities: Optional Decisions API calibrated scores keyed by question ID.
     """
 
     section_id: str
@@ -545,6 +563,7 @@ class SectionAuditResult(BaseModel):
     audit_rationale: Optional[str] = None
     critique_for_retry: Optional[str] = None
     node_verdicts: Dict[int, NodeAudit] = Field(default_factory=dict)
+    decision_probabilities: Dict[str, float] = Field(default_factory=dict)
 
 
 # =====================================================================

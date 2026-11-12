@@ -186,3 +186,104 @@ def test_create_llm_provider_factory_supports_multiple_backends() -> None:
 
     with pytest.raises(ValueError, match="Unsupported LLM provider"):
         create_llm_provider("unknown_backend")
+
+
+def test_gemini_decisions_api_calls_v1beta_and_normalizes_answers() -> None:
+    """Verifies `GeminiInteractionsProvider.evaluate_decisions` calls `decisions.create(api_version='v1beta')`."""
+    recorded: List[Dict[str, Any]] = []
+
+    class FakeNoulAnswer:
+        type = "noul"
+        noul = 0.94
+        confidence = 0.94
+
+    class FakeChoiceAnswer:
+        type = "choice"
+        choice = "verified"
+        probabilities = {"verified": 0.91, "extrapolation": 0.08, "assumption": 0.01}
+        confidence = 0.91
+
+    class FakeDecisionResp:
+        answers = {
+            "check_b_congruence": FakeNoulAnswer(),
+            "claim_1_status": FakeChoiceAnswer(),
+        }
+
+    class FakeDecisionsResource:
+        def create(self, **kwargs: Any) -> FakeDecisionResp:
+            recorded.append(kwargs)
+            return FakeDecisionResp()
+
+    class FakeClient:
+        decisions = FakeDecisionsResource()
+
+    provider = GeminiInteractionsProvider(model="gemini-4-argon", client=FakeClient())
+    batch = provider.evaluate_decisions(
+        input_text="Docket says March 1, 2026.",
+        questions={
+            "check_b_congruence": {"type": "noul", "instructions": "Entailed?"},
+            "claim_1_status": {
+                "type": "choice",
+                "instructions": "Classify claim 1.",
+                "criteria": {"verified": "Direct", "extrapolation": "Inferred"},
+            },
+        },
+        decision_model="gemini-decision-1",
+    )
+
+    assert len(recorded) == 1
+    assert recorded[0]["model"] == "models/gemini-decision-1"
+    assert recorded[0]["api_version"] == "v1beta"
+    assert batch.answers["check_b_congruence"].noul == 0.94
+    assert batch.answers["claim_1_status"].choice == "verified"
+    assert batch.answers["claim_1_status"].probabilities["verified"] == 0.91
+
+    # Also verify graceful fallback to generate_structured if decisions.create raises
+    class FailingDecisionsResource:
+        def create(self, **kwargs: Any) -> Any:
+            raise RuntimeError("Decisions endpoint unavailable")
+
+    class FallbackInteraction:
+        id = "int_fb"
+        status = "completed"
+        output_text = '{"answers": {"q1": {"question_id": "q1", "question_type": "noul", "noul": 0.88, "confidence": 0.88}}}'
+        steps: List[Any] = []
+        usage = None
+
+    class FallbackInteractions:
+        def create(self, **kwargs: Any) -> FallbackInteraction:
+            return FallbackInteraction()
+
+    class FallbackClient:
+        decisions = FailingDecisionsResource()
+        interactions = FallbackInteractions()
+
+    fb_provider = GeminiInteractionsProvider(model="gemini-4-argon", client=FallbackClient())
+    fb_batch = fb_provider.evaluate_decisions(
+        input_text="Context",
+        questions={"q1": {"type": "noul", "instructions": "Ok?"}},
+    )
+    assert fb_batch.answers["q1"].noul == 0.88
+
+
+def test_create_llm_provider_loads_dotenv_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies `create_llm_provider()` invokes `load_dotenv` to pick up keys from `.env`."""
+    env_file = tmp_path / ".env"
+    env_file.write_text("GEMINI_API_KEY=dotenv_fake_key_123\nJD_SCREEN_MODEL=gemini-4-hydrogen\n", encoding="utf-8")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("JD_SCREEN_MODEL", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    captured: Dict[str, Any] = {}
+
+    class StubClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    import google.genai as genai_mod
+
+    monkeypatch.setattr(genai_mod, "Client", StubClient)
+    provider = create_llm_provider("gemini")
+    assert isinstance(provider, GeminiInteractionsProvider)
+    assert captured.get("api_key") == "dotenv_fake_key_123"
+    assert provider.model == "gemini-4-hydrogen"

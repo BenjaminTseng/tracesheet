@@ -14,9 +14,12 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar, runtime_checkable
+from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar, Union, runtime_checkable
 
+from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
+
+from app.models import DecisionAnswerItem, DecisionBatchResult
 
 logger = logging.getLogger("jd_screen.llm")
 
@@ -98,6 +101,16 @@ class LLMProvider(Protocol):
         Returns:
             Validated instance of `response_model`.
         """
+        ...
+
+    def evaluate_decisions(
+        self,
+        input_text: str,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        decision_model: str = "models/gemini-decision-1",
+    ) -> DecisionBatchResult:
+        """Evaluates structured Noul/Choice questions with calibrated probabilities."""
         ...
 
 
@@ -352,6 +365,76 @@ class GeminiInteractionsProvider:
 
         return response_model.model_validate_json(_extract_json_text(output_text))
 
+    def evaluate_decisions(
+        self,
+        input_text: str,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        decision_model: str = "models/gemini-decision-1",
+    ) -> DecisionBatchResult:
+        """Evaluates Noul/Choice questions via `client.decisions.create(api_version='v1beta')`."""
+        model_name = (
+            decision_model if decision_model.startswith("models/") else f"models/{decision_model}"
+        )
+        try:
+            response = self.client.decisions.create(
+                model=model_name,
+                input=input_text,
+                questions=questions,
+                api_version="v1beta",
+            )
+            raw_answers = getattr(response, "answers", None) or {}
+            normalized: Dict[str, DecisionAnswerItem] = {}
+            for qid, ans in raw_answers.items():
+                ans_type = (
+                    ans.get("type") if isinstance(ans, dict) else getattr(ans, "type", None)
+                ) or "noul"
+                conf = (
+                    ans.get("confidence", 0.5)
+                    if isinstance(ans, dict)
+                    else getattr(ans, "confidence", 0.5)
+                )
+                if ans_type == "choice":
+                    ch = ans.get("choice", "") if isinstance(ans, dict) else getattr(ans, "choice", "")
+                    probs = (
+                        ans.get("probabilities", {})
+                        if isinstance(ans, dict)
+                        else getattr(ans, "probabilities", {})
+                    )
+                    normalized[qid] = DecisionAnswerItem(
+                        question_id=qid,
+                        question_type="choice",
+                        choice=str(ch or ""),
+                        probabilities=dict(probs or {}),
+                        confidence=float(conf if conf is not None else 0.5),
+                    )
+                else:
+                    noul_val = (
+                        ans.get("noul", 0.5) if isinstance(ans, dict) else getattr(ans, "noul", 0.5)
+                    )
+                    normalized[qid] = DecisionAnswerItem(
+                        question_id=qid,
+                        question_type="noul",
+                        noul=float(noul_val if noul_val is not None else 0.5),
+                        confidence=float(conf if conf is not None else 0.5),
+                    )
+            return DecisionBatchResult(answers=normalized)
+        except Exception as exc:
+            logger.warning(
+                "Gemini Decisions API call failed (%s); falling back to generate_structured.",
+                exc,
+            )
+            fallback_prompt = (
+                f"Input Context:\n{input_text}\n\n"
+                f"Questions to evaluate (JSON):\n{json.dumps(questions, indent=2)}\n\n"
+                "Emit a DecisionBatchResult JSON answering every question_id accurately."
+            )
+            return self.generate_structured(
+                prompt=fallback_prompt,
+                system_instruction="Evaluate each decision question strictly against Input Context.",
+                response_model=DecisionBatchResult,
+            )
+
 
 class AnthropicProvider:
     """Extension adapter for Anthropic Claude models conforming to `LLMProvider`.
@@ -487,6 +570,16 @@ class AnthropicProvider:
             response_model=response_model,
         )
 
+    def evaluate_decisions(
+        self,
+        input_text: str,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        decision_model: str = "models/gemini-decision-1",
+    ) -> DecisionBatchResult:
+        """Signals pipeline callers to fall back to `generate_structured` on Anthropic."""
+        return DecisionBatchResult(answers={})
+
 
 class OpenAIProvider:
     """Extension adapter for OpenAI models conforming to `LLMProvider`.
@@ -618,6 +711,16 @@ class OpenAIProvider:
             raise ValueError("OpenAI tool loop ended without parsed structured output.")
         return parsed
 
+    def evaluate_decisions(
+        self,
+        input_text: str,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        decision_model: str = "models/gemini-decision-1",
+    ) -> DecisionBatchResult:
+        """Signals pipeline callers to fall back to `generate_structured` on OpenAI."""
+        return DecisionBatchResult(answers={})
+
 
 class MockLLMProvider:
     """Deterministic offline LLM provider for unit/integration testing without paid tokens."""
@@ -627,6 +730,7 @@ class MockLLMProvider:
         structured_responses: Optional[Dict[str, Any]] = None,
         text_responses: Optional[List[str]] = None,
         tool_invocations: Optional[List[Dict[str, Any]]] = None,
+        decision_responses: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     ) -> None:
         """Initializes deterministic mock queues keyed by Pydantic model class name.
 
@@ -636,10 +740,13 @@ class MockLLMProvider:
             text_responses: FIFO list of strings returned by `generate_text`.
             tool_invocations: Optional list of `{"name": ..., "arguments": ...}` dicts
                 invoked during `run_tool_loop` before emitting the structured response.
+            decision_responses: Optional dict, FIFO list of dicts, or callable returning
+                a `DecisionBatchResult` payload (or `answers` dict).
         """
         self.structured_responses = structured_responses or {}
         self.text_responses = list(text_responses or [])
         self.tool_invocations = list(tool_invocations or [])
+        self.decision_responses = decision_responses
         self.call_log: List[Dict[str, Any]] = []
 
     def generate_structured(
@@ -694,6 +801,39 @@ class MockLLMProvider:
             response_model=response_model,
         )
 
+    def evaluate_decisions(
+        self,
+        input_text: str,
+        questions: Dict[str, Dict[str, Any]],
+        *,
+        decision_model: str = "models/gemini-decision-1",
+    ) -> DecisionBatchResult:
+        """Returns configured mock decision verdicts or empty batch for structured fallback."""
+        self.call_log.append(
+            {
+                "method": "evaluate_decisions",
+                "model": decision_model,
+                "input": input_text,
+                "questions": questions,
+            }
+        )
+        if self.decision_responses is None:
+            return DecisionBatchResult(answers={})
+
+        entry = self.decision_responses
+        if callable(entry):
+            payload = entry(input_text, questions)
+        elif isinstance(entry, list):
+            payload = entry.pop(0)
+        else:
+            payload = entry
+
+        if isinstance(payload, DecisionBatchResult):
+            return payload
+        if isinstance(payload, dict) and "answers" not in payload:
+            payload = {"answers": payload}
+        return DecisionBatchResult.model_validate(payload)
+
 
 def create_llm_provider(
     provider_name: str = "gemini",
@@ -701,6 +841,9 @@ def create_llm_provider(
     api_key: Optional[str] = None,
 ) -> LLMProvider:
     """Factory instantiating an `LLMProvider` by backend name.
+
+    Loads `.env` (with `override=False`) before inspecting API key and default
+    provider/model environment variables.
 
     Args:
         provider_name: One of `'gemini'`, `'anthropic'`, `'openai'`, `'mock'`.
@@ -713,20 +856,26 @@ def create_llm_provider(
     Raises:
         ValueError: If `provider_name` is not recognized.
     """
-    normalized = provider_name.strip().lower()
+    dotenv_path = find_dotenv(usecwd=True)
+    if dotenv_path:
+        load_dotenv(dotenv_path=dotenv_path, override=False)
+    else:
+        load_dotenv(override=False)
+    normalized = (provider_name or os.environ.get("JD_SCREEN_PROVIDER", "gemini")).strip().lower()
+    env_model = model or os.environ.get("JD_SCREEN_MODEL")
     if normalized == "gemini":
         return GeminiInteractionsProvider(
-            model=model or GeminiInteractionsProvider.DEFAULT_MODEL,
+            model=env_model or GeminiInteractionsProvider.DEFAULT_MODEL,
             api_key=api_key,
         )
     if normalized == "anthropic":
         return AnthropicProvider(
-            model=model or AnthropicProvider.DEFAULT_MODEL,
+            model=env_model or AnthropicProvider.DEFAULT_MODEL,
             api_key=api_key,
         )
     if normalized == "openai":
         return OpenAIProvider(
-            model=model or OpenAIProvider.DEFAULT_MODEL,
+            model=env_model or OpenAIProvider.DEFAULT_MODEL,
             api_key=api_key,
         )
     if normalized == "mock":

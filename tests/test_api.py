@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import MockLLMProvider
 from app.pipeline import CrossSectionAuditOutput, FeedbackTriageDecision, StitchedDocumentOutput
 from app.routes import BUNDLE_STORE
@@ -293,7 +293,7 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
 
 
 def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
-    """Verifies CLI flags for `--provider`, `--model`, `--ingest-matter`, and `--ask`."""
+    """Verifies CLI flags for `--provider`, `--model`, `--ingest-matter`, `--ingest-canonical`, and `--ask`."""
     ns = parse_args(
         [
             "--provider",
@@ -304,10 +304,53 @@ def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
             "legal_motion_1332",
             "--ask",
             "Evaluate complete diversity",
+            "--ingest-canonical",
+            "--purge-canonical",
         ]
     )
     assert ns.provider == "gemini"
     assert ns.model == "gemini-4-argon"
     assert ns.matter == "legal_motion_1332"
     assert ns.ask == "Evaluate complete diversity"
+    assert ns.ingest_canonical is True
+    assert ns.purge_canonical is True
+
+
+def test_canonical_upload_and_rebuild_endpoints(tmp_path: Path) -> None:
+    """Verifies `GET /api/canonical`, `POST /api/canonical/upload`, and `POST /api/canonical/ingest`."""
+    canonical_dir = tmp_path / "canonical"
+    canonical_dir.mkdir(parents=True)
+    app.state.canonical_router = CanonicalRouter(canonical_dir)
+    app.state.canonical_ingestor = CanonicalIngestor(canonical_dir)
+
+    try:
+        upload_res = client.post(
+            "/api/canonical/upload",
+            data={"domain": "compliance"},
+            files={
+                "file": (
+                    "soc2_controls.md",
+                    b"# SOC2 Controls\n\n## Access Review\nQuarterly privileged access reviews are mandatory.\n",
+                    "text/markdown",
+                )
+            },
+        )
+        assert upload_res.status_code == 200
+        payload = upload_res.json()
+        assert payload["domain"] == "compliance"
+        assert payload["total_authorities"] == 1
+        assert "compliance" in payload["raw_domains"]
+        assert "Quarterly privileged access reviews" in payload["authorities"][0]["verbatim_quote"]
+
+        status_res = client.get("/api/canonical")
+        assert status_res.status_code == 200
+        assert status_res.json()["total_authorities"] == 1
+
+        rebuild_res = client.post("/api/canonical/ingest", json={"purge_encoded": True})
+        assert rebuild_res.status_code == 200
+        assert rebuild_res.json()["total_authorities"] == 1
+        assert (canonical_dir / "INDEX.md").exists()
+    finally:
+        app.state.canonical_router = None
+        app.state.canonical_ingestor = None
 

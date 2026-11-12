@@ -208,12 +208,15 @@ class SectionOutput(BaseModel):
     Attributes:
         section_id: Unique section slug (e.g., `sec_02_jurisdiction`).
         section_title: Optional human-readable heading for the section.
+        drafting_notes: Plain-English explanation of how this section synthesized facts,
+            calculations, and commonsense/canonical warrants.
         text: Markdown narrative containing `<ref n="X">clause</ref>` tags.
         supports: List of support clusters corresponding to each inline `<ref>`.
     """
 
     section_id: str
     section_title: Optional[str] = None
+    drafting_notes: Optional[str] = None
     text: str
     supports: List[SupportGroup]
 
@@ -403,6 +406,35 @@ class CanonicalAuthorityRef(BaseModel):
     source_file: Optional[str] = None
 
 
+class CanonicalDocumentSynopsisDraft(BaseModel):
+    """LLM-synthesized routing metadata generated at ingest time for a canonical document."""
+
+    title: str
+    authority_tier: Literal[
+        "statute_regulation",
+        "case_law_precedent",
+        "treatise_commentary",
+        "local_rule_guidance",
+        "internal_rubric_policy",
+    ] = "statute_regulation"
+    jurisdiction_scope: str = "General / Federal"
+    scope_synopsis: str
+
+
+class CanonicalDocumentCard(BaseModel):
+    """Tier-1 card catalog entry representing one canonical document in `canonical/INDEX.md`."""
+
+    doc_id: str
+    domain: str
+    title: str
+    authority_tier: str = "statute_regulation"
+    jurisdiction_scope: str = "General / Federal"
+    scope_synopsis: str
+    authority_file: str
+    toc_file: str
+    authority_count: int
+
+
 class SectionPlan(BaseModel):
     """Stage 1 outline plan for an individual section of the response.
 
@@ -410,6 +442,8 @@ class SectionPlan(BaseModel):
         section_id: Unique section slug.
         section_title: Human-readable section heading.
         stated_intention: Exact analytical or legal question the section must resolve.
+        routing_rationale: Explanation of why the selected canonical `[AUTH:...]` rules
+            govern this section, or why it relies on direct evidence/commonsense logic.
         governing_authorities: Canonical `[AUTH:...]` entries governing this section.
         required_fact_queries: Specific factual questions to answer from inputs `(a)`.
     """
@@ -417,6 +451,7 @@ class SectionPlan(BaseModel):
     section_id: str
     section_title: str
     stated_intention: str
+    routing_rationale: Optional[str] = None
     governing_authorities: List[CanonicalAuthorityRef] = Field(default_factory=list)
     required_fact_queries: List[str] = Field(default_factory=list)
 
@@ -471,17 +506,21 @@ class UnresolvedGapItem(BaseModel):
 
 
 class VerifiedFactLedger(BaseModel):
-    """Stage 2 output ledger containing harvested facts and gaps for one section.
+    """Stage 2 output ledger containing harvested facts, gaps, and discovered rules.
 
     Attributes:
         section_id: Identifier of the section this ledger supports.
+        harvest_summary: Plain-English explanation of what sources were searched and found.
         verified_facts: Coordinate-stamped facts harvested from `(a)`.
         unresolved_gaps: Queries that could not be directly verified in `(a)`.
+        additional_authorities: Canonical rules discovered while investigating `(a)`.
     """
 
     section_id: str
+    harvest_summary: Optional[str] = None
     verified_facts: List[ExtractedFactItem] = Field(default_factory=list)
     unresolved_gaps: List[UnresolvedGapItem] = Field(default_factory=list)
+    additional_authorities: List[CanonicalAuthorityRef] = Field(default_factory=list)
 
 
 class SectionAuditResult(BaseModel):
@@ -493,6 +532,7 @@ class SectionAuditResult(BaseModel):
         check_b_congruence: Whether source quotes strictly entail the drafted claims.
         check_c_intent: Whether the section satisfies its Stage 1 `stated_intention`.
         passed: Overall pass/fail gate decision.
+        audit_rationale: Plain-English explanation of why the section passed or failed audit.
         critique_for_retry: Specific actionable critique if `passed` is False.
         node_verdicts: Per-claim (`n`) `NodeAudit` overrides produced by the auditor.
     """
@@ -502,6 +542,7 @@ class SectionAuditResult(BaseModel):
     check_b_congruence: bool
     check_c_intent: bool
     passed: bool
+    audit_rationale: Optional[str] = None
     critique_for_retry: Optional[str] = None
     node_verdicts: Dict[int, NodeAudit] = Field(default_factory=dict)
 
@@ -547,9 +588,17 @@ class SectionValidator:
                 f"Support items never referenced in text: {sorted(list(unused_supports))}"
             )
 
-        # Recursively check nested sub-references inside reasoning/calculation bodies
+        # Recursively check nested sub-references and mandatory plain-English
+        # explanations on reasoning/calculation/assumption cards.
         for group in section.supports:
             for item in group.items:
+                if item.type in ("reasoning", "calculation", "assumption") and not (
+                    item.body and item.body.strip()
+                ):
+                    errors.append(
+                        f"Node '{item.title}' (type={item.type}) under ref n={group.n} "
+                        "must include a non-empty plain-English `body` explanation."
+                    )
                 cls._validate_nested_body(group.n, item.body, item.sub_supports, errors)
 
         return (len(errors) == 0, errors)

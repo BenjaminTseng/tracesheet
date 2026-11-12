@@ -4,11 +4,19 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 from typing import List
 import openpyxl
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.llm import MockLLMProvider
+from app.models import (
+    CanonicalAuthorityRef,
+    CanonicalDocumentSynopsisDraft,
+    SectionOutput,
+    VerifiedFactLedger,
+)
 
 
 def _create_minimal_pdf(path: Path, lines: List[str]) -> None:
@@ -187,3 +195,295 @@ def test_stage2_tools_search_and_read_exact_locators(tmp_path: Path) -> None:
         c["cell_range"] == "B1" and c["raw_value"] == 0.7142
         for c in sheet_out["cells"]
     )
+
+
+def _create_minimal_docx(path: Path, heading: str, body: str) -> None:
+    """Creates a minimal valid `.docx` ZIP containing a heading and rule paragraph."""
+    doc_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>{heading}</w:t></w:r></w:p>'
+        f"<w:p><w:r><w:t>{body}</w:t></w:r></w:p>"
+        "</w:body></w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("word/document.xml", doc_xml)
+
+
+def test_canonical_ingestor_encodes_raw_corpus_and_rebuilds_index(tmp_path: Path) -> None:
+    """Verifies `CanonicalIngestor` encodes raw MD, PDF, DOCX, and CSV files and supports purge+rebuild."""
+    canonical_dir = tmp_path / "canonical"
+    raw_legal = canonical_dir / "raw" / "legal"
+    raw_policy = canonical_dir / "raw" / "policy"
+    raw_legal.mkdir(parents=True)
+    raw_policy.mkdir(parents=True)
+
+    (raw_legal / "venue_statute.md").write_text(
+        "# Venue Statutes\n\n"
+        "## 28 U.S.C. § 1391(b) — General Venue\n"
+        "A civil action may be brought in a judicial district in which any defendant resides.\n\n"
+        "## Forum Selection Clauses\n"
+        "Contractual forum selection clauses are prima facie valid unless unreasonable.\n",
+        encoding="utf-8",
+    )
+    _create_minimal_pdf(
+        raw_legal / "Removal_Rules.pdf",
+        ["28 U.S.C. 1441 permits removal within 30 days of service."],
+    )
+    _create_minimal_docx(
+        raw_policy / "Procurement_Policy.docx",
+        "Dual Approval Threshold",
+        "All vendor contracts exceeding $50,000 require CFO and GC sign-off.",
+    )
+    (raw_policy / "Rubric_Table.csv").write_text(
+        "Competency,Threshold,Notes\n"
+        "FINOPS_L5,>=25% unit-cost gain,Measured over trailing 4 quarters\n",
+        encoding="utf-8",
+    )
+
+    # Simulate an old stale encoded file that should be wiped on purge
+    stale_dir = canonical_dir / "obsolete"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "old_rules.md").write_text(
+        "## [AUTH:OLD-999] Obsolete Rule\n- **Title:** Old\n- **Verbatim Rule:** Outdated.\n",
+        encoding="utf-8",
+    )
+
+    ingestor = CanonicalIngestor(canonical_dir)
+    summary = ingestor.ingest_corpus(purge_encoded=True)
+
+    assert "obsolete/old_rules.md" in summary["purged_files"]
+    assert summary["files_processed"] == 4
+    assert summary["total_authorities"] >= 5
+
+    # Tier 1 compact catalog & JSON card verification
+    index_text = (canonical_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "Canonical Knowledge Catalog" in index_text
+    assert "legal/venue_statute.toc.md" in index_text
+    assert "[AUTH:LEGAL-VENUE-STATUTE-001]" not in index_text
+    assert "OLD-999" not in index_text
+
+    catalog_data = json.loads((canonical_dir / "catalog.json").read_text(encoding="utf-8"))
+    assert catalog_data["document_count"] == 4
+    assert any(d["doc_id"] == "legal/venue_statute.md" for d in catalog_data["documents"])
+
+    # Tier 2 per-document TOC verification
+    toc_text = (canonical_dir / "legal" / "venue_statute.toc.md").read_text(encoding="utf-8")
+    assert "[AUTH:LEGAL-VENUE-STATUTE-001]" in toc_text
+
+    router = CanonicalRouter(canonical_dir)
+    auths = router.list_authorities()
+    assert "AUTH:OLD-999" not in auths
+    assert "AUTH:LEGAL-VENUE-STATUTE-001" in auths
+    assert "judicial district in which any defendant resides" in auths["AUTH:LEGAL-VENUE-STATUTE-001"].verbatim_quote
+    assert any("1441" in a.verbatim_quote for a in auths.values())
+    assert any("$50,000" in a.verbatim_quote for a in auths.values())
+    assert any("FINOPS_L5" in a.verbatim_quote for a in auths.values())
+    # Ensure raw directory files still exist after purge
+    assert (raw_legal / "venue_statute.md").exists()
+
+
+def test_canonical_ingestor_handles_direct_unanchored_markdown(tmp_path: Path) -> None:
+    """Verifies un-anchored `.md` files placed directly under `canonical/<domain>/` get encoded safely."""
+    canonical_dir = tmp_path / "canonical"
+    finance_dir = canonical_dir / "finance"
+    finance_dir.mkdir(parents=True)
+    raw_file = finance_dir / "rev_rec_playbook.md"
+    raw_file.write_text(
+        "# ASC 606 Revenue Playbook\n\n"
+        "## Five-Step Model\n"
+        "Recognize revenue when control of promised goods or services transfers to the customer.\n",
+        encoding="utf-8",
+    )
+
+    ingestor = CanonicalIngestor(canonical_dir)
+    summary = ingestor.ingest_corpus(purge_encoded=False)
+    assert summary["files_processed"] == 1
+    assert (finance_dir / "rev_rec_playbook.authorities.md").exists()
+    assert raw_file.exists()
+
+    # Re-running with purge_encoded=True preserves the direct raw .md while rebuilding .authorities.md
+    rebuilt = ingestor.ingest_corpus(purge_encoded=True)
+    assert rebuilt["total_authorities"] == 1
+    assert raw_file.exists()
+
+
+def test_canonical_ingestor_llm_synopsis_and_stage1_tools(tmp_path: Path) -> None:
+    """Verifies LLM catalog card synthesis and Stage 1 browse/search/read tools."""
+    canonical_dir = tmp_path / "canonical"
+    raw_legal = canonical_dir / "raw" / "legal"
+    raw_legal.mkdir(parents=True)
+    (raw_legal / "bankruptcy_rules.md").write_text(
+        "# Federal Bankruptcy Rules\n\n"
+        "## Automatic Stay Scope\n"
+        "Filing stays all creditor collection actions against the estate.\n\n"
+        "## Cash Collateral\n"
+        "Debtor may not use cash collateral without consent or court order.\n",
+        encoding="utf-8",
+    )
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "CanonicalDocumentSynopsisDraft": CanonicalDocumentSynopsisDraft(
+                title="Federal Bankruptcy Rules Manual",
+                authority_tier="statute_regulation",
+                jurisdiction_scope="Federal Bankruptcy Courts",
+                scope_synopsis="Governs automatic stay protections and post-petition cash collateral restrictions.",
+            )
+        }
+    )
+    ingestor = CanonicalIngestor(canonical_dir)
+    ingestor.ingest_corpus(purge_encoded=True, llm=mock_llm)
+
+    index_text = (canonical_dir / "INDEX.md").read_text(encoding="utf-8")
+    assert "Federal Bankruptcy Rules Manual" in index_text
+    assert "Governs automatic stay protections" in index_text
+
+    router = CanonicalRouter(canonical_dir)
+    tools = {t.name: t for t in router.build_stage1_tools()}
+    assert {"browse_canonical_toc", "search_canonical_authorities", "read_canonical_authority"} <= set(tools)
+
+    toc_res = tools["browse_canonical_toc"].handler(doc_id="legal/bankruptcy_rules.md")
+    assert "Automatic Stay Scope" in toc_res["content"]
+
+    search_res = tools["search_canonical_authorities"].handler(query="cash collateral", domain="legal")
+    assert len(search_res["matches"]) == 1
+    matched_id = search_res["matches"][0]["auth_id"]
+
+    read_res = tools["read_canonical_authority"].handler(auth_id=matched_id)
+    assert "consent or court order" in read_res["verbatim_quote"]
+
+
+def test_verify_and_hydrate_ledger_and_section_citations(tmp_path: Path) -> None:
+    """Verifies programmatic Stage 2 ledger grounding and Stage 3 citation/quote checking."""
+    matters_root = tmp_path / "matters"
+    raw_dir = matters_root / "m_check" / "inputs" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "Contract.md").write_text(
+        "Section 4.1 Termination requires 30 days advance written notice.\n",
+        encoding="utf-8",
+    )
+    ingestor = MatterIngestor(matters_root)
+    ingestor.ingest_matter("m_check")
+
+    ledger = VerifiedFactLedger.model_validate(
+        {
+            "section_id": "sec_01",
+            "verified_facts": [
+                {
+                    "fact_id": "f_real",
+                    "query_addressed": "Notice window?",
+                    "title": "Notice Clause",
+                    "quote": "requires 30 days advance written notice.",
+                    "locator": {
+                        "source_type": "markdown",
+                        "file_name": "Contract.md",
+                        "locator_key": "CONTRACT-SEC-1",
+                    },
+                },
+                {
+                    "fact_id": "f_fake_loc",
+                    "query_addressed": "Fee cap?",
+                    "title": "Imaginary Clause",
+                    "quote": "Liability capped at $10.",
+                    "locator": {
+                        "source_type": "markdown",
+                        "file_name": "Contract.md",
+                        "locator_key": "CONTRACT-SEC-999",
+                    },
+                },
+            ],
+            "unresolved_gaps": [],
+        }
+    )
+
+    verified_ledger, warnings = ingestor.verify_and_hydrate_ledger("m_check", ledger)
+    assert len(verified_ledger.verified_facts) == 1
+    assert verified_ledger.verified_facts[0].fact_id == "f_real"
+    assert verified_ledger.verified_facts[0].locator.payload_hash is not None
+    assert len(warnings) == 1
+    assert "CONTRACT-SEC-999" in verified_ledger.unresolved_gaps[0]
+
+    auth = CanonicalAuthorityRef(
+        auth_id="AUTH:NOTICE-01",
+        title="Notice Enforceability",
+        verbatim_quote="Written notice deadlines are strictly enforced.",
+        source_file="legal/contracts.md",
+    )
+
+    bad_section = SectionOutput.model_validate(
+        {
+            "section_id": "sec_01",
+            "section_title": "Notice",
+            "text": "Notice <ref n='1'>requires 30 days</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "Wrong Quote",
+                            "quote": "Completely fabricated sentence not in file.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Contract.md",
+                                "locator_key": "CONTRACT-SEC-1",
+                            },
+                        },
+                        {
+                            "type": "reasoning",
+                            "title": "Rule Application",
+                            "body": "Applies <ref n='101'>the notice rule</ref>.",
+                            "sub_supports": [
+                                {
+                                    "n": 101,
+                                    "type": "authority",
+                                    "title": "[AUTH:UNKNOWN-999] Bogus",
+                                    "quote": "Fabricated holding never seen before.",
+                                }
+                            ],
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    cit_errors = ingestor.verify_section_citations(bad_section, verified_ledger, [auth])
+    assert any("does not match verified ledger text" in e for e in cit_errors)
+    assert any("AUTH:UNKNOWN-999" in e for e in cit_errors)
+    assert any("does not match canonical verbatim text" in e for e in cit_errors)
+
+    good_commonsense_section = SectionOutput.model_validate(
+        {
+            "section_id": "sec_01",
+            "section_title": "Notice",
+            "text": "Notice <ref n='1'>requires 30 days</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "evidence",
+                            "title": "Notice Clause",
+                            "quote": "requires 30 days advance written notice.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Contract.md",
+                                "locator_key": "CONTRACT-SEC-1",
+                            },
+                        },
+                        {
+                            "type": "reasoning",
+                            "title": "Commonsense Day Count",
+                            "body": "Sending notice only 10 days ahead fails a 30-day requirement.",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    clean_errors = ingestor.verify_section_citations(
+        good_commonsense_section, verified_ledger, []
+    )
+    assert clean_errors == []

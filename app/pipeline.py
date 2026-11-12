@@ -118,10 +118,11 @@ class AuditPipelineRunner:
     # ------------------------------------------------------------------
 
     def run_stage1_outline(self, matter_id: str, question: str) -> OutlinePlan:
-        """Decomposes user request `(c)` into sections mapped to canonical rules `(b)`.
+        """Decomposes user request `(c)` into sections routed over catalog `(b)`.
 
-        Hydrates exact `verbatim_quote` and `url` fields from `CanonicalRouter` so
-        downstream drafting always receives unmodified canonical authority text.
+        Reads ONLY the compact Tier 1 `canonical/INDEX.md` catalog and gives Stage 1
+        canonical browse/search/read tools so large corpora stay token-efficient.
+        Hydrates exact `verbatim_quote` and `url` fields from `CanonicalRouter`.
 
         Args:
             matter_id: Target project/matter identifier.
@@ -131,29 +132,34 @@ class AuditPipelineRunner:
             Validated `OutlinePlan` with hydrated canonical authorities.
         """
         index_md = self.canonical_router.get_index_markdown()
-        auth_context = self.canonical_router.get_authorities_context()
+        stage1_tools = self.canonical_router.build_stage1_tools()
         matter_info = next(
             (m for m in self.matter_ingestor.list_matters() if m["matter_id"] == matter_id),
             {"matter_id": matter_id, "raw_files": []},
         )
 
         system_instruction = (
-            "You are the Lead Analytical Architect. Decompose the user's question into "
-            "ordered, non-overlapping sections. Map each section to relevant [AUTH:...] "
-            "authorities from the Canonical Knowledge Corpus (b) and specify concrete "
-            "factual queries that must be verified against the project files (a)."
+            "You are the Lead Analytical Architect. Decompose the user's question (c) into "
+            "ordered, non-overlapping sections. Read the high-level Canonical Knowledge Catalog "
+            "(INDEX.md) first. Whenever a document looks relevant, call `browse_canonical_toc`, "
+            "`search_canonical_authorities`, and `read_canonical_authority` to identify exact "
+            "[AUTH:...] rules to assign to that section's `governing_authorities`. If a section "
+            "depends solely on project evidence (a) plus arithmetic or commonsense reasoning, "
+            "leave `governing_authorities` empty (`[]`) rather than forcing irrelevant citations. "
+            "For EVERY section, fill `routing_rationale` in plain English explaining why you chose "
+            "those rules (or why pure evidence/commonsense suffices) and what facts Stage 2 must verify."
         )
         prompt = (
             f"### User Request (c)\n{question}\n\n"
             f"### Available Project Files (a) in matter '{matter_id}'\n"
             f"{json.dumps(matter_info.get('raw_files', []), indent=2)}\n\n"
-            f"### Canonical Knowledge Index (b)\n{index_md}\n\n"
-            f"### Canonical Authority Entries\n{auth_context}\n\n"
-            "Emit an OutlinePlan JSON covering every part of the user's question."
+            f"### Canonical Knowledge Catalog (b) — INDEX.md\n{index_md}\n\n"
+            "Inspect relevant canonical TOCs/authorities with your tools if needed, then emit an OutlinePlan JSON."
         )
-        plan = self.llm.generate_structured(
+        plan = self.llm.run_tool_loop(
             prompt=prompt,
             system_instruction=system_instruction,
+            tools=stage1_tools,
             response_model=OutlinePlan,
         )
 
@@ -177,37 +183,41 @@ class AuditPipelineRunner:
         section_plan: SectionPlan,
         extra_queries: Optional[List[str]] = None,
     ) -> VerifiedFactLedger:
-        """Runs a tool-assisted fact extraction loop over indexed project inputs `(a)`.
+        """Runs a tool-assisted fact & authority verification loop over `(a)` and `(b)`.
 
-        Args:
-            matter_id: Project identifier whose `inputs/indexed/` should be searched.
-            section_plan: Stage 1 plan defining `stated_intention` and `required_fact_queries`.
-            extra_queries: Optional additional queries generated from human review feedback.
-
-        Returns:
-            `VerifiedFactLedger` containing coordinate-stamped facts and unresolved gaps.
+        Combines project file search tools `(a)` with canonical discovery tools `(b)`,
+        verifies and hydrates returned locators/values against disk via
+        `MatterIngestor.verify_and_hydrate_ledger`, and merges any newly discovered
+        canonical authorities into `section_plan.governing_authorities`.
         """
         # Ensure deterministic ingestion has run before harvesting
         _, _, indexed_dir, _ = self.matter_ingestor._matter_dirs(matter_id)
         if not (indexed_dir / "manifest.json").exists():
             self.matter_ingestor.ingest_matter(matter_id)
 
-        tools = self.matter_ingestor.build_stage2_tools(matter_id)
+        tools = (
+            self.matter_ingestor.build_stage2_tools(matter_id)
+            + self.canonical_router.build_stage1_tools()
+        )
         queries = list(section_plan.required_fact_queries)
         if extra_queries:
             queries.extend(q for q in extra_queries if q not in queries)
 
         system_instruction = (
-            "You are a Forensic Fact Extractor. Use the provided search and spreadsheet "
-            "tools to gather exact evidence from the coordinate-indexed project inputs (a). "
-            "You MUST copy the exact `locator` dictionary and verbatim `quote` (or `raw_value` "
-            "and `formula`) returned by the tools. Never invent page numbers, bounding boxes, "
-            "or cell coordinates. Record any unanswerable queries in `unresolved_gaps`."
+            "You are a Forensic Fact Extractor. Use the project search and spreadsheet tools "
+            "to gather exact evidence from the coordinate-indexed project inputs (a). You MUST "
+            "copy the exact `locator` dictionary and verbatim `quote` (or `raw_value` and `formula`) "
+            "returned by the tools—never invent page numbers, locator keys, or cell coordinates. "
+            "If evidence reveals an unanticipated issue governed by a canonical rule not listed "
+            "under Governing Authorities, use the canonical browse/search/read tools to fetch it "
+            "and list it in `additional_authorities`. Record unanswerable queries in `unresolved_gaps`, "
+            "and write a concise plain-English `harvest_summary` describing what you found or missed."
         )
         prompt = (
             f"Section ID: {section_plan.section_id}\n"
             f"Section Title: {section_plan.section_title}\n"
-            f"Stated Intention: {section_plan.stated_intention}\n\n"
+            f"Stated Intention: {section_plan.stated_intention}\n"
+            f"Stage 1 Routing Rationale: {section_plan.routing_rationale or 'N/A'}\n\n"
             f"Governing Authorities (b):\n"
             f"{json.dumps([a.model_dump() for a in section_plan.governing_authorities], indent=2)}\n\n"
             f"Required Fact Queries:\n"
@@ -222,6 +232,22 @@ class AuditPipelineRunner:
             response_model=VerifiedFactLedger,
         )
         ledger.section_id = section_plan.section_id
+
+        # Programmatic L1 locator + quote verification and disk hydration
+        ledger, _ = self.matter_ingestor.verify_and_hydrate_ledger(matter_id, ledger)
+
+        # Hydrate any newly discovered canonical authorities and merge into section_plan
+        hydrated_extra = []
+        existing_ids = {a.auth_id for a in section_plan.governing_authorities}
+        for ref in ledger.additional_authorities:
+            canonical_entry = self.canonical_router.get_authority(ref.auth_id)
+            resolved = canonical_entry if canonical_entry is not None else ref
+            hydrated_extra.append(resolved)
+            if resolved.auth_id not in existing_ids:
+                section_plan.governing_authorities.append(resolved)
+                existing_ids.add(resolved.auth_id)
+        ledger.additional_authorities = hydrated_extra
+
         return ledger
 
     # ------------------------------------------------------------------
@@ -239,30 +265,24 @@ class AuditPipelineRunner:
     ) -> SectionOutput:
         """Drafts a Tier-1 `SectionOutput` grounded strictly in `ledger` and `(b)`.
 
-        Automatically retries if `SectionValidator.validate_section` detects
-        orphaned `<ref n="...">` tags, unused supports, or broken `<ref n="10X">`
-        sub-references.
-
-        Args:
-            section_plan: Stage 1 plan for this section.
-            ledger: Harvested coordinate-stamped facts and gaps from `(a)`.
-            prior_draft: Optional previous draft when regenerating from feedback.
-            review_comments: Optional human review comments targeting this section.
-            audit_critique: Optional critique from Stage 4's 3-Point Auditor.
-            max_validation_retries: Maximum retries for structural tag parity errors.
-
-        Returns:
-            Validated Tier-1 `SectionOutput`.
+        Automatically retries if `SectionValidator.validate_section` or
+        `MatterIngestor.verify_section_citations` detects structural tag parity errors,
+        missing plain-English explanations on reasoning/calculation/assumption nodes,
+        or unverified `L1`/`L2` citations.
         """
         system_instruction = (
             "You are an expert legal and analytical author. Follow the Closed-World Evidence "
-            "Constraint: cite ONLY facts, quotes, formulas, and `locator` objects from the "
+            "Constraint: cite ONLY verified facts, quotes, formulas, and `locator` objects from the "
             "VerifiedFactLedger (for L1 evidence/calculations) and Governing Authorities (for L2+ "
             "authorities inside reasoning `sub_supports`). Wrap every substantive empirical or "
             "legal claim in `<ref n='1'>clause text</ref>` using sequential integers 1, 2, 3... "
             "Every `<ref n='X'>` in `text` MUST have a matching SupportGroup `n=X` in `supports`. "
             "Any `<ref n='10X'>` inside a reasoning/calculation `body` MUST have a matching "
-            "SubSupportItem `n=10X` in `sub_supports`."
+            "SubSupportItem `n=10X` in `sub_supports`. When a claim relies on L1 evidence plus "
+            "commonsense or arithmetic rather than a formal canonical rule, leave `sub_supports=[]` "
+            "and write a clear plain-English `body` explaining the logic. Every `reasoning`, "
+            "`calculation`, or `assumption` SupportItem MUST have a non-empty plain-English `body`. "
+            "Always populate `drafting_notes` explaining how you connected facts, authorities, or commonsense."
         )
 
         feedback_block = ""
@@ -283,7 +303,9 @@ class AuditPipelineRunner:
         base_prompt = (
             f"Section ID: {section_plan.section_id}\n"
             f"Section Title: {section_plan.section_title}\n"
-            f"Stated Intention: {section_plan.stated_intention}\n\n"
+            f"Stated Intention: {section_plan.stated_intention}\n"
+            f"Stage 1 Routing Rationale: {section_plan.routing_rationale or 'N/A'}\n"
+            f"Stage 2 Harvest Summary: {ledger.harvest_summary or 'N/A'}\n\n"
             f"### Verified Fact Ledger (a)\n{ledger.model_dump_json(indent=2)}\n\n"
             f"### Governing Canonical Authorities (b)\n"
             f"{json.dumps([a.model_dump() for a in section_plan.governing_authorities], indent=2)}"
@@ -306,25 +328,29 @@ class AuditPipelineRunner:
             if not draft.section_title:
                 draft.section_title = section_plan.section_title
 
-            is_valid, errors = SectionValidator.validate_section(draft)
-            if is_valid:
+            is_valid, struct_errors = SectionValidator.validate_section(draft)
+            cit_errors = self.matter_ingestor.verify_section_citations(
+                draft, ledger, section_plan.governing_authorities
+            )
+            all_errors = struct_errors + cit_errors
+            if is_valid and not all_errors:
                 return draft
 
-            last_errors = errors
+            last_errors = all_errors
             logger.warning(
-                "Section '%s' failed SectionValidator (attempt %d): %s",
+                "Section '%s' failed Stage 3 validation/citation check (attempt %d): %s",
                 section_plan.section_id,
                 attempt + 1,
-                errors,
+                all_errors,
             )
             prompt = (
                 f"{base_prompt}\n\n"
-                f"### Structural Validation Errors to Fix\n"
-                + "\n".join(f"- {e}" for e in errors)
+                f"### Structural & Citation Verification Errors to Fix\n"
+                + "\n".join(f"- {e}" for e in all_errors)
             )
 
         raise ValueError(
-            f"Section '{section_plan.section_id}' failed SectionValidator after "
+            f"Section '{section_plan.section_id}' failed SectionValidator/Citation check after "
             f"{max_validation_retries + 1} attempts: {last_errors}"
         )
 
@@ -355,11 +381,14 @@ class AuditPipelineRunner:
 
         system_instruction = (
             "You are an Independent Audit Gate. Verify three invariants: "
-            "(a) check_a_relevance: every support item directly backs its `<ref n>` clause; "
+            "(a) check_a_relevance: every support item (including pure commonsense or arithmetic reasoning) "
+            "logically backs its `<ref n>` clause; "
             "(b) check_b_congruence: surrounding source context strictly entails each claim "
             "without cherry-picking or dropping disqualifying exceptions; "
             "(c) check_c_intent: the section answers its stated_intention. "
-            "Return passed=False with `critique_for_retry` if any factual distortion exists."
+            "Always populate `audit_rationale` explaining why Checks A/B/C passed or failed, "
+            "plus `node_verdicts` with clear `evaluator_note` explanations. "
+            "Return passed=False with `critique_for_retry` if any factual or logical distortion exists."
         )
         prompt = (
             f"Stated Intention: {section_plan.stated_intention}\n\n"
@@ -383,10 +412,11 @@ class AuditPipelineRunner:
         prior_draft: Optional[SectionOutput] = None,
         review_comments: Optional[List[ReviewComment]] = None,
         max_audit_retries: int = 2,
-    ) -> SectionOutput:
+    ) -> Tuple[SectionOutput, SectionAuditResult]:
         """Runs Stage 3 + Stage 4 Section Auditor with up to 2 congruence retries."""
         critique: Optional[str] = None
         draft: Optional[SectionOutput] = None
+        audit_res: Optional[SectionAuditResult] = None
 
         for attempt in range(max_audit_retries + 1):
             draft = self.run_stage3_section_drafter(
@@ -402,7 +432,7 @@ class AuditPipelineRunner:
                 for grp in draft.supports:
                     if grp.n in audit_res.node_verdicts:
                         grp.audit = audit_res.node_verdicts[grp.n]
-                return draft
+                return draft, audit_res
 
             critique = audit_res.critique_for_retry or (
                 f"Failed invariants: relevance={audit_res.check_a_relevance}, "
@@ -415,8 +445,8 @@ class AuditPipelineRunner:
                 critique,
             )
 
-        assert draft is not None
-        return draft
+        assert draft is not None and audit_res is not None
+        return draft, audit_res
 
     def run_stage4_cross_section_tensions(
         self, sections: List[SectionOutput]
@@ -428,19 +458,37 @@ class AuditPipelineRunner:
         claim_summaries = []
         tag_re = re.compile(r"<ref\s+n=['\"](\d+)['\"]>(.*?)</ref>", re.DOTALL)
         for sec in sections:
+            supports_by_n = {grp.n: grp for grp in sec.supports}
             for n_str, clause in tag_re.findall(sec.text):
+                grp = supports_by_n.get(int(n_str))
+                l1_supports = []
+                if grp:
+                    for item in grp.items:
+                        l1_supports.append(
+                            {
+                                "type": item.type,
+                                "title": item.title,
+                                "quote": item.quote,
+                                "formula": item.formula,
+                                "body": item.body,
+                            }
+                        )
                 claim_summaries.append(
                     {
                         "claim_id": f"claim_{sec.section_id}_{n_str}",
                         "section_id": sec.section_id,
+                        "section_title": sec.section_title,
+                        "full_section_text": sec.text,
                         "clause": clause.strip(),
+                        "l1_supports": l1_supports,
                     }
                 )
 
         system_instruction = (
-            "You are a Cross-Section Consistency Auditor. Inspect all claims across sections "
-            "and flag only genuine numerical discrepancies, scope conflicts, or logical tensions. "
-            "Use exact `claim_id` strings in `involved_claim_ids`."
+            "You are a Cross-Section Consistency Auditor. Inspect all claims, full section context, "
+            "and underlying L1 support values/formulas across sections. Flag only genuine numerical "
+            "discrepancies, scope conflicts, or logical tensions. Use exact `claim_id` strings in "
+            "`involved_claim_ids`."
         )
         prompt = f"Claims across sections:\n{json.dumps(claim_summaries, indent=2)}"
         res = self.llm.generate_structured(
@@ -541,6 +589,7 @@ class AuditPipelineRunner:
 
         ledgers: Dict[str, VerifiedFactLedger] = {}
         sections: List[SectionOutput] = []
+        audits: Dict[str, SectionAuditResult] = {}
 
         for sec_plan in plan.sections:
             self._emit_progress(
@@ -556,8 +605,9 @@ class AuditPipelineRunner:
                 "stage_3_4",
                 f"Drafting and auditing section '{sec_plan.section_title}'...",
             )
-            section_out = self._draft_and_audit_section(matter_id, sec_plan, ledger)
+            section_out, audit_res = self._draft_and_audit_section(matter_id, sec_plan, ledger)
             sections.append(section_out)
+            audits[sec_plan.section_id] = audit_res
 
         self._emit_progress(progress_callback, "stage_4_global", "Checking cross-section tensions and compiling DAG...")
         tensions = self.run_stage4_cross_section_tensions(sections)
@@ -581,6 +631,7 @@ class AuditPipelineRunner:
             "outline_plan": plan.model_dump(),
             "ledgers": {k: v.model_dump() for k, v in ledgers.items()},
             "sections": [s.model_dump() for s in sections],
+            "audits": {k: v.model_dump() for k, v in audits.items()},
         }
         self.save_bundle(bundle)
         self._emit_progress(progress_callback, "completed", f"Compiled bundle '{slug}' with {bundle.audit_summary.total_claims} claims.")
@@ -791,6 +842,9 @@ class AuditPipelineRunner:
             comments_by_section.setdefault(c.section_id, []).append(c)
 
         plan_by_sec = {s.section_id: s for s in plan.sections}
+        audits_map: Dict[str, Dict[str, Any]] = dict(
+            (bundle.stage_artifacts or {}).get("audits", {})
+        )
 
         for sec_id, sec_comments in comments_by_section.items():
             sec_plan = plan_by_sec.get(sec_id)
@@ -838,13 +892,14 @@ class AuditPipelineRunner:
                 "stage_3_4",
                 f"Regenerating and auditing '{sec_plan.section_title}'...",
             )
-            updated_sec = self._draft_and_audit_section(
+            updated_sec, audit_res = self._draft_and_audit_section(
                 matter_id=matter_id,
                 section_plan=sec_plan,
                 ledger=ledger,
                 prior_draft=prior_sec,
                 review_comments=sec_comments,
             )
+            audits_map[sec_id] = audit_res.model_dump()
 
             # Deterministically honor explicit human status overrides anchored to claims
             for c in sec_comments:
@@ -896,6 +951,7 @@ class AuditPipelineRunner:
             "outline_plan": plan.model_dump(),
             "ledgers": {k: v.model_dump() for k, v in ledgers.items()},
             "sections": [s.model_dump() for s in ordered_sections],
+            "audits": audits_map,
         }
         self.save_bundle(recompiled)
         self._emit_progress(progress_callback, "completed", "Batch feedback applied and DAG recompiled.")

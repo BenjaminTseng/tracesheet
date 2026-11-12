@@ -10,12 +10,12 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import LLMProvider, create_llm_provider
 from app.models import (
     AuditStatus,
@@ -120,9 +120,49 @@ class RegenerateRequest(BaseModel):
     smooth_transitions: bool = True
 
 
+class CanonicalIngestRequest(BaseModel):
+    """Request body for rebuilding canonical `[AUTH:...]` artifacts and `INDEX.md`."""
+
+    purge_encoded: bool = False
+
+
 # =====================================================================
 # Runtime Service Resolution Helpers
 # =====================================================================
+
+def _get_corpus_services(
+    request: Request,
+) -> Tuple[CanonicalRouter, MatterIngestor, CanonicalIngestor]:
+    """Resolves `CanonicalRouter`, `MatterIngestor`, and `CanonicalIngestor` without an LLM client."""
+    state = request.app.state
+    canonical_router = getattr(state, "canonical_router", None) or CanonicalRouter(
+        BASE_DIR / "canonical"
+    )
+    matter_ingestor = getattr(state, "matter_ingestor", None) or MatterIngestor(
+        BASE_DIR / "matters"
+    )
+    canonical_ingestor = getattr(state, "canonical_ingestor", None) or CanonicalIngestor(
+        canonical_router.canonical_dir
+    )
+    return canonical_router, matter_ingestor, canonical_ingestor
+
+
+def _get_optional_llm_provider(request: Request) -> Optional[LLMProvider]:
+    """Resolves an `LLMProvider` if configured or attached in `app.state`, else returns `None`."""
+    state = request.app.state
+    explicit = getattr(state, "llm_provider", None)
+    if explicit is not None:
+        return explicit
+    cfg = getattr(state, "llm_config", {}) or {}
+    try:
+        return create_llm_provider(
+            provider_name=cfg.get("provider", "gemini"),
+            model=cfg.get("model"),
+            api_key=cfg.get("api_key"),
+        )
+    except Exception:
+        return None
+
 
 def _get_services(
     request: Request,
@@ -132,13 +172,8 @@ def _get_services(
     Respects test overrides attached to `app.state`, falling back to workspace
     directories and CLI `--provider` / `--model` configuration.
     """
+    canonical_router, matter_ingestor, _ = _get_corpus_services(request)
     state = request.app.state
-    canonical_router = getattr(state, "canonical_router", None) or CanonicalRouter(
-        BASE_DIR / "canonical"
-    )
-    matter_ingestor = getattr(state, "matter_ingestor", None) or MatterIngestor(
-        BASE_DIR / "matters"
-    )
     llm_provider = getattr(state, "llm_provider", None)
     if llm_provider is None:
         cfg = getattr(state, "llm_config", {}) or {}
@@ -148,6 +183,16 @@ def _get_services(
             api_key=cfg.get("api_key"),
         )
     return canonical_router, matter_ingestor, llm_provider
+
+
+def _persist_bundle(bundle: CompiledBundle, matter_ingestor: MatterIngestor) -> None:
+    """Persists bundle JSON to disk without requiring an active LLM provider."""
+    if not bundle.matter_id or not bundle.bundle_id:
+        return
+    _, _, _, bundles_dir = matter_ingestor._matter_dirs(bundle.matter_id)
+    bundles_dir.mkdir(parents=True, exist_ok=True)
+    out_path = bundles_dir / f"{bundle.bundle_id}.json"
+    out_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
 
 
 def _sanitize_slug(raw: str) -> str:
@@ -286,13 +331,58 @@ async def compile_intermediate_sections(
 
 
 # =====================================================================
-# Project Matters, Ingestion & Agentic Q&A Endpoints
+# Project Matters, Canonical Corpus, Ingestion & Agentic Q&A Endpoints
 # =====================================================================
+
+@router.get("/api/canonical")
+async def get_canonical_corpus(request: Request) -> Dict[str, Any]:
+    """Returns canonical `INDEX.md`, active `[AUTH:...]` blocks, and raw source inventory."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    return canonical_ingestor.get_corpus_status()
+
+
+@router.post("/api/canonical/upload")
+async def upload_canonical_file(
+    request: Request,
+    domain: str = Form("general"),
+    file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    """Uploads a raw canonical document into `canonical/raw/<domain>/` and encodes it."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    domain_dir = canonical_ingestor.create_domain(domain)
+
+    safe_name = Path(file.filename or "canonical_source.md").name
+    dest_path = domain_dir / safe_name
+    content = await file.read()
+    dest_path.write_bytes(content)
+
+    optional_llm = _get_optional_llm_provider(request)
+    summary = await asyncio.to_thread(canonical_ingestor.ingest_corpus, False, optional_llm)
+    return {
+        "domain": domain_dir.name,
+        "uploaded_file": safe_name,
+        "summary": summary,
+        **canonical_ingestor.get_corpus_status(),
+    }
+
+
+@router.post("/api/canonical/ingest")
+async def ingest_canonical_corpus(
+    request: Request,
+    req: Optional[CanonicalIngestRequest] = None,
+) -> Dict[str, Any]:
+    """Re-encodes raw canonical files into `[AUTH:...]` Markdown and rebuilds `INDEX.md`."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    purge = req.purge_encoded if req is not None else False
+    optional_llm = _get_optional_llm_provider(request)
+    summary = await asyncio.to_thread(canonical_ingestor.ingest_corpus, purge, optional_llm)
+    return {"summary": summary, **canonical_ingestor.get_corpus_status()}
+
 
 @router.get("/api/matters")
 async def list_matters_and_corpus(request: Request) -> Dict[str, Any]:
     """Lists all project matters `(a)` and standing canonical authorities `(b)`."""
-    canonical_router, matter_ingestor, _ = _get_services(request)
+    canonical_router, matter_ingestor, _ = _get_corpus_services(request)
     authorities = [
         auth.model_dump() for auth in canonical_router.list_authorities().values()
     ]
@@ -305,7 +395,7 @@ async def list_matters_and_corpus(request: Request) -> Dict[str, Any]:
 @router.post("/api/matters")
 async def create_matter(req: CreateMatterRequest, request: Request) -> Dict[str, Any]:
     """Creates a new isolated project matter workspace under `matters/<matter_id>`."""
-    _, matter_ingestor, _ = _get_services(request)
+    _, matter_ingestor, _ = _get_corpus_services(request)
     slug = _sanitize_slug(req.matter_id)
     matter_dir = matter_ingestor.create_matter(slug)
     return {"matter_id": slug, "path": str(matter_dir)}
@@ -318,7 +408,7 @@ async def upload_matter_file(
     file: UploadFile = File(...),
 ) -> Dict[str, Any]:
     """Uploads a raw project file (`.pdf`, `.xlsx`, `.csv`, `.md`, `.txt`) and ingests it."""
-    _, matter_ingestor, _ = _get_services(request)
+    _, matter_ingestor, _ = _get_corpus_services(request)
     slug = _sanitize_slug(matter_id)
     matter_ingestor.create_matter(slug)
     _, raw_dir, _, _ = matter_ingestor._matter_dirs(slug)
@@ -335,7 +425,7 @@ async def upload_matter_file(
 @router.post("/api/matters/{matter_id}/ingest")
 async def ingest_matter_inputs(matter_id: str, request: Request) -> Dict[str, Any]:
     """Runs deterministic coordinate extraction on `matters/<matter_id>/inputs/raw/`."""
-    _, matter_ingestor, _ = _get_services(request)
+    _, matter_ingestor, _ = _get_corpus_services(request)
     slug = _sanitize_slug(matter_id)
     manifest = await asyncio.to_thread(matter_ingestor.ingest_matter, slug)
     return manifest
@@ -444,9 +534,8 @@ async def add_review_comment(
     )
     bundle.comments.append(comment)
 
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
-    runner.save_bundle(bundle)
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    _persist_bundle(bundle, matter_ingestor)
     return bundle
 
 
@@ -463,9 +552,8 @@ async def delete_review_comment(
     bundle = BUNDLE_STORE[bundle_id]
     bundle.comments = [c for c in bundle.comments if c.comment_id != comment_id]
 
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
-    runner.save_bundle(bundle)
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    _persist_bundle(bundle, matter_ingestor)
     return bundle
 
 

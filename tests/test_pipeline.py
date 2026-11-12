@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import MockLLMProvider
 from app.models import AuditStatus, NodeAudit, ReviewComment
 from app.pipeline import (
@@ -527,3 +527,198 @@ def test_smart_feedback_regeneration_skips_stage2_for_prose_edits_and_runs_stage
     assert any(c["model"] == "VerifiedFactLedger" for c in fact_llm.call_log)
     assert "Wilmington treasury approvals" in updated_b.artifact.sections[0].content
     assert len(updated_b.stage_artifacts["ledgers"]["sec_01"]["verified_facts"]) == 2
+
+
+def test_stage1_catalog_isolation_stage2_canonical_discovery_and_trace_artifacts(
+    tmp_path: Path,
+) -> None:
+    """Verifies Stage 1 reads only INDEX.md, Stage 2 discovers extra rules, and explanations/audits persist."""
+    canonical_dir = tmp_path / "canonical"
+    raw_legal = canonical_dir / "raw" / "legal"
+    raw_legal.mkdir(parents=True)
+    (raw_legal / "bankruptcy_code.md").write_text(
+        "# Bankruptcy Code\n\n"
+        "## 11 U.S.C. § 362 — Automatic Stay\n"
+        "Filing a petition operates as an immediate automatic stay of collection actions.\n\n"
+        "## 11 U.S.C. § 547 — Preference Clawback\n"
+        "Transfers made within 90 days before filing while insolvent may be avoided.\n",
+        encoding="utf-8",
+    )
+    CanonicalIngestor(canonical_dir).ingest_corpus(purge_encoded=True)
+    router = CanonicalRouter(canonical_dir)
+
+    matters_root = tmp_path / "matters"
+    raw_matter = matters_root / "m_bankruptcy" / "inputs" / "raw"
+    raw_matter.mkdir(parents=True)
+    (raw_matter / "Docket.md").write_text(
+        "Debtor filed a voluntary Chapter 11 petition on March 1, 2026.\n\n"
+        "Vendor X received a $50,000 payment 45 days before filing.\n",
+        encoding="utf-8",
+    )
+    ingestor = MatterIngestor(matters_root)
+    ingestor.ingest_matter("m_bankruptcy")
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Petition Timing & Transfer Check",
+                "executive_summary_intent": "Assess stay applicability and simple date arithmetic.",
+                "sections": [
+                    {
+                        "section_id": "sec_01_stay",
+                        "section_title": "I. Petition & Transfer Review",
+                        "stated_intention": "Determine filing stay trigger and days elapsed before filing.",
+                        "routing_rationale": "Selected 11 U.S.C. § 362 from catalog; transfer arithmetic uses L1 dates.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:LEGAL-BANKRUPTCY-CODE-001",
+                                "title": "11 U.S.C. § 362 — Automatic Stay",
+                                "verbatim_quote": "Placeholder",
+                            }
+                        ],
+                        "required_fact_queries": ["When was the petition filed and what payments occurred?"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01_stay",
+                "harvest_summary": "Verified filing date and 45-day payment in Docket.md; discovered § 547 clawback rule.",
+                "verified_facts": [
+                    {
+                        "fact_id": "f_petition",
+                        "query_addressed": "When was the petition filed?",
+                        "title": "Chapter 11 Filing",
+                        "quote": "Debtor filed a voluntary Chapter 11 petition on March 1, 2026.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Docket.md",
+                            "locator_key": "DOCKET-SEC-1",
+                        },
+                    },
+                    {
+                        "fact_id": "f_transfer",
+                        "query_addressed": "What payments occurred?",
+                        "title": "Pre-Petition Transfer",
+                        "quote": "Vendor X received a $50,000 payment 45 days before filing.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Docket.md",
+                            "locator_key": "DOCKET-SEC-2",
+                        },
+                    },
+                ],
+                "additional_authorities": [
+                    {
+                        "auth_id": "AUTH:LEGAL-BANKRUPTCY-CODE-002",
+                        "title": "11 U.S.C. § 547 — Preference Clawback",
+                        "verbatim_quote": "Placeholder hydrated from disk",
+                    }
+                ],
+                "unresolved_gaps": [],
+            },
+            "SectionOutput": {
+                "section_id": "sec_01_stay",
+                "section_title": "I. Petition & Transfer Review",
+                "drafting_notes": "Combined Docket dates with Stage 2-discovered § 547 authority and 45<90 arithmetic.",
+                "text": (
+                    "The <ref n='1'>Chapter 11 petition stays collections</ref> and "
+                    "<ref n='2'>the 45-day transfer falls within the 90-day window</ref>."
+                ),
+                "supports": [
+                    {
+                        "n": 1,
+                        "title": "Automatic Stay",
+                        "items": [
+                            {
+                                "type": "evidence",
+                                "title": "Docket Entry 1",
+                                "quote": "Debtor filed a voluntary Chapter 11 petition on March 1, 2026.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Docket.md",
+                                    "locator_key": "DOCKET-SEC-1",
+                                },
+                            },
+                            {
+                                "type": "reasoning",
+                                "title": "Stay Activation",
+                                "body": "Filing activates <ref n='101'>the statutory automatic stay</ref>.",
+                                "sub_supports": [
+                                    {
+                                        "n": 101,
+                                        "type": "authority",
+                                        "title": "[AUTH:LEGAL-BANKRUPTCY-CODE-001] 11 U.S.C. § 362",
+                                        "quote": "Filing a petition operates as an immediate automatic stay of collection actions.",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "n": 2,
+                        "title": "90-Day Preference Window Arithmetic",
+                        "items": [
+                            {
+                                "type": "evidence",
+                                "title": "Docket Entry 2",
+                                "quote": "Vendor X received a $50,000 payment 45 days before filing.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Docket.md",
+                                    "locator_key": "DOCKET-SEC-2",
+                                },
+                            },
+                            {
+                                "type": "calculation",
+                                "title": "Elapsed Lookback Comparison",
+                                "formula": "45 < 90",
+                                "body": "Because 45 days is strictly less than 90 days, the transfer sits inside the lookback window under <ref n='102'>11 U.S.C. § 547</ref>.",
+                                "sub_supports": [
+                                    {
+                                        "n": 102,
+                                        "type": "authority",
+                                        "title": "[AUTH:LEGAL-BANKRUPTCY-CODE-002] 11 U.S.C. § 547",
+                                        "quote": "Transfers made within 90 days before filing while insolvent may be avoided.",
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_01_stay",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "audit_rationale": "All dates match Docket.md verbatim; § 362 and Stage-2-discovered § 547 are quoted accurately.",
+                "passed": True,
+            },
+            "CrossSectionAuditOutput": CrossSectionAuditOutput(tensions=[]),
+        },
+        tool_invocations=[
+            {"name": "browse_canonical_toc", "arguments": {"doc_id": "legal/bankruptcy_code.md"}},
+            {"name": "grep_indexed_inputs", "arguments": {"pattern": "Chapter 11"}},
+        ],
+    )
+
+    bundle = AuditPipelineRunner(mock_llm, router, ingestor).run_full_pipeline(
+        matter_id="m_bankruptcy",
+        question="Does the automatic stay apply and is the Vendor X transfer in the 90-day window?",
+        bundle_id="bankruptcy_trace_test",
+        smooth_transitions=False,
+    )
+
+    # Verify Stage 1 received compact INDEX.md catalog, NOT full raw verbatim bodies
+    stage1_call = next(c for c in mock_llm.call_log if c["model"] == "OutlinePlan")
+    assert "Canonical Knowledge Catalog" in stage1_call["prompt"]
+    assert "AUTH:LEGAL-BANKRUPTCY-CODE-002" not in stage1_call["prompt"]
+
+    # Verify Stage 1-4 rationales & Stage 2 discovered rule persisted cleanly
+    sa = bundle.stage_artifacts
+    assert sa["outline_plan"]["sections"][0]["routing_rationale"].startswith("Selected 11 U.S.C. § 362")
+    assert len(sa["outline_plan"]["sections"][0]["governing_authorities"]) == 2
+    assert sa["ledgers"]["sec_01_stay"]["harvest_summary"].startswith("Verified filing date")
+    assert "Transfers made within 90 days" in sa["ledgers"]["sec_01_stay"]["additional_authorities"][0]["verbatim_quote"]
+    assert sa["sections"][0]["drafting_notes"].startswith("Combined Docket dates")
+    assert sa["audits"]["sec_01_stay"]["audit_rationale"].startswith("All dates match")

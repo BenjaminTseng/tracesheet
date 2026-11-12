@@ -12,6 +12,7 @@ import argparse
 import datetime
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -19,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import create_llm_provider
 from app.pipeline import AuditPipelineRunner
 from app.routes import router
@@ -143,6 +144,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Run deterministic coordinate ingestion on the specified matter ID and exit.",
     )
     parser.add_argument(
+        "--ingest-canonical",
+        action="store_true",
+        help="Encode raw files in canonical/raw/ into [AUTH:...] Markdown and rebuild canonical/INDEX.md, then exit.",
+    )
+    parser.add_argument(
+        "--purge-canonical",
+        action="store_true",
+        help="Combined with --ingest-canonical, remove old encoded canonical .md files and INDEX.md before rebuilding.",
+    )
+    parser.add_argument(
         "--matter",
         type=str,
         default=None,
@@ -170,8 +181,26 @@ if __name__ == "__main__":
 
     ingestor = MatterIngestor(BASE_DIR / "matters")
     canonical_router = CanonicalRouter(BASE_DIR / "canonical")
+    canonical_ingestor = CanonicalIngestor(BASE_DIR / "canonical")
 
-    if args.ingest_matter:
+    if args.ingest_canonical:
+        optional_llm = None
+        if args.provider != "mock" and (
+            args.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        ):
+            try:
+                optional_llm = create_llm_provider(
+                    provider_name=args.provider,
+                    model=args.model,
+                    api_key=args.api_key,
+                )
+            except Exception as exc:
+                logger.warning("Proceeding with deterministic canonical ingestion (%s)", exc)
+        summary = canonical_ingestor.ingest_corpus(
+            purge_encoded=args.purge_canonical, llm=optional_llm
+        )
+        print(json.dumps(summary, indent=2))
+    elif args.ingest_matter:
         manifest = ingestor.ingest_matter(args.ingest_matter)
         print(json.dumps(manifest, indent=2))
     elif args.ask:

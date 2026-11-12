@@ -379,3 +379,54 @@ def test_pipeline_and_review_comment_schemas() -> None:
     assert audit_res.passed is True
     assert comment.resolved is False
     assert CompiledBundle.model_fields["comments"] is not None
+
+
+def test_section_validator_requires_body_for_reasoning_calculation_assumption() -> None:
+    """Verifies `SectionValidator` enforces plain-English `body` on reasoning/calculation/assumption cards."""
+    missing_body = SectionOutput.model_validate(
+        {
+            "section_id": "sec_logic",
+            "section_title": "I. Arithmetic Check",
+            "text": "The threshold is <ref n='1'>exceeded by $5,000</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "calculation",
+                            "title": "Invoice Variance",
+                            "formula": "45000 - 40000",
+                            "body": "   ",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    ok, errors = SectionValidator.validate_section(missing_body)
+    assert ok is False
+    assert any("body" in err.lower() for err in errors)
+
+    valid_commonsense = SectionOutput.model_validate(
+        {
+            "section_id": "sec_logic",
+            "section_title": "I. Arithmetic Check",
+            "text": "The threshold is <ref n='1'>exceeded by $5,000</ref>.",
+            "drafting_notes": "Pure L1 arithmetic requires no canonical authority.",
+            "supports": [
+                {
+                    "n": 1,
+                    "items": [
+                        {
+                            "type": "calculation",
+                            "title": "Invoice Variance",
+                            "formula": "45000 - 40000",
+                            "body": "Subtracting the $40,000 cap from the $45,000 invoice total leaves a $5,000 excess.",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    ok_valid, errors_valid = SectionValidator.validate_section(valid_commonsense)
+    assert ok_valid is True, f"Unexpected errors: {errors_valid}"

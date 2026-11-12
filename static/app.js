@@ -629,6 +629,13 @@ function SpatialNodeCard({
             })}
           </p>
         `}
+
+        ${node.audit && node.audit.evaluator_note && node.audit.evaluator_note !== 'Deterministic node compilation' && html`
+          <div class="card-evaluator-note">
+            <span class="kicker-label">Audit Note (${node.audit.evaluator_type || 'llm'})</span>
+            <span>${node.audit.evaluator_note}</span>
+          </div>
+        `}
       </div>
 
       <!-- Plate Provenance Footer Line -->
@@ -865,6 +872,10 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
   const [running, setRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [showCanonicalMgr, setShowCanonicalMgr] = useState(false);
+  const [canonicalDomain, setCanonicalDomain] = useState('legal');
+  const [canonicalStatusMsg, setCanonicalStatusMsg] = useState(null);
+  const [canonicalBusy, setCanonicalBusy] = useState(false);
 
   const refreshMatters = useCallback(async () => {
     const res = await fetch('/api/matters');
@@ -924,6 +935,61 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
     } finally {
       setUploading(false);
       e.target.value = '';
+    }
+  };
+
+  const handleCanonicalUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCanonicalBusy(true);
+    setErrorMsg(null);
+    setCanonicalStatusMsg(null);
+    try {
+      const formData = new FormData();
+      formData.append('domain', canonicalDomain.trim() || 'general');
+      formData.append('file', file);
+      const res = await fetch('/api/canonical/upload', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setErrorMsg(JSON.stringify(err.detail || err));
+      } else {
+        const data = await res.json();
+        setCanonicalAuths(data.authorities || []);
+        setCanonicalStatusMsg(
+          `Uploaded ${data.uploaded_file} into ${data.domain}/ · ${data.total_authorities} [AUTH:...] anchors active in INDEX.md.`
+        );
+      }
+    } finally {
+      setCanonicalBusy(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRebuildCanonical = async (purgeEncoded) => {
+    setCanonicalBusy(true);
+    setErrorMsg(null);
+    setCanonicalStatusMsg(null);
+    try {
+      const res = await fetch('/api/canonical/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ purge_encoded: Boolean(purgeEncoded) }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        setErrorMsg(JSON.stringify(err.detail || err));
+      } else {
+        const data = await res.json();
+        setCanonicalAuths(data.authorities || []);
+        setCanonicalStatusMsg(
+          `Rebuilt canonical/INDEX.md (${data.summary?.files_processed || 0} raw files → ${data.total_authorities} authorities).`
+        );
+      }
+    } finally {
+      setCanonicalBusy(false);
     }
   };
 
@@ -1051,10 +1117,64 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
           ${uploading && html`<span class="provenance-caption">Indexing uploaded file coordinates…</span>`}
         </div>
 
-        <div class="provenance-caption">
-          <strong>Canonical Authorities (b):</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
-          from <code class="font-mono-data">canonical/INDEX.md</code>
-          (${canonicalAuths.slice(0, 3).map((a) => a.auth_id).join(', ')}${canonicalAuths.length > 3 ? '…' : ''})
+        <div class="form-field">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <div class="provenance-caption">
+              <strong>Canonical Authorities (b):</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
+              from <code class="font-mono-data">canonical/INDEX.md</code>
+              (${canonicalAuths.slice(0, 3).map((a) => a.auth_id).join(', ')}${canonicalAuths.length > 3 ? '…' : ''})
+            </div>
+            <button
+              type="button"
+              class="btn"
+              onClick=${() => setShowCanonicalMgr((prev) => !prev)}
+            >
+              ${showCanonicalMgr ? 'Hide Canonical Manager' : 'Manage Canonical Corpus (b)'}
+            </button>
+          </div>
+
+          ${showCanonicalMgr && html`
+            <div class="inline-comment-composer" style="margin-top: 6px;">
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <label for="canonical-domain-input" class="control-label">Domain</label>
+                <input
+                  id="canonical-domain-input"
+                  type="text"
+                  class="text-input"
+                  style="width: 130px;"
+                  value=${canonicalDomain}
+                  onInput=${(e) => setCanonicalDomain(e.target.value)}
+                  disabled=${canonicalBusy || running}
+                />
+                <input
+                  id="canonical-file-upload"
+                  type="file"
+                  accept=".md,.txt,.pdf,.docx,.xlsx,.xlsm,.csv"
+                  disabled=${canonicalBusy || running}
+                  onChange=${handleCanonicalUpload}
+                />
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                <button
+                  type="button"
+                  class="btn"
+                  disabled=${canonicalBusy || running}
+                  onClick=${() => handleRebuildCanonical(false)}
+                >
+                  Rebuild INDEX.md
+                </button>
+                <button
+                  type="button"
+                  class="btn"
+                  disabled=${canonicalBusy || running}
+                  onClick=${() => handleRebuildCanonical(true)}
+                >
+                  Purge Encoded & Rebuild
+                </button>
+                ${canonicalStatusMsg && html`<span class="provenance-caption">${canonicalStatusMsg}</span>`}
+              </div>
+            </div>
+          `}
         </div>
 
         <form onSubmit=${handleRunAsk} style="display: flex; flex-direction: column; gap: 10px;">
@@ -1138,6 +1258,7 @@ function App() {
   const [queueDrawerOpen, setQueueDrawerOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [actionError, setActionError] = useState(null);
+  const [expandedTraceSections, setExpandedTraceSections] = useState(() => ({}));
 
   // Native <dialog> refs for JSON compiler and Ask Pipeline modal
   const dialogRef = useRef(null);
@@ -1172,6 +1293,7 @@ function App() {
         setExpandedLevel2Ids([]);
         setHoveredRef(null);
         setInspectorNode(null);
+        setExpandedTraceSections({});
       }
     } finally {
       setLoading(false);
@@ -1742,15 +1864,104 @@ function App() {
                 `
               )}
 
-              ${(bundle.artifact.sections || []).map(
-                (sec, idx) => html`
+              ${(bundle.artifact.sections || []).map((sec, idx) => {
+                const sa = bundle.stage_artifacts || {};
+                const outlineSec = ((sa.outline_plan && sa.outline_plan.sections) || []).find(
+                  (s) => s.section_id === sec.section_id
+                );
+                const ledgerSec = (sa.ledgers && sa.ledgers[sec.section_id]) || null;
+                const draftSec = (sa.sections || []).find((s) => s.section_id === sec.section_id);
+                const auditSec = (sa.audits && sa.audits[sec.section_id]) || null;
+                const hasTrace = Boolean(outlineSec || ledgerSec || draftSec || auditSec);
+                const isTraceOpen = Boolean(expandedTraceSections[sec.section_id]);
+
+                return html`
                   <section key=${sec.section_id} class="artifact-section">
                     <div class="card-meta-row">
                       <h2 class="section-heading">${sec.section_title}</h2>
-                      <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                        SEC. 0${idx + 1}
-                      </span>
+                      <div style="display: flex; align-items: center; gap: 10px;">
+                        ${hasTrace && html`
+                          <button
+                            type="button"
+                            class="btn-link"
+                            onClick=${() =>
+                              setExpandedTraceSections((prev) => ({
+                                ...prev,
+                                [sec.section_id]: !prev[sec.section_id],
+                              }))
+                            }
+                          >
+                            ${isTraceOpen ? '▾ Hide Stage Trace' : '▪ Stage Trace (1–4)'}
+                          </button>
+                        `}
+                        <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                          SEC. 0${idx + 1}
+                        </span>
+                      </div>
                     </div>
+
+                    ${hasTrace && isTraceOpen && html`
+                      <div class="stage-trace-drawer">
+                        ${outlineSec && html`
+                          <div class="stage-trace-row">
+                            <span class="kicker-label kicker-accent">Stage 1 · Architect Plan & Routing</span>
+                            <div><strong>Intention:</strong> ${outlineSec.stated_intention}</div>
+                            ${outlineSec.routing_rationale && html`
+                              <div><strong>Rationale:</strong> ${outlineSec.routing_rationale}</div>
+                            `}
+                            <div class="provenance-caption">
+                              ${(outlineSec.governing_authorities || []).length > 0
+                                ? `Authorities: ${outlineSec.governing_authorities.map((a) => `[${a.auth_id}]`).join(', ')}`
+                                : 'No canonical authorities assigned (grounded in L1 evidence & commonsense/arithmetic)'}
+                            </div>
+                          </div>
+                        `}
+                        ${ledgerSec && html`
+                          <div class="stage-trace-row">
+                            <span class="kicker-label">Stage 2 · Evidence Harvest</span>
+                            <div>
+                              ${ledgerSec.harvest_summary ||
+                                `Collected ${(ledgerSec.verified_facts || []).length} verified fact(s) and ${(ledgerSec.unresolved_gaps || []).length} unresolved gap(s).`}
+                            </div>
+                            <div class="provenance-caption">
+                              Facts verified: ${(ledgerSec.verified_facts || []).length} · Unresolved gaps: ${(ledgerSec.unresolved_gaps || []).length}
+                              ${(ledgerSec.additional_authorities || []).length > 0
+                                ? ` · Discovered rules: ${ledgerSec.additional_authorities.map((a) => `[${a.auth_id}]`).join(', ')}`
+                                : ''}
+                            </div>
+                          </div>
+                        `}
+                        ${draftSec && html`
+                          <div class="stage-trace-row">
+                            <span class="kicker-label">Stage 3 · Drafting Synthesis</span>
+                            <div>
+                              ${draftSec.drafting_notes ||
+                                'Compiled section prose and structured support cards under closed-world verification.'}
+                            </div>
+                          </div>
+                        `}
+                        ${auditSec && html`
+                          <div class="stage-trace-row">
+                            <span class="kicker-label">Stage 4 · Independent Audit Gate</span>
+                            <div class="stage-trace-checks">
+                              <span class="arch-stamp ${auditSec.check_a_relevance ? '' : 'is-danger'}">
+                                Check A Relevance: ${auditSec.check_a_relevance ? 'PASS' : 'FAIL'}
+                              </span>
+                              <span class="arch-stamp ${auditSec.check_b_congruence ? '' : 'is-danger'}">
+                                Check B Congruence: ${auditSec.check_b_congruence ? 'PASS' : 'FAIL'}
+                              </span>
+                              <span class="arch-stamp ${auditSec.check_c_intent ? '' : 'is-caveat'}">
+                                Check C Intent: ${auditSec.check_c_intent ? 'PASS' : 'FAIL'}
+                              </span>
+                            </div>
+                            ${auditSec.audit_rationale && html`
+                              <div>${auditSec.audit_rationale}</div>
+                            `}
+                          </div>
+                        `}
+                      </div>
+                    `}
+
                     <p class="section-prose">
                       ${renderAnnotatedText({
                         text: sec.content,
@@ -1765,8 +1976,8 @@ function App() {
                       })}
                     </p>
                   </section>
-                `
-              )}
+                `;
+              })}
             </article>
           </div>
 

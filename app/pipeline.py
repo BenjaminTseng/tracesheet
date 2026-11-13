@@ -368,7 +368,7 @@ class AuditPipelineRunner:
         feedback_block = ""
         if prior_draft is not None and review_comments:
             formatted_comments = "\n".join(
-                f"- [Target Node: {c.node_id}"
+                f"- [Scope: {c.scope.upper()} | Target: {c.target_label or c.node_id}"
                 + (f" | Requested Status: {c.suggested_status}" if c.suggested_status else "")
                 + f"]: {c.comment_text}"
                 for c in review_comments
@@ -376,8 +376,8 @@ class AuditPipelineRunner:
             feedback_block = (
                 f"\n\n### Prior Section Draft\n{prior_draft.model_dump_json(indent=2)}\n\n"
                 f"### Human Reviewer Feedback (MUST ADDRESS)\n{formatted_comments}\n"
-                "Revise the section text, support reasoning, and audit flags to directly resolve "
-                "all reviewer comments while keeping valid citations intact."
+                "Revise the section text, support reasoning, logical connections, and audit flags to "
+                "directly resolve all reviewer comments while keeping valid citations intact."
             )
 
         base_prompt = (
@@ -1019,7 +1019,8 @@ class AuditPipelineRunner:
             "reasoning warrants, or change audit caveats (verified/extrapolation/assumption)."
         )
         formatted = "\n".join(
-            f"- Node {c.node_id} (suggested_status={c.suggested_status}): {c.comment_text}"
+            f"- [{c.scope.upper()}] {c.target_label or c.node_id} "
+            f"(suggested_status={c.suggested_status}): {c.comment_text}"
             for c in comments
         )
         prompt = (
@@ -1103,9 +1104,17 @@ class AuditPipelineRunner:
         plan, ledgers, sections_map = self._rehydrate_stage_artifacts(bundle)
         matter_id = bundle.matter_id or bundle.bundle_id or "default"
 
+        doc_comments: List[ReviewComment] = []
         comments_by_section: Dict[str, List[ReviewComment]] = {}
         for c in pending:
-            comments_by_section.setdefault(c.section_id, []).append(c)
+            if c.scope == "document" or c.section_id == "__document__":
+                doc_comments.append(c)
+            else:
+                comments_by_section.setdefault(c.section_id, []).append(c)
+
+        if doc_comments:
+            for sec_plan in plan.sections:
+                comments_by_section.setdefault(sec_plan.section_id, []).extend(doc_comments)
 
         plan_by_sec = {s.section_id: s for s in plan.sections}
         audits_map: Dict[str, Dict[str, Any]] = dict(
@@ -1206,7 +1215,11 @@ class AuditPipelineRunner:
         # Mark addressed comments resolved and retain full review history
         addressed_sec_ids = set(comments_by_section.keys())
         for c in all_comments:
-            if not c.resolved and c.section_id in addressed_sec_ids:
+            if not c.resolved and (
+                c.section_id in addressed_sec_ids
+                or c.scope == "document"
+                or c.section_id == "__document__"
+            ):
                 c.resolved = True
 
         recompiled.bundle_id = bundle.bundle_id

@@ -5,10 +5,45 @@ import htm from 'htm';
 const html = htm.bind(h);
 
 /**
- * Formats an audit status string into a concise label.
- * @param {string} status
- * @returns {string}
+ * Consistent crisp 1.6px-stroke SVG icon primitives (no raw Unicode/emoji glyphs).
  */
+function Icon({ name, size = 14 }) {
+  const props = {
+    width: size,
+    height: size,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    stroke: 'currentColor',
+    'stroke-width': '1.5',
+    'stroke-linecap': 'square',
+    'stroke-linejoin': 'miter',
+    'aria-hidden': 'true',
+    style: 'flex-shrink: 0;',
+  };
+  switch (name) {
+    case 'comment':
+      return html`<svg ...${props}><path d="M2.5 3h11v7.5h-6L4.5 13v-2.5h-2V3z" /></svg>`;
+    case 'source':
+      return html`<svg ...${props}><path d="M3 2h7l3 3v9H3V2z" /><path d="M10 2v3h3" /><path d="M5.5 8.5h5M5.5 11h3.5" /></svg>`;
+    case 'link':
+      return html`<svg ...${props}><path d="M3 8h10M9.5 4.5L13 8l-3.5 3.5" /></svg>`;
+    case 'close':
+      return html`<svg ...${props}><path d="M4 4l8 8M12 4l-8 8" /></svg>`;
+    case 'plus':
+      return html`<svg ...${props}><path d="M8 3v10M3 8h10" /></svg>`;
+    case 'more':
+      return html`<svg ...${props}><circle cx="3.5" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r="1" fill="currentColor" stroke="none" /></svg>`;
+    case 'check':
+      return html`<svg ...${props}><path d="M3.5 8.5L6.5 11.5L12.5 4.5" /></svg>`;
+    case 'chevronRight':
+      return html`<svg ...${props}><path d="M6 3.5L10.5 8L6 12.5" /></svg>`;
+    case 'chevronDown':
+      return html`<svg ...${props}><path d="M3.5 6L8 10.5L12.5 6" /></svg>`;
+    default:
+      return null;
+  }
+}
+
 function formatAuditStatus(status) {
   const map = {
     verified: 'Verified',
@@ -20,11 +55,6 @@ function formatAuditStatus(status) {
   return map[status] || status;
 }
 
-/**
- * Returns true when an audit status warrants an exception callout (warm ochre caveat).
- * @param {string} status
- * @returns {boolean}
- */
 function isCaveatStatus(status) {
   return (
     status === 'extrapolation' ||
@@ -34,14 +64,53 @@ function isCaveatStatus(status) {
   );
 }
 
-/**
- * Formats a locator object into a clean provenance string, separating human labels
- * from quantitative coordinates.
- * @param {object} locator
- * @returns {{ label: string, coord: string }}
- */
+function formatNodeRole(type) {
+  const map = {
+    claim: 'Claim',
+    evidence: 'Direct Evidence',
+    reasoning: 'Logical Inference',
+    calculation: 'Calculation',
+    assumption: 'Baseline Assumption',
+    authority: 'Controlling Rule',
+  };
+  return map[type] || type;
+}
+
+function getLinkRoleMeta(targetNode) {
+  const status = targetNode?.audit?.status || 'verified';
+  if (isCaveatStatus(status)) {
+    return { label: 'Caveat', toneClass: 'is-caveat', stroke: '#B45309' };
+  }
+  switch (targetNode?.type) {
+    case 'calculation':
+      return { label: 'Math', toneClass: 'is-math', stroke: '#14532D' };
+    case 'authority':
+      return { label: 'Rule', toneClass: 'is-rule', stroke: '#B84A27' };
+    case 'reasoning':
+      return { label: 'Logic', toneClass: '', stroke: '#14284B' };
+    case 'assumption':
+      return { label: 'Caveat', toneClass: 'is-caveat', stroke: '#B45309' };
+    default:
+      return { label: 'Fact', toneClass: '', stroke: '#14284B' };
+  }
+}
+
+function formatScopeTag(comment, nodesMap) {
+  if (comment.scope === 'document' || comment.section_id === '__document__') {
+    return { label: 'Overall Memo', cls: 'is-document' };
+  }
+  if (comment.scope === 'section' || comment.node_id === '__section__') {
+    return { label: 'Section', cls: '' };
+  }
+  if (comment.scope === 'link') {
+    return { label: 'Logical Link', cls: 'is-link' };
+  }
+  const node = nodesMap?.[comment.node_id];
+  return { label: node ? formatNodeRole(node.type) : 'Node', cls: '' };
+}
+
 function formatProvenanceParts(locator) {
-  if (!locator) return { label: 'Internal Graph Node', coord: '' };
+  if (!locator) return { label: '', coord: '' };
   switch (locator.source_type) {
     case 'pdf':
       return {
@@ -65,7 +134,7 @@ function formatProvenanceParts(locator) {
       };
     case 'web':
       return {
-        label: 'Archival Web Snapshot',
+        label: 'Archival Snapshot',
         coord: locator.locator_key || '',
       };
     case 'markdown':
@@ -74,13 +143,57 @@ function formatProvenanceParts(locator) {
         coord: locator.locator_key || '',
       };
     default:
-      return { label: locator.source_type, coord: '' };
+      return { label: locator.source_type || '', coord: '' };
   }
 }
 
 /**
- * Parses text containing `<ref id='node_id'>clause</ref>` tags into clean inline
- * interactive highlights without pill badges.
+ * Streams the 4-stage SSE pipeline from `/api/matters/:matter_id/ask/stream`.
+ */
+async function streamAskPipeline({ matterId, question, bundleId, onProgress }) {
+  const res = await fetch(`/api/matters/${matterId}/ask/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: question.trim(),
+      bundle_id: bundleId || null,
+      smooth_transitions: true,
+    }),
+  });
+  if (!res.ok || !res.body) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(JSON.stringify(errData.detail || `HTTP ${res.status}`));
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let resultBundle = null;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() || '';
+    for (const chunk of parts) {
+      const dataLine = chunk.split('\n').find((ln) => ln.startsWith('data: '));
+      if (!dataLine) continue;
+      const evt = JSON.parse(dataLine.slice(6));
+      if (evt.event === 'progress') {
+        onProgress?.({ stage: evt.stage, message: evt.message });
+      } else if (evt.event === 'error') {
+        throw new Error(evt.detail || 'Pipeline execution failed');
+      } else if (evt.event === 'bundle') {
+        resultBundle = evt.bundle;
+      }
+    }
+  }
+  return resultBundle;
+}
+
+/**
+ * Parses `<ref id='node_id'>clause</ref>` tags into interactive inline text highlights.
  */
 function renderAnnotatedText({
   text,
@@ -116,13 +229,11 @@ function renderAnnotatedText({
       (auditFilter === 'caveats' && hasCaveat) ||
       (auditFilter === 'tension' && isTensionPeer);
 
-    const isDimmed = !matchesFilter;
-
     const classNames = [
       'clause-highlight',
       isActive ? 'is-active' : '',
       hasCaveat ? 'is-caveat' : '',
-      isDimmed ? 'is-dimmed' : '',
+      !matchesFilter ? 'is-dimmed' : '',
     ]
       .filter(Boolean)
       .join(' ');
@@ -159,7 +270,7 @@ function renderAnnotatedText({
 }
 
 /**
- * Slide-Over Source Inspector Drawer framed as an Archival Broadsheet Plate.
+ * Slide-Over Source Inspector Drawer.
  */
 function SourceInspectorDrawer({ node, onClose }) {
   if (!node) return null;
@@ -174,34 +285,29 @@ function SourceInspectorDrawer({ node, onClose }) {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <aside
-        class="source-inspector-drawer"
-        aria-labelledby="inspector-drawer-title"
-      >
+      <aside class="source-inspector-drawer" aria-labelledby="inspector-drawer-title">
         <div class="drawer-header">
           <div>
-            <div class="card-meta-row">
-              <span class="kicker-label">
-                ▪ ${node.type}${loc.source_type ? ` · ${loc.source_type}` : ''}
-              </span>
-            </div>
+            <span class="control-label">
+              ${formatNodeRole(node.type)}${loc.source_type ? ` · ${loc.source_type}` : ''}
+            </span>
             <h2 id="inspector-drawer-title" class="card-heading" style="margin-top: 3px; font-size: 18px;">
               ${node.title}
             </h2>
           </div>
-          <button type="button" class="btn" onClick=${onClose}>
-            Close
+          <button type="button" class="btn btn-icon-only" aria-label="Close source inspector" onClick=${onClose}>
+            <${Icon} name="close" />
           </button>
         </div>
 
         <div class="drawer-body">
           <div class="card-meta-row" style="border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 8px;">
             <span class="arch-stamp ${isCaveatStatus(status) ? 'is-caveat' : ''}">
-              ▪ ${formatAuditStatus(status)}
+              ${formatAuditStatus(status)}
               <span class="font-mono-data">${Math.round((audit.score || 1) * 100)}%</span>
             </span>
-            <span class="kicker-label">
-              Evaluator: ${audit.evaluator_type || 'deterministic'}
+            <span class="provenance-caption">
+              Verified by ${audit.evaluator_type || 'deterministic'} check
             </span>
           </div>
 
@@ -214,18 +320,20 @@ function SourceInspectorDrawer({ node, onClose }) {
           ${loc.source_type === 'pdf' && html`
             <div class="pdf-page-simulator">
               <div class="card-meta-row">
-                <span class="kicker-label">${loc.file_name}</span>
+                <span class="control-label">${loc.file_name}</span>
                 <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
                   PAGE ${loc.page || 1}
                 </span>
               </div>
               <p class="provenance-caption">
-                Section Locator: ${loc.locator_key || 'Verified Excerpt'}
+                Locator: ${loc.locator_key || 'Verified Excerpt'}
               </p>
               <div class="pdf-bbox-highlight">
-                <div class="font-mono-data" style="font-size: 10.5px; color: var(--color-accent-primary); margin-bottom: 4px;">
-                  BBOX [${(loc.bounding_box || [0, 0, 0, 0]).join(', ')}]
-                </div>
+                ${loc.bounding_box && html`
+                  <div class="font-mono-data" style="font-size: 10.5px; color: var(--color-accent-primary); margin-bottom: 4px;">
+                    BBOX [${loc.bounding_box.join(', ')}]
+                  </div>
+                `}
                 “${node.quote}”
               </div>
               <p class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
@@ -237,7 +345,7 @@ function SourceInspectorDrawer({ node, onClose }) {
           ${loc.source_type === 'spreadsheet' && html`
             <div style="display: flex; flex-direction: column; gap: 10px;">
               <div class="card-meta-row">
-                <span class="kicker-label kicker-emerald">▪ Workbook: ${loc.file_name}</span>
+                <span class="control-label">Workbook: ${loc.file_name}</span>
                 <span class="font-mono-data" style="font-size: 11.5px; color: var(--color-text-secondary);">
                   ${loc.sheet}!${loc.cell_range}
                 </span>
@@ -286,7 +394,7 @@ function SourceInspectorDrawer({ node, onClose }) {
               </div>
               <figure class="evidence-figure">
                 <figcaption class="evidence-figcaption">
-                  <span class="kicker-label">Captured API Response Payload</span>
+                  <span>Captured API Payload</span>
                 </figcaption>
                 <pre tabindex="0" class="formula-box"><code class="language-json">${JSON.stringify(
                   {
@@ -313,9 +421,7 @@ function SourceInspectorDrawer({ node, onClose }) {
                 </span>
               </div>
               <figure class="evidence-figure">
-                <figcaption class="evidence-figcaption">
-                  <span class="kicker-label">Read-Only Verification Query</span>
-                </figcaption>
+                <figcaption class="evidence-figcaption">Read-Only Verification Query</figcaption>
                 <pre tabindex="0" class="formula-box"><code class="language-sql">${loc.query}</code></pre>
               </figure>
               <div class="evidence-figure">
@@ -338,9 +444,8 @@ function SourceInspectorDrawer({ node, onClose }) {
                 <blockquote class="evidence-blockquote" cite=${loc.url}>
                   “${node.quote}”
                 </blockquote>
-                <figcaption class="evidence-figcaption">
-                  <cite>${node.title}</cite>
-                  ${loc.url && html`
+                ${loc.url && html`
+                  <figcaption class="evidence-figcaption">
                     <a
                       href=${loc.url}
                       target="_blank"
@@ -349,8 +454,8 @@ function SourceInspectorDrawer({ node, onClose }) {
                     >
                       Open Source URL ↗
                     </a>
-                  `}
-                </figcaption>
+                  </figcaption>
+                `}
               </figure>
             </div>
           `}
@@ -358,7 +463,7 @@ function SourceInspectorDrawer({ node, onClose }) {
           ${loc.source_type === 'markdown' && html`
             <div class="pdf-page-simulator">
               <div class="card-meta-row">
-                <span class="kicker-label">${loc.file_name}</span>
+                <span class="control-label">${loc.file_name}</span>
                 <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
                   ${loc.locator_key || 'BLOCK'}
                 </span>
@@ -384,7 +489,6 @@ function SourceInspectorDrawer({ node, onClose }) {
               ${node.body && html`<p class="card-body-prose">${node.body}</p>`}
               ${node.url && html`
                 <figcaption class="evidence-figcaption">
-                  <cite>${node.title}</cite>
                   <a
                     href=${node.url}
                     target="_blank"
@@ -404,28 +508,42 @@ function SourceInspectorDrawer({ node, onClose }) {
 }
 
 /**
- * Reusable Antigravity-style inline comment thread & composer anchored to a node.
+ * Reusable inline comment thread & composer anchored to a node or section.
  */
 function InlineCommentPanel({
-  node,
+  targetKey,
+  scope = 'node',
+  nodeId = null,
+  sectionId = null,
+  targetLabel = '',
+  placeholder = 'Write feedback or request a verification check...',
   comments,
+  nodesMap,
   isOpen,
   onClose,
   onSubmit,
   onDelete,
   submitting,
+  allowStatusOverride = true,
 }) {
   const [draftText, setDraftText] = useState('');
   const [suggestedStatus, setSuggestedStatus] = useState('');
 
-  const nodeComments = (comments || []).filter((c) => c.node_id === node.id);
+  const matchingComments = (comments || []).filter((c) => {
+    if (scope === 'section') {
+      return c.scope === 'section' && c.section_id === sectionId;
+    }
+    return c.node_id === nodeId && (c.scope || 'node') !== 'link';
+  });
 
   const handleSave = async (e) => {
     e.preventDefault();
     if (!draftText.trim()) return;
     await onSubmit({
-      node_id: node.id,
-      section_id: node.section_id,
+      scope,
+      node_id: nodeId,
+      section_id: sectionId,
+      target_label: targetLabel,
       comment_text: draftText.trim(),
       suggested_status: suggestedStatus || null,
     });
@@ -434,69 +552,75 @@ function InlineCommentPanel({
     onClose();
   };
 
-  if (nodeComments.length === 0 && !isOpen) return null;
+  if (matchingComments.length === 0 && !isOpen) return null;
 
   return html`
     <div class="inline-comment-well">
-      ${nodeComments.length > 0 && html`
+      ${matchingComments.length > 0 && html`
         <div class="comment-thread-list">
-          ${nodeComments.map(
-            (c) => html`
+          ${matchingComments.map((c) => {
+            const tag = formatScopeTag(c, nodesMap);
+            return html`
               <div key=${c.comment_id} class="comment-item ${c.resolved ? 'is-resolved' : ''}">
                 <div class="card-meta-row">
-                  <span class="kicker-label">
-                    ${c.resolved ? '▪ Resolved Feedback' : '▪ Queued Review Note'}
-                    ${c.suggested_status ? ` · ${formatAuditStatus(c.suggested_status)}` : ''}
+                  <span style="display: inline-flex; align-items: center; gap: 6px;">
+                    <span class="scope-tag ${tag.cls}">${tag.label}</span>
+                    <span class="provenance-caption">
+                      ${c.resolved ? 'Resolved' : 'Queued'}
+                      ${c.suggested_status ? ` · ${formatAuditStatus(c.suggested_status)}` : ''}
+                    </span>
                   </span>
                   ${!c.resolved && html`
                     <button
                       type="button"
-                      class="btn-link"
+                      class="btn-link is-muted"
                       onClick=${() => onDelete(c.comment_id)}
                     >
-                      × Remove
+                      Remove
                     </button>
                   `}
                 </div>
                 <p class="comment-item-text">${c.comment_text}</p>
               </div>
-            `
-          )}
+            `;
+          })}
         </div>
       `}
 
       ${isOpen && html`
         <form onSubmit=${handleSave} style="display: flex; flex-direction: column; gap: 8px;">
-          <label for=${`cmt-input-${node.id}`} class="control-label">
-            Add Feedback for Regeneration
+          <label for=${`cmt-input-${targetKey}`} class="control-label">
+            Add Feedback
           </label>
           <textarea
-            id=${`cmt-input-${node.id}`}
+            id=${`cmt-input-${targetKey}`}
             class="comment-textarea"
-            placeholder="E.g., Check board minutes for treasury location, or soften to extrapolation..."
+            placeholder=${placeholder}
             value=${draftText}
             onInput=${(e) => setDraftText(e.target.value)}
             required
           ></textarea>
           <div class="card-meta-row" style="flex-wrap: wrap;">
-            <select
-              class="select-control"
-              aria-label="Optional audit status override"
-              value=${suggestedStatus}
-              onChange=${(e) => setSuggestedStatus(e.target.value)}
-            >
-              <option value="">Keep / Auto-Detect Status</option>
-              <option value="verified">Mark as Verified</option>
-              <option value="extrapolation">Flag as Extrapolation</option>
-              <option value="assumption">Flag as Assumption</option>
-              <option value="disputed">Flag as Disputed</option>
-            </select>
+            ${allowStatusOverride ? html`
+              <select
+                class="select-control"
+                aria-label="Optional verification status override"
+                value=${suggestedStatus}
+                onChange=${(e) => setSuggestedStatus(e.target.value)}
+              >
+                <option value="">Keep Status</option>
+                <option value="verified">Mark Verified</option>
+                <option value="extrapolation">Flag Extrapolation</option>
+                <option value="assumption">Flag Assumption</option>
+                <option value="disputed">Flag Disputed</option>
+              </select>
+            ` : html`<span></span>`}
             <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn" onClick=${onClose}>
+              <button type="button" class="btn btn-compact" onClick=${onClose}>
                 Cancel
               </button>
-              <button type="submit" class="btn btn-primary" disabled=${submitting}>
-                ${submitting ? 'Saving…' : 'Queue Comment'}
+              <button type="submit" class="btn btn-primary btn-compact" disabled=${submitting}>
+                ${submitting ? 'Saving…' : 'Queue Note'}
               </button>
             </div>
           </div>
@@ -507,12 +631,164 @@ function InlineCommentPanel({
 }
 
 /**
- * Renders an individual reasoning, evidence, authority, calculation, or assumption node
- * framed as an Economist / Broadsheet Editorial Plate (ben-design-prefs Section 4).
+ * Anchored Logical-Link Popover triggered by clicking a Bezier curve or its midpoint handle.
+ */
+function LinkCommentPopover({
+  link,
+  nodesMap,
+  comments,
+  onClose,
+  onSubmitComment,
+  onDeleteComment,
+  onOpenInspector,
+  submitting,
+}) {
+  const [draftText, setDraftText] = useState('');
+  const [suggestedStatus, setSuggestedStatus] = useState('');
+
+  if (!link) return null;
+  const targetNode = nodesMap[link.targetId];
+  const sourceNode = nodesMap[link.sourceId];
+  if (!targetNode) return null;
+
+  const linkComments = (comments || []).filter(
+    (c) => c.node_id === targetNode.id && c.scope === 'link'
+  );
+  const roleMeta = getLinkRoleMeta(targetNode);
+
+  const left = Math.min(window.innerWidth - 388, Math.max(16, link.screenMidX - 185));
+  const top = Math.min(window.innerHeight - 360, Math.max(64, link.screenMidY + 18));
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    if (!draftText.trim()) return;
+    await onSubmitComment({
+      scope: 'link',
+      node_id: targetNode.id,
+      section_id: targetNode.section_id,
+      target_label: `${sourceNode ? sourceNode.title : 'Claim'} → ${targetNode.title}`,
+      comment_text: draftText.trim(),
+      suggested_status: suggestedStatus || null,
+    });
+    setDraftText('');
+    setSuggestedStatus('');
+  };
+
+  return html`
+    <div
+      class="link-popover-card"
+      role="dialog"
+      aria-label="Logical Link Details & Feedback"
+      style=${{ top: `${top}px`, left: `${left}px` }}
+    >
+      <div class="card-meta-row">
+        <span style="display: inline-flex; align-items: center; gap: 6px;">
+          <span class="scope-tag is-link">Logical Link · ${roleMeta.label}</span>
+        </span>
+        <button
+          type="button"
+          class="btn btn-icon-only btn-compact"
+          aria-label="Close link feedback popover"
+          onClick=${onClose}
+        >
+          <${Icon} name="close" size=${12} />
+        </button>
+      </div>
+
+      <div class="link-chain-preview">
+        <div>
+          <strong>From:</strong> ${sourceNode ? sourceNode.title : 'Document Claim'}
+        </div>
+        <div style="display: flex; align-items: flex-start; gap: 5px;">
+          <${Icon} name="link" size=${13} />
+          <span><strong>To:</strong> ${targetNode.title}</span>
+        </div>
+        ${(targetNode.body || targetNode.audit?.evaluator_note) && html`
+          <div class="provenance-caption" style="margin-top: 3px; color: var(--color-text-body);">
+            ${targetNode.body || targetNode.audit?.evaluator_note}
+          </div>
+        `}
+      </div>
+
+      ${linkComments.length > 0 && html`
+        <div class="comment-thread-list">
+          ${linkComments.map((c) => html`
+            <div key=${c.comment_id} class="comment-item ${c.resolved ? 'is-resolved' : ''}">
+              <div class="card-meta-row">
+                <span class="provenance-caption">
+                  ${c.resolved ? 'Resolved Link Note' : 'Queued Link Note'}
+                  ${c.suggested_status ? ` · ${formatAuditStatus(c.suggested_status)}` : ''}
+                </span>
+                ${!c.resolved && html`
+                  <button
+                    type="button"
+                    class="btn-link is-muted"
+                    onClick=${() => onDeleteComment(c.comment_id)}
+                  >
+                    Remove
+                  </button>
+                `}
+              </div>
+              <p class="comment-item-text">${c.comment_text}</p>
+            </div>
+          `)}
+        </div>
+      `}
+
+      <form onSubmit=${handleSave} style="display: flex; flex-direction: column; gap: 8px;">
+        <label for="link-comment-input" class="control-label">
+          Comment on This Connection
+        </label>
+        <textarea
+          id="link-comment-input"
+          class="comment-textarea"
+          placeholder="E.g., Does this fact actually support this conclusion, or is it an extrapolation?"
+          value=${draftText}
+          onInput=${(e) => setDraftText(e.target.value)}
+          required
+        ></textarea>
+        <div class="card-meta-row" style="flex-wrap: wrap;">
+          <select
+            class="select-control"
+            aria-label="Flag connection audit status"
+            value=${suggestedStatus}
+            onChange=${(e) => setSuggestedStatus(e.target.value)}
+          >
+            <option value="">Keep Status</option>
+            <option value="verified">Verified Link</option>
+            <option value="extrapolation">Weak / Extrapolation</option>
+            <option value="assumption">Unstated Assumption</option>
+            <option value="disputed">Disputed Connection</option>
+          </select>
+          <div style="display: flex; gap: 6px;">
+            ${(targetNode.locator || targetNode.quote || targetNode.url) && html`
+              <button
+                type="button"
+                class="btn btn-compact"
+                onClick=${() => {
+                  onClose();
+                  onOpenInspector(targetNode);
+                }}
+              >
+                <${Icon} name="source" size=${12} />
+                Source
+              </button>
+            `}
+            <button type="submit" class="btn btn-primary btn-compact" disabled=${submitting}>
+              ${submitting ? 'Saving…' : 'Queue Link Note'}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+/**
+ * Streamlined Editorial Plate for Direct Evidence, Logical Inference, Calculations & Rules.
  */
 function SpatialNodeCard({
   node,
-  plateIndexLabel,
   level,
   nodesMap,
   activeNodeIds,
@@ -520,7 +796,7 @@ function SpatialNodeCard({
   tensionClaimIds,
   auditFilter,
   comments,
-  commentingNodeId,
+  commentingKey,
   onToggleComment,
   onSubmitComment,
   onDeleteComment,
@@ -538,28 +814,37 @@ function SpatialNodeCard({
   const childIds = node.direct_child_ids || [];
   const hasChildren = childIds.length > 0;
   const areChildrenExpanded = hasChildren && childIds.some((id) => expandedLevel2Ids.includes(id));
-  const sourceTypeLabel = node.locator?.source_type ? ` · ${node.locator.source_type}` : '';
   const provenance = formatProvenanceParts(node.locator);
 
-  const isFinancial =
-    node.type === 'calculation' || node.locator?.source_type === 'spreadsheet';
+  const isFinancial = node.type === 'calculation' || node.locator?.source_type === 'spreadsheet';
   const isAuthority = node.type === 'authority';
+  const caveatFlag = isCaveatStatus(status);
 
-  const plateToneClass = isFinancial
+  const plateToneClass = caveatFlag
+    ? 'plate-caveat'
+    : isFinancial
     ? 'plate-financial'
     : isAuthority
     ? 'plate-authority'
     : '';
 
-  const kickerToneClass = isFinancial
-    ? 'kicker-emerald'
+  const roleToneClass = caveatFlag
+    ? 'is-caveat'
+    : isFinancial
+    ? 'is-emerald'
     : isAuthority
-    ? 'kicker-copper'
+    ? 'is-copper'
     : '';
 
   const nodeComments = (comments || []).filter((c) => c.node_id === node.id);
   const pendingCount = nodeComments.filter((c) => !c.resolved).length;
-  const isCommentOpen = commentingNodeId === node.id;
+  const panelKey = `node:${node.id}`;
+  const isCommentOpen = commentingKey === panelKey;
+
+  const showAuditNote =
+    audit.evaluator_note &&
+    audit.evaluator_note !== 'Deterministic node compilation' &&
+    (caveatFlag || audit.evaluator_type !== 'deterministic');
 
   return html`
     <article
@@ -567,44 +852,38 @@ function SpatialNodeCard({
       data-card-node-id=${node.id}
       data-card-level=${level}
     >
-      <!-- Broadsheet Plate Header Strip -->
       <div class="plate-header-strip">
-        <span class="lane-title-group">
-          <span class="lane-index">${plateIndexLabel}</span>
-          <span class="kicker-label ${kickerToneClass}">
-            · ${node.type}${sourceTypeLabel}
-          </span>
+        <span class="plate-role-meta">
+          <span class="plate-role-name ${roleToneClass}">${formatNodeRole(node.type)}</span>
+          ${provenance.label && html`
+            <span>· ${provenance.label}${provenance.coord ? `, ${provenance.coord}` : ''}</span>
+          `}
         </span>
-        <span class="arch-stamp ${isCaveatStatus(status) ? 'is-caveat' : ''}">
-          ${isCaveatStatus(status) ? '▪ ' : ''}${formatAuditStatus(status)}
+        <span class="arch-stamp ${caveatFlag ? 'is-caveat' : ''}">
+          ${formatAuditStatus(status)}
         </span>
       </div>
 
-      <!-- Crisp #FFFFFF Plate Stage -->
       <div class="plate-body-stage">
         <h3 class="card-heading">${node.title}</h3>
 
         ${node.quote && html`
           <figure class="evidence-figure">
-            <blockquote
-              class="evidence-blockquote"
-              cite=${node.url || node.locator?.url || ''}
-            >
+            <blockquote class="evidence-blockquote" cite=${node.url || node.locator?.url || ''}>
               “${node.quote}”
             </blockquote>
-            <figcaption class="evidence-figcaption">
-              <cite>${node.locator?.file_name || node.title}</cite>
-              ${node.url && html`
+            ${node.url && html`
+              <figcaption class="evidence-figcaption">
                 <a
                   href=${node.url}
                   target="_blank"
                   rel="noopener noreferrer"
                   class="external-link"
                 >
-                  Authority Link ↗
+                  Open External Authority ↗
                 </a>
-              `}
-            </figcaption>
+              </figcaption>
+            `}
           </figure>
         `}
 
@@ -630,65 +909,62 @@ function SpatialNodeCard({
           </p>
         `}
 
-        ${node.audit && node.audit.evaluator_note && node.audit.evaluator_note !== 'Deterministic node compilation' && html`
+        ${showAuditNote && html`
           <div class="card-evaluator-note">
-            <span class="kicker-label">Audit Note (${node.audit.evaluator_type || 'llm'})</span>
-            <span>${node.audit.evaluator_note}</span>
+            <span><strong>Audit Note:</strong> ${audit.evaluator_note}</span>
           </div>
         `}
       </div>
 
-      <!-- Plate Provenance Footer Line -->
       <div class="plate-footer-row">
-        <span class="provenance-caption">
-          ${node.locator ? html`
-            <span>${provenance.label}</span>
-            ${provenance.coord && html`
-              <span class="font-mono-data" style="margin-left: 6px;">${provenance.coord}</span>
-            `}
-          ` : html`
-            <span class="font-mono-data">${node.id}</span>
-          `}
-        </span>
-
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div class="plate-actions-group">
           <button
             type="button"
-            class="btn-link"
-            onClick=${() => onToggleComment(isCommentOpen ? null : node.id)}
+            class="plate-action-btn ${pendingCount > 0 ? 'has-notes' : ''}"
+            onClick=${() => onToggleComment(isCommentOpen ? null : panelKey)}
           >
-            ${isCommentOpen
-              ? 'Close Note'
-              : pendingCount > 0
-              ? `Comment (${pendingCount})`
-              : 'Comment'}
+            <${Icon} name="comment" size=${13} />
+            <span>
+              ${isCommentOpen
+                ? 'Close Note'
+                : pendingCount > 0
+                ? `Comment (${pendingCount})`
+                : 'Comment'}
+            </span>
           </button>
+
           ${(node.locator || node.url || node.quote) && html`
             <button
               type="button"
-              class="btn-link"
+              class="plate-action-btn"
               onClick=${() => onOpenInspector(node)}
             >
-              Inspect Source
-            </button>
-          `}
-          ${hasChildren && html`
-            <button
-              type="button"
-              class="btn-link"
-              onClick=${() => onToggleSubtree(node)}
-            >
-              ${areChildrenExpanded
-                ? `Hide Backing (${childIds.length})`
-                : `View Backing (${childIds.length}) →`}
+              <${Icon} name="source" size=${13} />
+              <span>Source</span>
             </button>
           `}
         </div>
+
+        ${hasChildren && html`
+          <button
+            type="button"
+            class="btn-link"
+            onClick=${() => onToggleSubtree(node)}
+          >
+            <span>${areChildrenExpanded ? `Hide sources (${childIds.length})` : `Sources & Law (${childIds.length})`}</span>
+            <${Icon} name="chevronRight" size=${12} />
+          </button>
+        `}
       </div>
 
       <${InlineCommentPanel}
-        node=${node}
+        targetKey=${panelKey}
+        scope="node"
+        nodeId=${node.id}
+        sectionId=${node.section_id}
+        targetLabel=${node.title}
         comments=${comments}
+        nodesMap=${nodesMap}
         isOpen=${isCommentOpen}
         onClose=${() => onToggleComment(null)}
         onSubmit=${onSubmitComment}
@@ -752,15 +1028,15 @@ const SAMPLE_TIER1_COMPILE_PAYLOAD = {
 };
 
 /**
- * Slide-Over Batch Review Queue Drawer allowing reviewers to jump to anchored nodes
- * or remove comments before clicking Apply Feedback & Re-compile.
+ * Slide-Over Review Queue Drawer summarizing all Overall Memo, Section, Logical Link,
+ * Claim, and Evidence comments before batch regeneration.
  */
 function ReviewQueueDrawer({
   isOpen,
   pendingComments,
   nodesMap,
   onClose,
-  onJumpToNode,
+  onJumpToComment,
   onDeleteComment,
   onRegenerate,
   regenerating,
@@ -777,37 +1053,40 @@ function ReviewQueueDrawer({
       <aside class="source-inspector-drawer" aria-labelledby="review-queue-title">
         <div class="drawer-header">
           <div>
-            <span class="kicker-label kicker-accent">▪ Antigravity-Style Batch Review Queue</span>
+            <span class="control-label">Batch Review Queue</span>
             <h2 id="review-queue-title" class="card-heading" style="margin-top: 3px; font-size: 18px;">
-              Queued Review Notes (${pendingComments.length})
+              Queued Notes (${pendingComments.length})
             </h2>
           </div>
-          <button type="button" class="btn" onClick=${onClose}>Close</button>
+          <button type="button" class="btn btn-icon-only" aria-label="Close review queue" onClick=${onClose}>
+            <${Icon} name="close" />
+          </button>
         </div>
 
         <div class="drawer-body">
           <p class="provenance-caption">
-            Reviewers can anchor feedback across any L0 claim or L1/L2+ support plate.
-            Applying feedback triages each section: prose/caveat edits re-run Stage 3→4,
-            while factual requests trigger Stage 2 re-harvesting.
+            Notes anchored to claims, evidence, logical connections, sections, or the overall memo
+            are triaged together when you re-compile.
           </p>
 
           ${pendingComments.length === 0 ? html`
             <p class="card-body-prose" style="color: var(--color-text-muted);">
-              No pending comments queued. Click any claim or support plate and select “Comment”.
+              No pending notes yet. Click any evidence card, Bezier curve handle, or use the bottom bar to leave feedback.
             </p>
           ` : html`
             <div class="comment-thread-list">
               ${pendingComments.map((c) => {
+                const tag = formatScopeTag(c, nodesMap);
                 const targetNode = nodesMap[c.node_id];
+                const title = c.target_label || targetNode?.title || c.section_id;
                 return html`
                   <div key=${c.comment_id} class="comment-item">
                     <div class="card-meta-row">
-                      <span class="kicker-label">
-                        ${targetNode ? `${targetNode.type} · ${targetNode.title}` : c.node_id}
-                      </span>
-                      <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                        ${c.section_id}
+                      <span style="display: inline-flex; align-items: center; gap: 6px; min-width: 0;">
+                        <span class="scope-tag ${tag.cls}">${tag.label}</span>
+                        <span class="provenance-caption" style="color: var(--color-text-primary); font-weight: 500;">
+                          ${title}
+                        </span>
                       </span>
                     </div>
                     <p class="comment-item-text">${c.comment_text}</p>
@@ -816,18 +1095,18 @@ function ReviewQueueDrawer({
                         type="button"
                         class="btn-link"
                         onClick=${() => {
-                          onJumpToNode(c.node_id);
+                          onJumpToComment(c);
                           onClose();
                         }}
                       >
-                        Jump to Node →
+                        Jump to Target
                       </button>
                       <button
                         type="button"
-                        class="btn-link"
+                        class="btn-link is-muted"
                         onClick=${() => onDeleteComment(c.comment_id)}
                       >
-                        × Remove
+                        Remove
                       </button>
                     </div>
                   </div>
@@ -848,7 +1127,7 @@ function ReviewQueueDrawer({
             >
               ${regenerating
                 ? 'Triaging & Regenerating…'
-                : `Apply Feedback & Re-compile (${pendingComments.length}) →`}
+                : `Apply Feedback & Re-compile (${pendingComments.length})`}
             </button>
           `}
         </div>
@@ -858,13 +1137,13 @@ function ReviewQueueDrawer({
 }
 
 /**
- * Native <dialog> for selecting/creating a Project Matter, uploading inputs (a),
- * inspecting canonical authorities (b), and running the 4-stage pipeline for question (c).
+ * Native <dialog> for starting a New Question / Brief, uploading matter files,
+ * and managing the Canonical Authorities library.
  */
-function AskPipelineDialog({ dialogRef, onBundleCreated }) {
+function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
   const [matters, setMatters] = useState([]);
   const [canonicalAuths, setCanonicalAuths] = useState([]);
-  const [selectedMatter, setSelectedMatter] = useState('legal_motion_1332');
+  const [selectedMatter, setSelectedMatter] = useState(activeMatterHint || 'legal_motion_1332');
   const [newMatterName, setNewMatterName] = useState('');
   const [question, setQuestion] = useState('');
   const [bundleSlug, setBundleSlug] = useState('');
@@ -892,6 +1171,12 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
   useEffect(() => {
     refreshMatters();
   }, [refreshMatters]);
+
+  useEffect(() => {
+    if (activeMatterHint && matters.some((m) => m.matter_id === activeMatterHint)) {
+      setSelectedMatter(activeMatterHint);
+    }
+  }, [activeMatterHint, matters]);
 
   const activeMatterObj = matters.find((m) => m.matter_id === selectedMatter);
 
@@ -959,7 +1244,7 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
         const data = await res.json();
         setCanonicalAuths(data.authorities || []);
         setCanonicalStatusMsg(
-          `Uploaded ${data.uploaded_file} into ${data.domain}/ · ${data.total_authorities} [AUTH:...] anchors active in INDEX.md.`
+          `Uploaded ${data.uploaded_file} into ${data.domain}/ · ${data.total_authorities} rules active.`
         );
       }
     } finally {
@@ -985,7 +1270,7 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
         const data = await res.json();
         setCanonicalAuths(data.authorities || []);
         setCanonicalStatusMsg(
-          `Rebuilt canonical/INDEX.md (${data.summary?.files_processed || 0} raw files → ${data.total_authorities} authorities).`
+          `Rebuilt index (${data.summary?.files_processed || 0} files -> ${data.total_authorities} authorities).`
         );
       }
     } finally {
@@ -998,46 +1283,20 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
     if (!question.trim() || !selectedMatter) return;
     setRunning(true);
     setErrorMsg(null);
-    setProgressEvents([{ stage: 'init', message: 'Starting 4-stage pipeline...' }]);
+    setProgressEvents([{ stage: 'init', message: 'Starting analysis pipeline...' }]);
 
     try {
-      const res = await fetch(`/api/matters/${selectedMatter}/ask/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: question.trim(),
-          bundle_id: bundleSlug.trim() || null,
-          smooth_transitions: true,
-        }),
+      const newBundle = await streamAskPipeline({
+        matterId: selectedMatter,
+        question,
+        bundleId: bundleSlug.trim() || null,
+        onProgress: (ev) => setProgressEvents((prev) => [...prev, ev]),
       });
-      if (!res.ok || !res.body) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(JSON.stringify(errData.detail || `HTTP ${res.status}`));
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-        for (const chunk of parts) {
-          const dataLine = chunk.split('\n').find((ln) => ln.startsWith('data: '));
-          if (!dataLine) continue;
-          const evt = JSON.parse(dataLine.slice(6));
-          if (evt.event === 'progress') {
-            setProgressEvents((prev) => [...prev, { stage: evt.stage, message: evt.message }]);
-          } else if (evt.event === 'error') {
-            throw new Error(evt.detail || 'Pipeline failed');
-          } else if (evt.event === 'bundle') {
-            await onBundleCreated(evt.bundle);
-            dialogRef.current?.close();
-          }
-        }
+      if (newBundle) {
+        await onBundleCreated(newBundle);
+        setQuestion('');
+        setBundleSlug('');
+        dialogRef.current?.close();
       }
     } catch (err) {
       setErrorMsg(err.message);
@@ -1056,18 +1315,20 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
       <div class="dialog-inner">
         <div class="card-meta-row">
           <div>
-            <span class="kicker-label kicker-accent">▪ Agentic Q&A Pipeline (Stages 1 → 4)</span>
+            <span class="control-label">New Document Brief</span>
             <h2 id="ask-dialog-title" class="card-heading" style="font-size: 18px; margin-top: 2px;">
-              Ask Question Against Project & Canonical Corpus
+              Workspace, Files & Controlling Rules
             </h2>
           </div>
           <form method="dialog">
-            <button type="submit" class="btn" disabled=${running}>Close</button>
+            <button type="submit" class="btn btn-icon-only" aria-label="Close dialog" disabled=${running}>
+              <${Icon} name="close" />
+            </button>
           </form>
         </div>
 
         <div class="form-field">
-          <label for="matter-select" class="control-label">1. Project / Matter (a)</label>
+          <label for="matter-select" class="control-label">Matter Workspace</label>
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             <select
               id="matter-select"
@@ -1093,19 +1354,20 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
               onInput=${(e) => setNewMatterName(e.target.value)}
             />
             <button type="button" class="btn" onClick=${handleCreateMatter}>
-              + Create
+              <${Icon} name="plus" size=${13} />
+              Create
             </button>
           </div>
           ${activeMatterObj && html`
             <div class="provenance-caption">
-              Raw files: ${(activeMatterObj.raw_files || []).join(', ') || 'None yet'}
+              Files: ${(activeMatterObj.raw_files || []).join(', ') || 'None uploaded yet'}
             </div>
           `}
         </div>
 
         <div class="form-field">
           <label for="matter-file-upload" class="control-label">
-            Upload Task Input (.pdf, .xlsx, .csv, .md)
+            Upload Matter File (.pdf, .xlsx, .csv, .md)
           </label>
           <input
             id="matter-file-upload"
@@ -1120,21 +1382,19 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
         <div class="form-field">
           <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
             <div class="provenance-caption">
-              <strong>Canonical Authorities (b):</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
-              from <code class="font-mono-data">canonical/INDEX.md</code>
-              (${canonicalAuths.slice(0, 3).map((a) => a.auth_id).join(', ')}${canonicalAuths.length > 3 ? '…' : ''})
+              <strong>Controlling Rules:</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
             </div>
             <button
               type="button"
-              class="btn"
+              class="btn btn-compact"
               onClick=${() => setShowCanonicalMgr((prev) => !prev)}
             >
-              ${showCanonicalMgr ? 'Hide Canonical Manager' : 'Manage Canonical Corpus (b)'}
+              ${showCanonicalMgr ? 'Hide Rule Library' : 'Manage Rule Library'}
             </button>
           </div>
 
           ${showCanonicalMgr && html`
-            <div class="inline-comment-composer" style="margin-top: 6px;">
+            <div class="inline-comment-well" style="margin-top: 6px; border: 1px solid var(--color-border-subtle);">
               <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <label for="canonical-domain-input" class="control-label">Domain</label>
                 <input
@@ -1149,7 +1409,7 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
                 <input
                   id="canonical-file-upload"
                   type="file"
-                  accept=".md,.txt,.pdf,.docx,.xlsx,.xlsm,.csv"
+                  accept=".md,.txt,.pdf,.docx"
                   disabled=${canonicalBusy || running}
                   onChange=${handleCanonicalUpload}
                 />
@@ -1157,29 +1417,33 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
               <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn-compact"
                   disabled=${canonicalBusy || running}
                   onClick=${() => handleRebuildCanonical(false)}
                 >
-                  Rebuild INDEX.md
+                  Rebuild Index
                 </button>
                 <button
                   type="button"
-                  class="btn"
+                  class="btn btn-compact"
                   disabled=${canonicalBusy || running}
                   onClick=${() => handleRebuildCanonical(true)}
                 >
-                  Purge Encoded & Rebuild
+                  Full Re-encode
                 </button>
-                ${canonicalStatusMsg && html`<span class="provenance-caption">${canonicalStatusMsg}</span>`}
               </div>
+              ${canonicalStatusMsg && html`
+                <div class="provenance-caption" style="color: var(--color-emerald-accent);">
+                  ${canonicalStatusMsg}
+                </div>
+              `}
             </div>
           `}
         </div>
 
-        <form onSubmit=${handleRunAsk} style="display: flex; flex-direction: column; gap: 10px;">
+        <form onSubmit=${handleRunAsk} style="display: flex; flex-direction: column; gap: 12px;">
           <div class="form-field">
-            <label for="ask-question-input" class="control-label">2. Analytical Question (c)</label>
+            <label for="ask-question-input" class="control-label">Question or Brief Prompt</label>
             <textarea
               id="ask-question-input"
               class="comment-textarea"
@@ -1192,7 +1456,7 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
           </div>
 
           <div class="form-field">
-            <label for="ask-bundle-slug" class="control-label">Optional Output Bundle Slug</label>
+            <label for="ask-bundle-slug" class="control-label">Optional Output Identifier</label>
             <input
               id="ask-bundle-slug"
               type="text"
@@ -1225,7 +1489,7 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
 
           <div style="display: flex; justify-content: flex-end; gap: 8px;">
             <button type="submit" class="btn btn-primary" disabled=${running}>
-              ${running ? 'Running 4-Stage Pipeline…' : 'Run 4-Stage Pipeline →'}
+              ${running ? 'Generating Brief…' : 'Generate Brief'}
             </button>
           </div>
         </form>
@@ -1236,40 +1500,52 @@ function AskPipelineDialog({ dialogRef, onBundleCreated }) {
 
 /**
  * Main Application Component.
- * Follows the `ben-design-prefs` Swiss Quantitative Broadsheet + Archival Press system,
- * starting cleanly at L0 and expanding progressively to L1 and L2+ on click.
  */
 function App() {
   const [bundlesList, setBundlesList] = useState([]);
+  const [mattersList, setMattersList] = useState([]);
   const [currentBundleId, setCurrentBundleId] = useState('legal_motion_1332');
   const [bundle, setBundle] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Progressive spatial expansion state (starts at L0 only)
+  // Progressive 3-column canvas state
   const [pinnedClaimId, setPinnedClaimId] = useState(null);
   const [expandedLevel2Ids, setExpandedLevel2Ids] = useState([]);
   const [hoveredRef, setHoveredRef] = useState(null);
+  const [hoveredLinkId, setHoveredLinkId] = useState(null);
+  const [activeLinkPopover, setActiveLinkPopover] = useState(null);
   const [auditFilter, setAuditFilter] = useState('all');
   const [inspectorNode, setInspectorNode] = useState(null);
 
-  // Antigravity-style inline review & batch regeneration state
-  const [commentingNodeId, setCommentingNodeId] = useState(null);
+  // Secondary tools / progressive trace visibility
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [showPipelineTrace, setShowPipelineTrace] = useState(false);
+  const [expandedTraceSections, setExpandedTraceSections] = useState(() => ({}));
+
+  // Commenting, Review Queue, and Bottom Document Dock state
+  const [commentingKey, setCommentingKey] = useState(null);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [queueDrawerOpen, setQueueDrawerOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [actionError, setActionError] = useState(null);
-  const [expandedTraceSections, setExpandedTraceSections] = useState(() => ({}));
 
-  // Native <dialog> refs for JSON compiler and Ask Pipeline modal
+  const [dockMode, setDockMode] = useState('comment'); // 'comment' | 'followup'
+  const [dockInputText, setDockInputText] = useState('');
+  const [followupRunning, setFollowupRunning] = useState(false);
+  const [followupStatusMsg, setFollowupStatusMsg] = useState(null);
+
+  // Native <dialog> refs
   const dialogRef = useRef(null);
   const askDialogRef = useRef(null);
+  const toolsMenuRef = useRef(null);
   const [compilerJsonText, setCompilerJsonText] = useState(
     JSON.stringify(SAMPLE_TIER1_COMPILE_PAYLOAD, null, 2)
   );
   const [compilerError, setCompilerError] = useState(null);
 
-  // Viewport ref and computed SVG Bezier paths
+  // Viewport ref, grid ref, and computed SVG Bezier links
   const viewportRef = useRef(null);
+  const gridRef = useRef(null);
   const [bezierLinks, setBezierLinks] = useState([]);
 
   const fetchBundlesList = useCallback(async () => {
@@ -1277,6 +1553,14 @@ function App() {
     if (res.ok) {
       const data = await res.json();
       setBundlesList(data);
+    }
+  }, []);
+
+  const fetchMattersList = useCallback(async () => {
+    const res = await fetch('/api/matters');
+    if (res.ok) {
+      const data = await res.json();
+      setMattersList(data.matters || []);
     }
   }, []);
 
@@ -1288,10 +1572,11 @@ function App() {
         const data = await res.json();
         setBundle(data);
         setCurrentBundleId(bId);
-        // Start with only L0 visible; L1 and L2+ expand only when clicked
         setPinnedClaimId(null);
         setExpandedLevel2Ids([]);
         setHoveredRef(null);
+        setActiveLinkPopover(null);
+        setCommentingKey(null);
         setInspectorNode(null);
         setExpandedTraceSections({});
       }
@@ -1302,19 +1587,36 @@ function App() {
 
   useEffect(() => {
     fetchBundlesList();
+    fetchMattersList();
     loadBundle('legal_motion_1332');
-  }, [fetchBundlesList, loadBundle]);
+  }, [fetchBundlesList, fetchMattersList, loadBundle]);
 
-  // Progressive Escape key handling: close Drawer/Queue/Comment -> close L2+ -> close L1
+  // Close tools overflow popover on outside click
+  useEffect(() => {
+    if (!toolsMenuOpen) return;
+    const handleOutside = (e) => {
+      if (toolsMenuRef.current && !toolsMenuRef.current.contains(e.target)) {
+        setToolsMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', handleOutside);
+    return () => window.removeEventListener('pointerdown', handleOutside);
+  }, [toolsMenuOpen]);
+
+  // Progressive Escape key handling
   useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key !== 'Escape') return;
-      if (queueDrawerOpen) {
+      if (toolsMenuOpen) {
+        setToolsMenuOpen(false);
+      } else if (activeLinkPopover) {
+        setActiveLinkPopover(null);
+      } else if (queueDrawerOpen) {
         setQueueDrawerOpen(false);
       } else if (inspectorNode) {
         setInspectorNode(null);
-      } else if (commentingNodeId) {
-        setCommentingNodeId(null);
+      } else if (commentingKey) {
+        setCommentingKey(null);
       } else if (expandedLevel2Ids.length > 0) {
         setExpandedLevel2Ids([]);
       } else if (pinnedClaimId) {
@@ -1323,7 +1625,7 @@ function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [queueDrawerOpen, inspectorNode, commentingNodeId, expandedLevel2Ids, pinnedClaimId]);
+  }, [toolsMenuOpen, activeLinkPopover, queueDrawerOpen, inspectorNode, commentingKey, expandedLevel2Ids, pinnedClaimId]);
 
   const nodesMap = useMemo(() => bundle?.nodes || {}, [bundle]);
 
@@ -1337,17 +1639,13 @@ function App() {
     return set;
   }, [bundle]);
 
-  // L1 only opens when a claim in L0 is explicitly clicked (pinnedClaimId)
   const activeClaimNode = pinnedClaimId ? nodesMap[pinnedClaimId] : null;
 
   const level1Nodes = useMemo(() => {
     if (!activeClaimNode) return [];
-    return (activeClaimNode.direct_child_ids || [])
-      .map((id) => nodesMap[id])
-      .filter(Boolean);
+    return (activeClaimNode.direct_child_ids || []).map((id) => nodesMap[id]).filter(Boolean);
   }, [activeClaimNode, nodesMap]);
 
-  // L2+ only opens when a sub-citation or "View Backing" inside L1/L2 is clicked
   const level2PlusNodes = useMemo(() => {
     const result = [];
     const seen = new Set();
@@ -1380,11 +1678,11 @@ function App() {
     return set;
   }, [pinnedClaimId, expandedLevel2Ids]);
 
-  // Clicking a `<ref id="...">` at L0 opens L1; clicking inside L1/L2 opens L2+
   const handleClickRef = useCallback(
     (targetNodeId, level) => {
       const targetNode = nodesMap[targetNodeId];
       if (!targetNode) return;
+      setActiveLinkPopover(null);
 
       if (level === 0 || targetNode.type === 'claim') {
         if (pinnedClaimId === targetNodeId) {
@@ -1415,6 +1713,7 @@ function App() {
   const handleToggleSubtree = useCallback((parentNode) => {
     const childIds = parentNode.direct_child_ids || [];
     if (childIds.length === 0) return;
+    setActiveLinkPopover(null);
     setExpandedLevel2Ids((prev) => {
       const next = new Set(prev);
       const anyOpen = childIds.some((id) => next.has(id));
@@ -1445,7 +1744,7 @@ function App() {
     setHoveredRef(null);
   }, []);
 
-  // Recompute SVG Bezier connector lines between visible columns
+  // Recompute SVG Bezier connector lines AND interactive midpoint coordinates
   const recomputeConnectors = useCallback(() => {
     const container = viewportRef.current;
     if (!container || !showL1) {
@@ -1455,7 +1754,6 @@ function App() {
     const containerRect = container.getBoundingClientRect();
     const links = [];
 
-    // 1. Connect active Claim span in L0 -> L1 plates in Column 2
     if (pinnedClaimId) {
       const claimBtn = container.querySelector(
         `button[data-ref-node-id="${pinnedClaimId}"][data-ref-level="0"]`
@@ -1466,21 +1764,27 @@ function App() {
         const y1 = srcRect.top + srcRect.height / 2 - containerRect.top;
 
         for (const l1Node of level1Nodes) {
-          const targetCard = container.querySelector(
-            `article[data-card-node-id="${l1Node.id}"]`
-          );
+          const targetCard = container.querySelector(`article[data-card-node-id="${l1Node.id}"]`);
           if (targetCard) {
             const tgtRect = targetCard.getBoundingClientRect();
             const x2 = tgtRect.left - containerRect.left;
             const y2 = tgtRect.top + 18 - containerRect.top;
             const dx = Math.max(32, (x2 - x1) * 0.5);
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
             links.push({
               id: `${pinnedClaimId}->${l1Node.id}`,
+              sourceId: pinnedClaimId,
+              targetId: l1Node.id,
               d: `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`,
               x1,
               y1,
               x2,
               y2,
+              midX,
+              midY,
+              screenMidX: containerRect.left + midX,
+              screenMidY: containerRect.top + midY,
               tier: 1,
             });
           }
@@ -1488,12 +1792,9 @@ function App() {
       }
     }
 
-    // 2. Connect L1 inline sub-refs (or parent plates) -> L2+ plates in Column 3
     if (showL2) {
       for (const l2Node of level2PlusNodes) {
-        const targetCard = container.querySelector(
-          `article[data-card-node-id="${l2Node.id}"]`
-        );
+        const targetCard = container.querySelector(`article[data-card-node-id="${l2Node.id}"]`);
         if (!targetCard) continue;
         const tgtRect = targetCard.getBoundingClientRect();
         const x2 = tgtRect.left - containerRect.left;
@@ -1502,9 +1803,7 @@ function App() {
         const inlineTrigger = container.querySelector(
           `article .clause-highlight[data-ref-node-id="${l2Node.id}"]`
         );
-        const parentL1 = !inlineTrigger
-          ? level1Nodes.find((n) => (n.direct_child_ids || []).includes(l2Node.id))
-          : null;
+        const parentL1 = level1Nodes.find((n) => (n.direct_child_ids || []).includes(l2Node.id));
         const fallbackParentCard = parentL1
           ? container.querySelector(`article[data-card-node-id="${parentL1.id}"]`)
           : null;
@@ -1515,13 +1814,21 @@ function App() {
           const x1 = srcRect.right - containerRect.left;
           const y1 = srcRect.top + srcRect.height / 2 - containerRect.top;
           const dx = Math.max(32, Math.abs(x2 - x1) * 0.5);
+          const midX = (x1 + x2) / 2;
+          const midY = (y1 + y2) / 2;
           links.push({
-            id: `sub->${l2Node.id}`,
+            id: `${parentL1 ? parentL1.id : 'l1'}->${l2Node.id}`,
+            sourceId: parentL1 ? parentL1.id : pinnedClaimId,
+            targetId: l2Node.id,
             d: `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`,
             x1,
             y1,
             x2,
             y2,
+            midX,
+            midY,
+            screenMidX: containerRect.left + midX,
+            screenMidY: containerRect.top + midY,
             tier: 2,
           });
         }
@@ -1535,12 +1842,18 @@ function App() {
     const rafId = requestAnimationFrame(recomputeConnectors);
     window.addEventListener('resize', recomputeConnectors);
     window.addEventListener('scroll', recomputeConnectors, { passive: true });
+    let observer = null;
+    if (typeof ResizeObserver !== 'undefined' && gridRef.current) {
+      observer = new ResizeObserver(() => requestAnimationFrame(recomputeConnectors));
+      observer.observe(gridRef.current);
+    }
     return () => {
       cancelAnimationFrame(rafId);
       window.removeEventListener('resize', recomputeConnectors);
       window.removeEventListener('scroll', recomputeConnectors);
+      observer?.disconnect();
     };
-  }, [recomputeConnectors]);
+  }, [recomputeConnectors, commentingKey, showPipelineTrace, expandedTraceSections, bundle?.comments?.length]);
 
   const handleRunCompiler = async (e) => {
     e.preventDefault();
@@ -1571,7 +1884,7 @@ function App() {
   };
 
   const handleSubmitComment = useCallback(
-    async ({ node_id, section_id, comment_text, suggested_status }) => {
+    async ({ scope = 'node', node_id, section_id, target_label, comment_text, suggested_status }) => {
       if (!currentBundleId) return;
       setSubmittingComment(true);
       setActionError(null);
@@ -1579,7 +1892,14 @@ function App() {
         const res = await fetch(`/api/bundles/${currentBundleId}/comments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ node_id, section_id, comment_text, suggested_status }),
+          body: JSON.stringify({
+            scope,
+            node_id,
+            section_id,
+            target_label,
+            comment_text,
+            suggested_status,
+          }),
         });
         const data = await res.json();
         if (!res.ok) {
@@ -1614,6 +1934,7 @@ function App() {
     if (!currentBundleId) return;
     setRegenerating(true);
     setActionError(null);
+    setFollowupStatusMsg('Triaging feedback notes and regenerating affected sections…');
     try {
       const res = await fetch(`/api/bundles/${currentBundleId}/regenerate`, {
         method: 'POST',
@@ -1626,18 +1947,31 @@ function App() {
         return;
       }
       setBundle(data);
-      setCommentingNodeId(null);
+      setCommentingKey(null);
+      setActiveLinkPopover(null);
       await fetchBundlesList();
     } catch (err) {
       setActionError(err.message);
     } finally {
       setRegenerating(false);
+      setFollowupStatusMsg(null);
     }
   }, [currentBundleId, fetchBundlesList]);
 
-  const handleJumpToNode = useCallback(
-    (nodeId) => {
-      const target = nodesMap[nodeId];
+  const handleJumpToComment = useCallback(
+    (comment) => {
+      if (comment.scope === 'document' || comment.section_id === '__document__') {
+        viewportRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
+      if (comment.scope === 'section' || comment.node_id === '__section__') {
+        const secEl = viewportRef.current?.querySelector(
+          `section[data-section-id="${comment.section_id}"]`
+        );
+        secEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      const target = nodesMap[comment.node_id];
       if (!target) return;
       if (target.type === 'claim') {
         setPinnedClaimId(target.id);
@@ -1653,6 +1987,64 @@ function App() {
     [nodesMap]
   );
 
+  const activeMatterId = useMemo(() => {
+    if (bundle?.matter_id) return bundle.matter_id;
+    if (mattersList.some((m) => m.matter_id === currentBundleId)) return currentBundleId;
+    return mattersList[0]?.matter_id || null;
+  }, [bundle, mattersList, currentBundleId]);
+
+  const handleDockSubmit = async (e) => {
+    e.preventDefault();
+    const text = dockInputText.trim();
+    if (!text) return;
+
+    if (dockMode === 'comment') {
+      await handleSubmitComment({
+        scope: 'document',
+        node_id: '__document__',
+        section_id: '__document__',
+        target_label: bundle?.artifact?.title || 'Overall Memo',
+        comment_text: text,
+      });
+      setDockInputText('');
+      return;
+    }
+
+    // Mode: Ask Follow-up against active matter
+    if (!activeMatterId) {
+      askDialogRef.current?.showModal();
+      return;
+    }
+
+    setFollowupRunning(true);
+    setActionError(null);
+    setFollowupStatusMsg(`Running follow-up against matter '${activeMatterId}'…`);
+    try {
+      const contextualQuestion = bundle?.artifact?.title
+        ? `Follow-up to "${bundle.artifact.title}": ${text}`
+        : text;
+      const newBundle = await streamAskPipeline({
+        matterId: activeMatterId,
+        question: contextualQuestion,
+        bundleId: null,
+        onProgress: (ev) => setFollowupStatusMsg(`[${ev.stage}] ${ev.message}`),
+      });
+      if (newBundle) {
+        await fetchBundlesList();
+        setBundle(newBundle);
+        setCurrentBundleId(newBundle.bundle_id);
+        setPinnedClaimId(null);
+        setExpandedLevel2Ids([]);
+        setDockInputText('');
+      }
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setFollowupRunning(false);
+      setFollowupStatusMsg(null);
+    }
+  };
+
   if (loading || !bundle) {
     return html`
       <div class="app-shell" style="padding: 48px; text-align: center; color: var(--color-text-secondary);">
@@ -1667,16 +2059,18 @@ function App() {
   const hoveredNode = hoveredRef ? nodesMap[hoveredRef.nodeId] : null;
   const allComments = bundle.comments || [];
   const pendingComments = allComments.filter((c) => !c.resolved);
-  const affectedSectionsCount = new Set(pendingComments.map((c) => c.section_id)).size;
+  const docCommentsCount = pendingComments.filter(
+    (c) => c.scope === 'document' || c.section_id === '__document__'
+  ).length;
 
   return html`
     <div class="app-shell">
-      <header class="top-bar" inert=${Boolean(inspectorNode)}>
+      <header class="top-bar" inert=${Boolean(inspectorNode || queueDrawerOpen)}>
         <div class="top-bar-left">
-          <span class="brand-title">Audit-Grounded Document Canvas</span>
+          <span class="brand-title">Audit Canvas</span>
           <span class="divider-vertical" aria-hidden="true"></span>
           <div class="control-group">
-            <label for="bundle-selector" class="control-label">Matter / File</label>
+            <label for="bundle-selector" class="visually-hidden">Select Document</label>
             <select
               id="bundle-selector"
               class="select-control"
@@ -1695,44 +2089,39 @@ function App() {
         </div>
 
         <div class="top-bar-right">
-          <div class="telemetry-summary" aria-label="Document audit summary">
-            <span class="telemetry-stat">
-              <span class="square-marker" aria-hidden="true">▪</span>
-              <span class="font-mono-data">${summary.total_claims || 0}</span>
-              <span>Claims (<span class="font-mono-data">${summary.verified_count || 0}</span> Verified)</span>
-            </span>
-            ${caveatCount > 0 && html`
-              <span class="telemetry-stat">
-                <span class="square-marker square-warning" aria-hidden="true">▪</span>
-                <span class="font-mono-data">${caveatCount}</span>
-                <span>Caveat${caveatCount === 1 ? '' : 's'}</span>
-              </span>
-            `}
-            ${tensionCount > 0 && html`
-              <span class="telemetry-stat">
-                <span class="square-marker square-danger" aria-hidden="true">▪</span>
-                <span class="font-mono-data">${tensionCount}</span>
-                <span>Tension${tensionCount === 1 ? '' : 's'}</span>
-              </span>
-            `}
-          </div>
-
-          <span class="divider-vertical" aria-hidden="true"></span>
-
-          <div class="control-group">
-            <label for="highlight-filter" class="control-label">Highlight</label>
-            <select
-              id="highlight-filter"
-              class="select-control"
-              value=${auditFilter}
-              onChange=${(e) => setAuditFilter(e.target.value)}
+          <div class="status-filter-strip" role="group" aria-label="Filter claims by verification status">
+            <button
+              type="button"
+              class="status-filter-btn ${auditFilter === 'all' ? 'is-active' : ''}"
+              aria-pressed=${auditFilter === 'all'}
+              onClick=${() => setAuditFilter('all')}
             >
-              <option value="all">All Cited Clauses</option>
-              <option value="caveats">Caveats & Assumptions Only</option>
-              ${tensionCount > 0 && html`
-                <option value="tension">Cross-Section Tensions Only</option>
-              `}
-            </select>
+              <span class="status-dot is-verified" aria-hidden="true"></span>
+              <span>All Claims</span>
+              <span class="font-mono-data">(${summary.total_claims || 0})</span>
+            </button>
+            <button
+              type="button"
+              class="status-filter-btn is-caveat ${auditFilter === 'caveats' ? 'is-active' : ''}"
+              aria-pressed=${auditFilter === 'caveats'}
+              onClick=${() => setAuditFilter((f) => (f === 'caveats' ? 'all' : 'caveats'))}
+            >
+              <span class="status-dot is-warning" aria-hidden="true"></span>
+              <span>Caveats</span>
+              <span class="font-mono-data">(${caveatCount})</span>
+            </button>
+            ${tensionCount > 0 && html`
+              <button
+                type="button"
+                class="status-filter-btn is-tension ${auditFilter === 'tension' ? 'is-active' : ''}"
+                aria-pressed=${auditFilter === 'tension'}
+                onClick=${() => setAuditFilter((f) => (f === 'tension' ? 'all' : 'tension'))}
+              >
+                <span class="status-dot is-danger" aria-hidden="true"></span>
+                <span>Tensions</span>
+                <span class="font-mono-data">(${tensionCount})</span>
+              </button>
+            `}
           </div>
 
           <button
@@ -1740,19 +2129,72 @@ function App() {
             class="btn btn-primary"
             onClick=${() => askDialogRef.current?.showModal()}
           >
-            Ask Question
+            <${Icon} name="plus" size=${13} />
+            <span>New Brief</span>
           </button>
 
-          <button
-            type="button"
-            class="btn"
-            onClick=${() => {
-              setCompilerError(null);
-              dialogRef.current?.showModal();
-            }}
-          >
-            Compile / Load JSON
-          </button>
+          <div class="tools-menu-wrap" ref=${toolsMenuRef}>
+            <button
+              type="button"
+              class="btn btn-icon-only"
+              aria-label="Pipeline tools and workspace settings"
+              aria-expanded=${toolsMenuOpen}
+              onClick=${() => setToolsMenuOpen((v) => !v)}
+            >
+              <${Icon} name="more" />
+            </button>
+
+            ${toolsMenuOpen && html`
+              <div class="tools-popover" role="menu">
+                <button
+                  type="button"
+                  class="tools-menu-item"
+                  role="menuitemcheckbox"
+                  aria-checked=${showPipelineTrace}
+                  onClick=${() => {
+                    setShowPipelineTrace((v) => !v);
+                    setToolsMenuOpen(false);
+                  }}
+                >
+                  <div>
+                    <div>Pipeline Reasoning Trace</div>
+                    <span class="tools-menu-sub">Show stage 1–4 notes under sections</span>
+                  </div>
+                  ${showPipelineTrace && html`<${Icon} name="check" size=${14} />`}
+                </button>
+                <button
+                  type="button"
+                  class="tools-menu-item"
+                  role="menuitem"
+                  onClick=${() => {
+                    setToolsMenuOpen(false);
+                    askDialogRef.current?.showModal();
+                  }}
+                >
+                  <div>
+                    <div>Corpus & Rule Library</div>
+                    <span class="tools-menu-sub">Upload matter files or legal authorities</span>
+                  </div>
+                </button>
+                <div class="tools-divider"></div>
+                <button
+                  type="button"
+                  class="tools-menu-item"
+                  role="menuitem"
+                  onClick=${() => {
+                    setToolsMenuOpen(false);
+                    setCompilerError(null);
+                    dialogRef.current?.showModal();
+                  }}
+                >
+                  <div>
+                    <div>Import / Compile JSON</div>
+                    <span class="tools-menu-sub">Advanced Tier-1 / Tier-2 bundle loader</span>
+                  </div>
+                </button>
+              </div>
+            `}
+          </div>
         </div>
       </header>
 
@@ -1761,50 +2203,100 @@ function App() {
         tabindex="-1"
         class="spatial-viewport"
         ref=${viewportRef}
-        inert=${Boolean(inspectorNode)}
+        inert=${Boolean(inspectorNode || queueDrawerOpen)}
       >
         <svg class="connector-svg-layer" aria-hidden="true">
-          ${bezierLinks.map(
-            (link) => html`
+          ${bezierLinks.map((link) => {
+            const targetNode = nodesMap[link.targetId];
+            const roleMeta = getLinkRoleMeta(targetNode);
+            const isHovered = hoveredLinkId === link.id || activeLinkPopover?.id === link.id;
+            const strokeColor = link.tier === 1 ? roleMeta.stroke : '#4B5563';
+            return html`
               <g key=${link.id}>
                 <path
                   d=${link.d}
                   fill="none"
-                  stroke=${link.tier === 1 ? '#14284B' : '#4B5563'}
-                  stroke-width="1.5"
-                  opacity="0.8"
+                  stroke="transparent"
+                  stroke-width="14"
+                  class="bezier-hit-path"
+                  onMouseEnter=${() => setHoveredLinkId(link.id)}
+                  onMouseLeave=${() => setHoveredLinkId(null)}
+                  onClick=${(e) => {
+                    e.stopPropagation();
+                    setActiveLinkPopover(link);
+                  }}
+                />
+                <path
+                  d=${link.d}
+                  fill="none"
+                  class="bezier-stroke"
+                  stroke=${strokeColor}
+                  stroke-width=${isHovered ? '2.25' : '1.5'}
+                  opacity=${isHovered ? '1' : '0.68'}
                 />
                 <rect
                   x=${link.x1 - 2.5}
                   y=${link.y1 - 2.5}
                   width="5"
                   height="5"
-                  fill=${link.tier === 1 ? '#14284B' : '#4B5563'}
+                  fill=${strokeColor}
                 />
                 <rect
                   x=${link.x2 - 2.5}
                   y=${link.y2 - 2.5}
                   width="5"
                   height="5"
-                  fill=${link.tier === 1 ? '#14284B' : '#4B5563'}
+                  fill=${strokeColor}
                 />
               </g>
-            `
-          )}
+            `;
+          })}
         </svg>
 
-        <div class="bounded-canvas-grid ${gridColsClass}">
-          <!-- COLUMN 1 (L0): SYNTHESIZED ARTIFACT PLATE (Always Visible) -->
+        ${bezierLinks.length > 0 && html`
+          <div class="connector-handles-layer">
+            ${bezierLinks.map((link) => {
+              const targetNode = nodesMap[link.targetId];
+              const roleMeta = getLinkRoleMeta(targetNode);
+              const linkNoteCount = allComments.filter(
+                (c) => !c.resolved && c.node_id === link.targetId && c.scope === 'link'
+              ).length;
+              const isOpen = activeLinkPopover?.id === link.id;
+              return html`
+                <button
+                  key=${`handle-${link.id}`}
+                  type="button"
+                  class="bezier-link-handle ${roleMeta.toneClass} ${isOpen ? 'is-active' : ''}"
+                  style=${{ left: `${link.midX}px`, top: `${link.midY}px` }}
+                  aria-label=${`Inspect or comment on ${roleMeta.label} connection to ${targetNode?.title || link.targetId}`}
+                  onMouseEnter=${() => setHoveredLinkId(link.id)}
+                  onMouseLeave=${() => setHoveredLinkId(null)}
+                  onClick=${(e) => {
+                    e.stopPropagation();
+                    setActiveLinkPopover(isOpen ? null : link);
+                  }}
+                >
+                  <span>${roleMeta.label}</span>
+                  ${linkNoteCount > 0 && html`
+                    <span class="bezier-link-count">· ${linkNoteCount}</span>
+                  `}
+                </button>
+              `;
+            })}
+          </div>
+        `}
+
+        <div class="bounded-canvas-grid ${gridColsClass}" ref=${gridRef}>
+          <!-- COLUMN 1: DOCUMENT -->
           <div class="column-lane">
             <div class="lane-header">
               <span class="lane-title-group">
-                <span class="lane-index">L0</span>
-                <span class="lane-title">· Synthesized Document</span>
+                <span class="lane-title">Document</span>
               </span>
               <span class="lane-caption">
                 ${showL1
-                  ? 'Click active clause or × Close L1 to collapse'
-                  : 'Click any highlighted clause to inspect primary support →'}
+                  ? 'Click any highlighted claim or curve handle to verify & comment'
+                  : 'Click any highlighted claim to trace supporting proof'}
               </span>
             </div>
 
@@ -1812,18 +2304,18 @@ function App() {
               <div class="artifact-header">
                 <h1 class="artifact-title">${bundle.artifact.title}</h1>
                 <div class="artifact-meta-ledger">
-                  <span class="meta-pair">
-                    <span class="kicker-label">Version</span>
-                    <span class="font-mono-data">${bundle.artifact.version}</span>
-                  </span>
                   ${Object.entries(bundle.artifact.metadata || {}).map(
                     ([k, v]) => html`
                       <span key=${k} class="meta-pair">
-                        <span class="kicker-label">${k.replace(/_/g, ' ')}</span>
+                        <span class="control-label">${k.replace(/_/g, ' ')}</span>
                         <span>${v}</span>
                       </span>
                     `
                   )}
+                  <span class="meta-pair">
+                    <span class="control-label">Verified</span>
+                    <span class="font-mono-data">${summary.verified_count || 0}/${summary.total_claims || 0}</span>
+                  </span>
                 </div>
                 ${bundle.artifact.summary && html`
                   <p class="artifact-summary">${bundle.artifact.summary}</p>
@@ -1836,12 +2328,8 @@ function App() {
                     key=${ten.tension_id}
                     class="tension-callout ${ten.severity === 'warning' ? 'is-warning' : ''}"
                   >
-                    <div
-                      class="tension-callout-header ${ten.severity === 'warning' ? 'is-warning' : ''}"
-                    >
-                      <span>
-                        ▪ Cross-Section Tension Flagged (${ten.severity})
-                      </span>
+                    <div class="tension-callout-header ${ten.severity === 'warning' ? 'is-warning' : ''}">
+                      <span>Cross-Section Tension (${ten.severity})</span>
                       <span class="font-mono-data">${ten.tension_id}</span>
                     </div>
                     <p class="tension-desc">${ten.description}</p>
@@ -1855,7 +2343,7 @@ function App() {
                             class="btn-link"
                             onClick=${() => handleClickRef(cid, 0)}
                           >
-                            ${pinnedClaimId === cid ? 'Viewing' : 'Inspect'} “${cNode ? cNode.title : cid}” →
+                            ${pinnedClaimId === cid ? 'Viewing' : 'Inspect'} “${cNode ? cNode.title : cid}”
                           </button>
                         `;
                       })}
@@ -1864,7 +2352,7 @@ function App() {
                 `
               )}
 
-              ${(bundle.artifact.sections || []).map((sec, idx) => {
+              ${(bundle.artifact.sections || []).map((sec) => {
                 const sa = bundle.stage_artifacts || {};
                 const outlineSec = ((sa.outline_plan && sa.outline_plan.sections) || []).find(
                   (s) => s.section_id === sec.section_id
@@ -1874,93 +2362,15 @@ function App() {
                 const auditSec = (sa.audits && sa.audits[sec.section_id]) || null;
                 const hasTrace = Boolean(outlineSec || ledgerSec || draftSec || auditSec);
                 const isTraceOpen = Boolean(expandedTraceSections[sec.section_id]);
+                const secPanelKey = `section:${sec.section_id}`;
+                const isSecCommentOpen = commentingKey === secPanelKey;
+                const secCommentCount = pendingComments.filter(
+                  (c) => c.scope === 'section' && c.section_id === sec.section_id
+                ).length;
 
                 return html`
-                  <section key=${sec.section_id} class="artifact-section">
-                    <div class="card-meta-row">
-                      <h2 class="section-heading">${sec.section_title}</h2>
-                      <div style="display: flex; align-items: center; gap: 10px;">
-                        ${hasTrace && html`
-                          <button
-                            type="button"
-                            class="btn-link"
-                            onClick=${() =>
-                              setExpandedTraceSections((prev) => ({
-                                ...prev,
-                                [sec.section_id]: !prev[sec.section_id],
-                              }))
-                            }
-                          >
-                            ${isTraceOpen ? '▾ Hide Stage Trace' : '▪ Stage Trace (1–4)'}
-                          </button>
-                        `}
-                        <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                          SEC. 0${idx + 1}
-                        </span>
-                      </div>
-                    </div>
-
-                    ${hasTrace && isTraceOpen && html`
-                      <div class="stage-trace-drawer">
-                        ${outlineSec && html`
-                          <div class="stage-trace-row">
-                            <span class="kicker-label kicker-accent">Stage 1 · Architect Plan & Routing</span>
-                            <div><strong>Intention:</strong> ${outlineSec.stated_intention}</div>
-                            ${outlineSec.routing_rationale && html`
-                              <div><strong>Rationale:</strong> ${outlineSec.routing_rationale}</div>
-                            `}
-                            <div class="provenance-caption">
-                              ${(outlineSec.governing_authorities || []).length > 0
-                                ? `Authorities: ${outlineSec.governing_authorities.map((a) => `[${a.auth_id}]`).join(', ')}`
-                                : 'No canonical authorities assigned (grounded in L1 evidence & commonsense/arithmetic)'}
-                            </div>
-                          </div>
-                        `}
-                        ${ledgerSec && html`
-                          <div class="stage-trace-row">
-                            <span class="kicker-label">Stage 2 · Evidence Harvest</span>
-                            <div>
-                              ${ledgerSec.harvest_summary ||
-                                `Collected ${(ledgerSec.verified_facts || []).length} verified fact(s) and ${(ledgerSec.unresolved_gaps || []).length} unresolved gap(s).`}
-                            </div>
-                            <div class="provenance-caption">
-                              Facts verified: ${(ledgerSec.verified_facts || []).length} · Unresolved gaps: ${(ledgerSec.unresolved_gaps || []).length}
-                              ${(ledgerSec.additional_authorities || []).length > 0
-                                ? ` · Discovered rules: ${ledgerSec.additional_authorities.map((a) => `[${a.auth_id}]`).join(', ')}`
-                                : ''}
-                            </div>
-                          </div>
-                        `}
-                        ${draftSec && html`
-                          <div class="stage-trace-row">
-                            <span class="kicker-label">Stage 3 · Drafting Synthesis</span>
-                            <div>
-                              ${draftSec.drafting_notes ||
-                                'Compiled section prose and structured support cards under closed-world verification.'}
-                            </div>
-                          </div>
-                        `}
-                        ${auditSec && html`
-                          <div class="stage-trace-row">
-                            <span class="kicker-label">Stage 4 · Independent Audit Gate</span>
-                            <div class="stage-trace-checks">
-                              <span class="arch-stamp ${auditSec.check_a_relevance ? '' : 'is-danger'}">
-                                Check A Relevance: ${auditSec.check_a_relevance ? 'PASS' : 'FAIL'}
-                              </span>
-                              <span class="arch-stamp ${auditSec.check_b_congruence ? '' : 'is-danger'}">
-                                Check B Congruence: ${auditSec.check_b_congruence ? 'PASS' : 'FAIL'}
-                              </span>
-                              <span class="arch-stamp ${auditSec.check_c_intent ? '' : 'is-caveat'}">
-                                Check C Intent: ${auditSec.check_c_intent ? 'PASS' : 'FAIL'}
-                              </span>
-                            </div>
-                            ${auditSec.audit_rationale && html`
-                              <div>${auditSec.audit_rationale}</div>
-                            `}
-                          </div>
-                        `}
-                      </div>
-                    `}
+                  <section key=${sec.section_id} data-section-id=${sec.section_id} class="artifact-section">
+                    <h2 class="section-heading">${sec.section_title}</h2>
 
                     <p class="section-prose">
                       ${renderAnnotatedText({
@@ -1975,72 +2385,172 @@ function App() {
                         level: 0,
                       })}
                     </p>
+
+                    <div class="section-footer-actions">
+                      <button
+                        type="button"
+                        class="btn-link is-muted"
+                        onClick=${() => setCommentingKey(isSecCommentOpen ? null : secPanelKey)}
+                      >
+                        <${Icon} name="comment" size=${12} />
+                        <span>
+                          ${isSecCommentOpen
+                            ? 'Close section note'
+                            : secCommentCount > 0
+                            ? `Section notes (${secCommentCount})`
+                            : 'Comment on section'}
+                        </span>
+                      </button>
+
+                      ${showPipelineTrace && hasTrace && html`
+                        <button
+                          type="button"
+                          class="btn-link is-muted"
+                          onClick=${() =>
+                            setExpandedTraceSections((prev) => ({
+                              ...prev,
+                              [sec.section_id]: !prev[sec.section_id],
+                            }))
+                          }
+                        >
+                          <${Icon} name=${isTraceOpen ? 'chevronDown' : 'chevronRight'} size=${12} />
+                          <span>${isTraceOpen ? 'Hide pipeline trace' : 'Pipeline trace (1–4)'}</span>
+                        </button>
+                      `}
+                    </div>
+
+                    <${InlineCommentPanel}
+                      targetKey=${secPanelKey}
+                      scope="section"
+                      nodeId="__section__"
+                      sectionId=${sec.section_id}
+                      targetLabel=${sec.section_title}
+                      placeholder="Suggest revisions or missing analysis for this section..."
+                      comments=${allComments}
+                      nodesMap=${nodesMap}
+                      isOpen=${isSecCommentOpen}
+                      onClose=${() => setCommentingKey(null)}
+                      onSubmit=${handleSubmitComment}
+                      onDelete=${handleDeleteComment}
+                      submitting=${submittingComment}
+                      allowStatusOverride=${false}
+                    />
+
+                    ${showPipelineTrace && hasTrace && isTraceOpen && html`
+                      <div class="stage-trace-drawer">
+                        ${outlineSec && html`
+                          <div class="stage-trace-row">
+                            <span class="control-label">Stage 1 · Plan & Routing</span>
+                            <div><strong>Intention:</strong> ${outlineSec.stated_intention}</div>
+                            ${outlineSec.routing_rationale && html`
+                              <div><strong>Rationale:</strong> ${outlineSec.routing_rationale}</div>
+                            `}
+                          </div>
+                        `}
+                        ${ledgerSec && html`
+                          <div class="stage-trace-row">
+                            <span class="control-label">Stage 2 · Evidence Harvest</span>
+                            <div>
+                              ${ledgerSec.harvest_summary ||
+                                `Collected ${(ledgerSec.verified_facts || []).length} verified fact(s) and ${(ledgerSec.unresolved_gaps || []).length} gap(s).`}
+                            </div>
+                          </div>
+                        `}
+                        ${draftSec && html`
+                          <div class="stage-trace-row">
+                            <span class="control-label">Stage 3 · Synthesis Notes</span>
+                            <div>
+                              ${draftSec.drafting_notes || 'Compiled section prose under closed-world verification.'}
+                            </div>
+                          </div>
+                        `}
+                        ${auditSec && html`
+                          <div class="stage-trace-row">
+                            <span class="control-label">Stage 4 · Independent Audit</span>
+                            <div class="stage-trace-checks">
+                              <span class="arch-stamp ${auditSec.check_a_relevance ? '' : 'is-danger'}">
+                                Relevance: ${auditSec.check_a_relevance ? 'PASS' : 'FAIL'}
+                              </span>
+                              <span class="arch-stamp ${auditSec.check_b_congruence ? '' : 'is-danger'}">
+                                Congruence: ${auditSec.check_b_congruence ? 'PASS' : 'FAIL'}
+                              </span>
+                              <span class="arch-stamp ${auditSec.check_c_intent ? '' : 'is-caveat'}">
+                                Intent: ${auditSec.check_c_intent ? 'PASS' : 'FAIL'}
+                              </span>
+                            </div>
+                            ${auditSec.audit_rationale && html`<div>${auditSec.audit_rationale}</div>`}
+                          </div>
+                        `}
+                      </div>
+                    `}
                   </section>
                 `;
               })}
             </article>
           </div>
 
-          <!-- COLUMN 2 (L1): PRIMARY REASONING & EVIDENCE PLATES (Rendered only when an L0 clause is clicked) -->
+          <!-- COLUMN 2: PROOF & REASONING -->
           ${showL1 && html`
             <div class="column-lane lane-analytical">
               <div class="lane-header">
                 <span class="lane-title-group">
-                  <span class="lane-index">L1</span>
-                  <span class="lane-title">· Primary Support</span>
-                  <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                    (${level1Nodes.length})
-                  </span>
+                  <span class="lane-title">Proof & Reasoning</span>
+                  <span class="lane-count">(${level1Nodes.length})</span>
                 </span>
                 <button
                   type="button"
-                  class="btn-link"
+                  class="btn-link is-muted"
                   onClick=${() => {
                     setPinnedClaimId(null);
                     setExpandedLevel2Ids([]);
+                    setActiveLinkPopover(null);
                   }}
                 >
-                  × Close L1
+                  <${Icon} name="close" size=${12} />
+                  <span>Close</span>
                 </button>
               </div>
 
               <div class="spatial-card-stack">
                 <div class="claim-context-bar">
                   <div class="card-meta-row">
-                    <span class="kicker-label kicker-accent">▪ Selected Claim</span>
-                    <div style="display: flex; align-items: center; gap: 8px;">
-                      <button
-                        type="button"
-                        class="btn-link"
-                        onClick=${() =>
-                          setCommentingNodeId(
-                            commentingNodeId === activeClaimNode.id ? null : activeClaimNode.id
-                          )
-                        }
-                      >
-                        ${commentingNodeId === activeClaimNode.id
-                          ? 'Close Note'
-                          : '+ Comment on Claim'}
-                      </button>
-                      <span
-                        class="arch-stamp ${isCaveatStatus(activeClaimNode.audit?.status) ? 'is-caveat' : ''}"
-                      >
-                        ${isCaveatStatus(activeClaimNode.audit?.status) ? '▪ ' : ''}
-                        ${formatAuditStatus(activeClaimNode.audit?.status || 'verified')}
-                      </span>
-                    </div>
+                    <span class="control-label">Selected Claim</span>
+                    <span class="arch-stamp ${isCaveatStatus(activeClaimNode.audit?.status) ? 'is-caveat' : ''}">
+                      ${formatAuditStatus(activeClaimNode.audit?.status || 'verified')}
+                    </span>
                   </div>
                   <div class="card-heading">${activeClaimNode.title}</div>
-                  ${activeClaimNode.audit?.evaluator_note && html`
-                    <div class="provenance-caption">
-                      ${activeClaimNode.audit.evaluator_note}
-                    </div>
+                  ${activeClaimNode.audit?.evaluator_note &&
+                    activeClaimNode.audit.evaluator_note !== 'Verified across attached local support nodes.' && html`
+                    <div class="provenance-caption">${activeClaimNode.audit.evaluator_note}</div>
                   `}
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <button
+                      type="button"
+                      class="plate-action-btn"
+                      onClick=${() => {
+                        const key = `node:${activeClaimNode.id}`;
+                        setCommentingKey(commentingKey === key ? null : key);
+                      }}
+                    >
+                      <${Icon} name="comment" size=${13} />
+                      <span>
+                        ${commentingKey === `node:${activeClaimNode.id}`
+                          ? 'Close Note'
+                          : 'Comment on Claim'}
+                      </span>
+                    </button>
+                  </div>
                   <${InlineCommentPanel}
-                    node=${activeClaimNode}
+                    targetKey=${`node:${activeClaimNode.id}`}
+                    scope="node"
+                    nodeId=${activeClaimNode.id}
+                    sectionId=${activeClaimNode.section_id}
+                    targetLabel=${activeClaimNode.title}
                     comments=${allComments}
-                    isOpen=${commentingNodeId === activeClaimNode.id}
-                    onClose=${() => setCommentingNodeId(null)}
+                    nodesMap=${nodesMap}
+                    isOpen=${commentingKey === `node:${activeClaimNode.id}`}
+                    onClose=${() => setCommentingKey(null)}
                     onSubmit=${handleSubmitComment}
                     onDelete=${handleDeleteComment}
                     submitting=${submittingComment}
@@ -2048,11 +2558,10 @@ function App() {
                 </div>
 
                 ${level1Nodes.map(
-                  (node, idx) => html`
+                  (node) => html`
                     <${SpatialNodeCard}
                       key=${node.id}
                       node=${node}
-                      plateIndexLabel=${`FIG. 1.${idx + 1}`}
                       level=${1}
                       nodesMap=${nodesMap}
                       activeNodeIds=${activeNodeIds}
@@ -2060,8 +2569,8 @@ function App() {
                       tensionClaimIds=${tensionClaimIds}
                       auditFilter=${auditFilter}
                       comments=${allComments}
-                      commentingNodeId=${commentingNodeId}
-                      onToggleComment=${setCommentingNodeId}
+                      commentingKey=${commentingKey}
+                      onToggleComment=${setCommentingKey}
                       onSubmitComment=${handleSubmitComment}
                       onDeleteComment=${handleDeleteComment}
                       submittingComment=${submittingComment}
@@ -2070,7 +2579,7 @@ function App() {
                       onClickRef=${handleClickRef}
                       onToggleSubtree=${handleToggleSubtree}
                       onOpenInspector=${setInspectorNode}
-                      isFocused=${hoveredRef?.nodeId === node.id}
+                      isFocused=${hoveredRef?.nodeId === node.id || activeLinkPopover?.targetId === node.id}
                     />
                   `
                 )}
@@ -2078,33 +2587,33 @@ function App() {
             </div>
           `}
 
-          <!-- COLUMN 3 (L2+): BACKING AUTHORITIES & SUB-CITATIONS PLATES (Rendered only when an L1 sub-citation is clicked) -->
+          <!-- COLUMN 3: SOURCES & LAW -->
           ${showL2 && html`
             <div class="column-lane lane-analytical">
               <div class="lane-header">
                 <span class="lane-title-group">
-                  <span class="lane-index">L2+</span>
-                  <span class="lane-title">· Backing Authorities</span>
-                  <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                    (${level2PlusNodes.length})
-                  </span>
+                  <span class="lane-title">Sources & Law</span>
+                  <span class="lane-count">(${level2PlusNodes.length})</span>
                 </span>
                 <button
                   type="button"
-                  class="btn-link"
-                  onClick=${() => setExpandedLevel2Ids([])}
+                  class="btn-link is-muted"
+                  onClick=${() => {
+                    setExpandedLevel2Ids([]);
+                    setActiveLinkPopover(null);
+                  }}
                 >
-                  × Close L2+
+                  <${Icon} name="close" size=${12} />
+                  <span>Close</span>
                 </button>
               </div>
 
               <div class="spatial-card-stack">
                 ${level2PlusNodes.map(
-                  (node, idx) => html`
+                  (node) => html`
                     <${SpatialNodeCard}
                       key=${node.id}
                       node=${node}
-                      plateIndexLabel=${`FIG. 2.${idx + 1}`}
                       level=${2}
                       nodesMap=${nodesMap}
                       activeNodeIds=${activeNodeIds}
@@ -2112,8 +2621,8 @@ function App() {
                       tensionClaimIds=${tensionClaimIds}
                       auditFilter=${auditFilter}
                       comments=${allComments}
-                      commentingNodeId=${commentingNodeId}
-                      onToggleComment=${setCommentingNodeId}
+                      commentingKey=${commentingKey}
+                      onToggleComment=${setCommentingKey}
                       onSubmitComment=${handleSubmitComment}
                       onDeleteComment=${handleDeleteComment}
                       submittingComment=${submittingComment}
@@ -2122,7 +2631,7 @@ function App() {
                       onClickRef=${handleClickRef}
                       onToggleSubtree=${handleToggleSubtree}
                       onOpenInspector=${setInspectorNode}
-                      isFocused=${hoveredRef?.nodeId === node.id}
+                      isFocused=${hoveredRef?.nodeId === node.id || activeLinkPopover?.targetId === node.id}
                     />
                   `
                 )}
@@ -2132,17 +2641,17 @@ function App() {
         </div>
       </main>
 
-      <!-- SHARP EDITORIAL HOVER TOOLTIP PREVIEW -->
+      <!-- HOVER PREVIEW TOOLTIP -->
       ${hoveredNode && html`
         <div
           class="hover-tooltip-preview"
           style=${{
-            top: `${Math.min(window.innerHeight - 130, hoveredRef.rect.bottom + 8)}px`,
-            left: `${Math.min(window.innerWidth - 320, Math.max(12, hoveredRef.rect.left))}px`,
+            top: `${Math.min(window.innerHeight - 120, hoveredRef.rect.bottom + 8)}px`,
+            left: `${Math.min(window.innerWidth - 312, Math.max(12, hoveredRef.rect.left))}px`,
           }}
         >
           <div class="card-meta-row">
-            <span class="kicker-label">▪ ${hoveredNode.type}</span>
+            <span class="control-label">${formatNodeRole(hoveredNode.type)}</span>
             <span class="arch-stamp ${isCaveatStatus(hoveredNode.audit?.status) ? 'is-caveat' : ''}">
               ${formatAuditStatus(hoveredNode.audit?.status || 'verified')}
             </span>
@@ -2150,51 +2659,123 @@ function App() {
           <div class="card-heading" style="font-size: 14.5px;">
             ${hoveredNode.title}
           </div>
-          <div class="kicker-label kicker-accent" style="margin-top: 2px;">
+          <div class="provenance-caption" style="color: var(--color-accent-primary);">
             ${hoveredRef.level === 0
-              ? `Click to expand ${hoveredNode.direct_child_ids?.length || 0} L1 support plate(s) →`
-              : 'Click to expand in L2+ Backing column →'}
+              ? `Click to inspect ${hoveredNode.direct_child_ids?.length || 0} supporting item(s)`
+              : 'Click to open underlying rule or source'}
           </div>
         </div>
       `}
 
-      <!-- STICKY BATCH REVIEW QUEUE BAR (Antigravity-Style Regeneration) -->
-      ${(pendingComments.length > 0 || regenerating || actionError) && html`
-        <footer class="review-queue-bar" inert=${Boolean(inspectorNode || queueDrawerOpen)}>
-          <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
-            <span class="kicker-label kicker-accent">
-              ▪ ${pendingComments.length} Queued Review Note${pendingComments.length === 1 ? '' : 's'}
-            </span>
-            <span class="provenance-caption">
-              Across <span class="font-mono-data">${affectedSectionsCount}</span> section${affectedSectionsCount === 1 ? '' : 's'}
-            </span>
+      <!-- ANCHORED LOGICAL LINK COMMENT POPOVER -->
+      <${LinkCommentPopover}
+        link=${activeLinkPopover}
+        nodesMap=${nodesMap}
+        comments=${allComments}
+        onClose=${() => setActiveLinkPopover(null)}
+        onSubmitComment=${handleSubmitComment}
+        onDeleteComment=${handleDeleteComment}
+        onOpenInspector=${setInspectorNode}
+        submitting=${submittingComment}
+      />
+
+      <!-- PERSISTENT BOTTOM DOCUMENT DOCK: OVERALL FEEDBACK + FOLLOW-UP QUESTION + REVIEW QUEUE -->
+      <footer class="document-dock" inert=${Boolean(inspectorNode || queueDrawerOpen)}>
+        ${(followupStatusMsg || actionError) && html`
+          <div
+            class="dock-stream-banner"
+            style=${actionError
+              ? 'background-color: var(--color-danger-subtle); border-color: var(--color-danger-border); color: var(--color-danger);'
+              : ''}
+          >
+            <span>${actionError ? `Error: ${actionError}` : followupStatusMsg}</span>
             ${actionError && html`
-              <span class="provenance-caption" style="color: var(--color-danger);">
-                Error: ${actionError}
-              </span>
+              <button type="button" class="btn-link" onClick=${() => setActionError(null)}>
+                Dismiss
+              </button>
             `}
           </div>
-          <div style="display: flex; align-items: center; gap: 10px;">
+        `}
+
+        <div class="dock-main-row">
+          <div class="dock-mode-switch" role="tablist" aria-label="Document feedback mode">
             <button
               type="button"
-              class="btn"
-              onClick=${() => setQueueDrawerOpen(true)}
+              role="tab"
+              aria-selected=${dockMode === 'comment'}
+              class="dock-mode-btn ${dockMode === 'comment' ? 'is-active' : ''}"
+              onClick=${() => setDockMode('comment')}
             >
-              Inspect Queue
+              <${Icon} name="comment" size=${13} />
+              <span>Overall Comment</span>
             </button>
             <button
               type="button"
-              class="btn btn-primary"
-              disabled=${regenerating || pendingComments.length === 0}
-              onClick=${handleRegenerateBatch}
+              role="tab"
+              aria-selected=${dockMode === 'followup'}
+              class="dock-mode-btn ${dockMode === 'followup' ? 'is-active' : ''}"
+              onClick=${() => setDockMode('followup')}
             >
-              ${regenerating
-                ? 'Triaging & Regenerating…'
-                : `Apply Feedback & Re-compile (${pendingComments.length}) →`}
+              <${Icon} name="link" size=${13} />
+              <span>Ask Follow-up</span>
             </button>
           </div>
-        </footer>
-      `}
+
+          <form class="dock-composer-form" onSubmit=${handleDockSubmit}>
+            <label for="document-dock-input" class="visually-hidden">
+              ${dockMode === 'comment' ? 'Comment on overall document' : 'Ask a follow-up question'}
+            </label>
+            <input
+              id="document-dock-input"
+              type="text"
+              class="dock-text-input"
+              placeholder=${dockMode === 'comment'
+                ? 'Comment on the overall memo (e.g., clarify tone, add missing analysis, check cross-references)...'
+                : `Ask a follow-up question on ${activeMatterId || 'this matter'}...`}
+              value=${dockInputText}
+              disabled=${submittingComment || followupRunning || regenerating}
+              onInput=${(e) => setDockInputText(e.target.value)}
+            />
+            <button
+              type="submit"
+              class="btn ${pendingComments.length === 0 ? 'btn-primary' : ''}"
+              disabled=${!dockInputText.trim() || submittingComment || followupRunning || regenerating}
+            >
+              ${dockMode === 'comment'
+                ? submittingComment
+                  ? 'Saving…'
+                  : docCommentsCount > 0
+                  ? `Queue Note (${docCommentsCount})`
+                  : 'Queue Note'
+                : followupRunning
+                ? 'Running…'
+                : 'Run Follow-up'}
+            </button>
+          </form>
+
+          ${pendingComments.length > 0 && html`
+            <div class="dock-queue-cluster">
+              <button
+                type="button"
+                class="btn"
+                onClick=${() => setQueueDrawerOpen(true)}
+              >
+                Review Queue (${pendingComments.length})
+              </button>
+              <button
+                type="button"
+                class="btn btn-primary"
+                disabled=${regenerating || followupRunning}
+                onClick=${handleRegenerateBatch}
+              >
+                ${regenerating
+                  ? 'Regenerating…'
+                  : `Apply Feedback & Re-compile (${pendingComments.length})`}
+              </button>
+            </div>
+          `}
+        </div>
+      </footer>
 
       <!-- SLIDE-OVER SOURCE INSPECTOR DRAWER -->
       <${SourceInspectorDrawer}
@@ -2202,23 +2783,25 @@ function App() {
         onClose=${() => setInspectorNode(null)}
       />
 
-      <!-- SLIDE-OVER BATCH REVIEW QUEUE DRAWER -->
+      <!-- SLIDE-OVER REVIEW QUEUE DRAWER -->
       <${ReviewQueueDrawer}
         isOpen=${queueDrawerOpen}
         pendingComments=${pendingComments}
         nodesMap=${nodesMap}
         onClose=${() => setQueueDrawerOpen(false)}
-        onJumpToNode=${handleJumpToNode}
+        onJumpToComment=${handleJumpToComment}
         onDeleteComment=${handleDeleteComment}
         onRegenerate=${handleRegenerateBatch}
         regenerating=${regenerating}
       />
 
-      <!-- NATIVE DIALOG FOR ASKING A NEW QUESTION / RUNNING 4-STAGE PIPELINE -->
+      <!-- WORKSPACE / NEW QUESTION / CORPUS DIALOG -->
       <${AskPipelineDialog}
         dialogRef=${askDialogRef}
+        activeMatterHint=${activeMatterId}
         onBundleCreated=${async (newBundle) => {
           await fetchBundlesList();
+          await fetchMattersList();
           setBundle(newBundle);
           setCurrentBundleId(newBundle.bundle_id);
           setPinnedClaimId(null);
@@ -2226,7 +2809,7 @@ function App() {
         }}
       />
 
-      <!-- NATIVE DIALOG FOR TIER-1 COMPILER & CUSTOM BUNDLE LOADER -->
+      <!-- ADVANCED TIER-1 / TIER-2 JSON COMPILER DIALOG -->
       <dialog
         ref=${dialogRef}
         class="compiler-dialog"
@@ -2236,19 +2819,18 @@ function App() {
         <div class="dialog-inner">
           <div class="card-meta-row">
             <h2 id="compiler-dialog-title" class="card-heading" style="font-size: 17px;">
-              Compile Tier-1 Sections or Load Tier-2 Bundle JSON
+              Import / Compile Bundle JSON
             </h2>
             <form method="dialog">
-              <button type="submit" class="btn">Close</button>
+              <button type="submit" class="btn btn-icon-only" aria-label="Close JSON compiler">
+                <${Icon} name="close" />
+              </button>
             </form>
           </div>
 
           <p class="provenance-caption">
-            Paste either a Tier-1 <code class="font-mono-data">CompilePipelineRequest</code> (runs
-            <code class="font-mono-data">SectionValidator</code>,
-            <code class="font-mono-data">StitchInvariantGate</code>, and
-            <code class="font-mono-data">CompiledGraphBuilder</code>) or a Tier-2
-            <code class="font-mono-data">CompiledBundle</code> JSON payload.
+            Paste a Tier-1 <code class="font-mono-data">CompilePipelineRequest</code> or Tier-2
+            <code class="font-mono-data">CompiledBundle</code> JSON payload to validate and render on the canvas.
           </p>
 
           <form onSubmit=${handleRunCompiler} style="display: flex; flex-direction: column; gap: 12px;">
@@ -2279,10 +2861,10 @@ function App() {
                   setCompilerJsonText(JSON.stringify(SAMPLE_TIER1_COMPILE_PAYLOAD, null, 2))
                 }
               >
-                Reset Sample Payload
+                Reset Sample
               </button>
               <button type="submit" class="btn btn-primary">
-                Validate & Render on Canvas
+                Validate & Render
               </button>
             </div>
           </form>

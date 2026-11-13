@@ -19,6 +19,7 @@ from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import LLMProvider, create_llm_provider
 from app.models import (
     AuditStatus,
+    CommentScope,
     CompiledBundle,
     CompiledGraphBuilder,
     ReviewComment,
@@ -105,10 +106,12 @@ class AskMatterRequest(BaseModel):
 
 
 class AddCommentRequest(BaseModel):
-    """Request body for anchoring a human review comment onto a graph node."""
+    """Request body for anchoring feedback onto a node, logical link, section, or overall document."""
 
-    node_id: str
-    section_id: str
+    scope: CommentScope = "node"
+    node_id: Optional[str] = None
+    section_id: Optional[str] = None
+    target_label: Optional[str] = None
     comment_text: str = Field(min_length=1)
     suggested_status: Optional[AuditStatus] = None
 
@@ -514,20 +517,40 @@ async def add_review_comment(
     req: AddCommentRequest,
     request: Request,
 ) -> CompiledBundle:
-    """Anchors a human review comment onto an `L0`, `L1`, or `L2+` node in a bundle."""
+    """Anchors a human review comment onto a node, logical link, section, or overall document."""
     if bundle_id not in BUNDLE_STORE:
         raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' not found.")
 
     bundle = BUNDLE_STORE[bundle_id]
-    if req.node_id not in bundle.nodes:
-        raise HTTPException(
-            status_code=422, detail=f"Target node '{req.node_id}' not found in bundle."
-        )
+    if req.scope in ("node", "link"):
+        if not req.node_id or req.node_id not in bundle.nodes:
+            raise HTTPException(
+                status_code=422, detail=f"Target node '{req.node_id}' not found in bundle."
+            )
+        target_node = bundle.nodes[req.node_id]
+        resolved_node_id = req.node_id
+        resolved_section_id = req.section_id or target_node.section_id
+        resolved_label = req.target_label or target_node.title
+    elif req.scope == "section":
+        valid_sections = {s.section_id: s.section_title for s in bundle.artifact.sections}
+        if not req.section_id or req.section_id not in valid_sections:
+            raise HTTPException(
+                status_code=422, detail=f"Target section '{req.section_id}' not found in bundle."
+            )
+        resolved_node_id = "__section__"
+        resolved_section_id = req.section_id
+        resolved_label = req.target_label or valid_sections[req.section_id]
+    else:
+        resolved_node_id = "__document__"
+        resolved_section_id = "__document__"
+        resolved_label = req.target_label or bundle.artifact.title
 
     comment = ReviewComment(
         comment_id=f"cmt_{uuid.uuid4().hex[:8]}",
-        node_id=req.node_id,
-        section_id=req.section_id,
+        scope=req.scope,
+        node_id=resolved_node_id,
+        section_id=resolved_section_id,
+        target_label=resolved_label,
         comment_text=req.comment_text,
         suggested_status=req.suggested_status,
         resolved=False,

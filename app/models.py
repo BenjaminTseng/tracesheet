@@ -438,13 +438,18 @@ class GraphNode(BaseModel):
     audit: NodeAudit = Field(default_factory=NodeAudit)
 
 
+CommentScope = Literal["node", "link", "section", "document"]
+
+
 class ReviewComment(BaseModel):
-    """Human inline comment anchored to a specific graph node (`L0`, `L1`, or `L2+`).
+    """Human inline comment anchored to a graph node, logical link, section, or overall document.
 
     Attributes:
         comment_id: Unique identifier for the review comment.
-        node_id: Target node ID in `CompiledBundle.nodes`.
-        section_id: Section ID that owns or renders the target node.
+        scope: Feedback target granularity (`node`, `link`, `section`, or `document`).
+        node_id: Target node ID in `CompiledBundle.nodes` (or `__section__`/`__document__`).
+        section_id: Section ID that owns the target (or `__document__` for document-wide notes).
+        target_label: Human-readable label of what was commented on (e.g. link edge or section).
         comment_text: Reviewer's feedback, critique, or instruction for regeneration.
         suggested_status: Optional human audit status override.
         created_at: ISO-8601 timestamp when the comment was created.
@@ -452,8 +457,10 @@ class ReviewComment(BaseModel):
     """
 
     comment_id: str
-    node_id: str
-    section_id: str
+    scope: CommentScope = "node"
+    node_id: str = "__document__"
+    section_id: str = "__document__"
+    target_label: Optional[str] = None
     comment_text: str
     suggested_status: Optional[AuditStatus] = None
     created_at: str = Field(

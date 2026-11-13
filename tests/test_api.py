@@ -265,17 +265,43 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert bundle_json["bundle_id"] == "notice_bundle_api"
         assert "claim_sec_01_notice_1" in bundle_json["nodes"]
 
-        # 3. Queue an inline comment on the claim & regenerate
+        # 3. Queue an inline claim comment, a logical-link comment, a section comment, and an overall document comment
         cmt_res = client.post(
             "/api/bundles/notice_bundle_api/comments",
             json={
+                "scope": "node",
                 "node_id": "claim_sec_01_notice_1",
                 "section_id": "sec_01_notice",
                 "comment_text": "Spell out the full date October 12, 2026.",
             },
         )
         assert cmt_res.status_code == 200
-        assert len(cmt_res.json()["comments"]) == 1
+
+        link_cmt_res = client.post(
+            "/api/bundles/notice_bundle_api/comments",
+            json={
+                "scope": "link",
+                "node_id": "evi_sec_01_notice_1_1",
+                "target_label": "Claim -> Agreement § 12",
+                "comment_text": "Clarify why written notice applies to email termination.",
+            },
+        )
+        assert link_cmt_res.status_code == 200
+
+        doc_cmt_res = client.post(
+            "/api/bundles/notice_bundle_api/comments",
+            json={
+                "scope": "document",
+                "comment_text": "Keep conclusion direct and state October 12, 2026 clearly.",
+            },
+        )
+        assert doc_cmt_res.status_code == 200
+        comments_payload = doc_cmt_res.json()["comments"]
+        assert len(comments_payload) == 3
+        assert {c["scope"] for c in comments_payload} == {"node", "link", "document"}
+        doc_comment = next(c for c in comments_payload if c["scope"] == "document")
+        assert doc_comment["node_id"] == "__document__"
+        assert doc_comment["section_id"] == "__document__"
 
         regen_res = client.post(
             "/api/bundles/notice_bundle_api/regenerate",
@@ -284,7 +310,7 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert regen_res.status_code == 200
         regen_json = regen_res.json()
         assert "October 12, 2026" in regen_json["artifact"]["sections"][0]["content"]
-        assert regen_json["comments"][0]["resolved"] is True
+        assert all(c["resolved"] is True for c in regen_json["comments"])
     finally:
         BUNDLE_STORE.pop("notice_bundle_api", None)
         app.state.canonical_router = None

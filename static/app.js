@@ -554,14 +554,9 @@ function SourceInspectorDrawer({ node, sourceLink, onClose }) {
         aria-labelledby="inspector-drawer-title"
       >
         <div class="drawer-header">
-          <div>
-            <span class="control-label">
-              ${formatNodeRole(node.type)}${loc.source_type ? ` · ${loc.source_type}` : ''}
-            </span>
-            <h2 id="inspector-drawer-title" class="card-heading" style="margin-top: 3px; font-size: 18px;">
-              ${node.title}
-            </h2>
-          </div>
+          <h2 id="inspector-drawer-title" class="card-heading" style="font-size: 18px;">
+            ${node.title}
+          </h2>
           <button
             ref=${closeBtnRef}
             type="button"
@@ -574,10 +569,15 @@ function SourceInspectorDrawer({ node, sourceLink, onClose }) {
         </div>
 
         <div class="drawer-body">
-          <div class="card-meta-row" style="border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 8px;">
-            <span class="arch-stamp ${isCaveatStatus(status) ? 'is-caveat' : ''}">
-              ${formatAuditStatus(status)}
-              <span class="font-mono-data">${Math.round((audit.score || 1) * 100)}%</span>
+          <div class="card-meta-row" style="border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 8px; flex-wrap: wrap;">
+            <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span class="arch-stamp ${isCaveatStatus(status) ? 'is-caveat' : ''}">
+                ${formatAuditStatus(status)}
+                <span class="font-mono-data">${Math.round((audit.score || 1) * 100)}%</span>
+              </span>
+              <span class="control-label">
+                ${formatNodeRole(node.type)}${loc.source_type ? ` · ${loc.source_type}` : ''}
+              </span>
             </span>
             <span class="provenance-caption">
               Verified by ${audit.evaluator_type || 'deterministic'} check
@@ -1415,12 +1415,9 @@ function ReviewQueueDrawer({
         aria-labelledby="review-queue-title"
       >
         <div class="drawer-header">
-          <div>
-            <span class="control-label">Batch Review Queue</span>
-            <h2 id="review-queue-title" class="card-heading" style="margin-top: 3px; font-size: 18px;">
-              Queued Notes (${pendingComments.length})
-            </h2>
-          </div>
+          <h2 id="review-queue-title" class="card-heading" style="font-size: 18px;">
+            Review Queue (${pendingComments.length})
+          </h2>
           <button
             ref=${closeBtnRef}
             type="button"
@@ -4222,7 +4219,7 @@ function App() {
             const targetNode = nodesMap[link.targetId];
             const roleMeta = getLinkRoleMeta(targetNode);
             const isHovered = hoveredLinkId === link.id || activeLinkPopover?.id === link.id;
-            const strokeColor = link.tier === 1 ? roleMeta.stroke : '#4B5563';
+            const strokeColor = link.tier === 1 ? roleMeta.stroke : '#3E4652';
             return html`
               <g key=${link.id}>
                 <path
@@ -4561,13 +4558,12 @@ function App() {
 
               <div class="spatial-card-stack">
                 <div class="claim-context-bar">
-                  <div class="card-meta-row">
-                    <span class="control-label">Selected Claim</span>
+                  <div class="card-meta-row" style="align-items: flex-start;">
+                    <div class="card-heading">${activeClaimNode.title}</div>
                     <span class="arch-stamp ${isCaveatStatus(activeClaimNode.audit?.status) ? 'is-caveat' : ''}">
                       ${formatAuditStatus(activeClaimNode.audit?.status || 'verified')}
                     </span>
                   </div>
-                  <div class="card-heading">${activeClaimNode.title}</div>
                   ${activeClaimNode.audit?.evaluator_note &&
                     activeClaimNode.audit.evaluator_note !== 'Verified across attached local support nodes.' && html`
                     <div class="provenance-caption">${activeClaimNode.audit.evaluator_note}</div>

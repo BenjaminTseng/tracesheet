@@ -7,18 +7,18 @@
     /* Base & Surfaces — Light Mode (Pure White & Cool Broadsheet) */
     --color-bg-app: #FFFFFF;
     --color-bg-card: #FFFFFF;
-    --color-bg-surface-subtle: #F8F9FA;
-    --color-bg-surface-muted: #F1F3F5;
-    --color-border-subtle: #E5E7EB;
-    --color-border-mid: #D1D5DB;
+    --color-bg-surface-subtle: #F7F8FA;
+    --color-bg-surface-muted: #EEF1F5;
+    --color-border-subtle: #E2E6EC;
+    --color-border-mid: #CBD2DC;
     --color-border-strong: #111315;
 
     /* Typography & Ink — Light Mode */
     --color-text-primary: #111315;
-    --color-text-body: #374151;
-    --color-text-secondary: #4B5563;
+    --color-text-body: #252A31;
+    --color-text-secondary: #3E4652;
     --color-text-muted: #525B68;
-    --color-text-faint: #9CA3AF;
+    --color-text-faint: #6E7785;
 
     /* Accent & Editorial Signal Palette (90%+ mineral paper, stone, and carbon ink) */
     /* Primary Brand / Analytical Accent (Deep Maritime / Oxford Navy) */
@@ -47,9 +47,9 @@
     --color-danger-border: #FECACA;
 
     /* Font Families (ben-design-prefs Section 2) */
-    --font-serif: 'Source Serif 4', 'Instrument Serif', Georgia, serif;
-    --font-sans: 'Geist', 'Inter Tight', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'Geist Mono', 'JetBrains Mono', monospace;
+    --font-serif: 'Source Serif 4', Georgia, serif;
+    --font-sans: 'Public Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'Azeret Mono', monospace;
 
     /* Sharp Architectural Geometry (0px plates, 2px controls — never rounded-lg or pill) */
     --radius-plate: 0px;
@@ -879,9 +879,7 @@
 
   .claim-context-bar {
     background-color: var(--color-bg-surface-subtle);
-    border-block-start: 2px solid var(--color-accent-primary);
-    border-inline: 1px solid var(--color-border-subtle);
-    border-block-end: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-plate);
     padding: 12px 14px;
     display: flex;
@@ -1147,9 +1145,7 @@
 
   .pdf-page-simulator {
     background-color: var(--color-bg-surface-subtle);
-    border-block-start: 2px solid var(--color-border-strong);
-    border-inline: 1px solid var(--color-border-subtle);
-    border-block-end: 1px solid var(--color-border-subtle);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-plate);
     padding: 18px;
     display: flex;
@@ -1291,7 +1287,6 @@
   .comment-item {
     background-color: var(--color-warning-subtle);
     border: 1px solid var(--color-warning-border);
-    border-block-start: 2px solid var(--color-warning);
     border-radius: var(--radius-xs);
     padding: 8px 10px;
     display: flex;
@@ -1302,7 +1297,6 @@
   .comment-item.is-resolved {
     background-color: var(--color-bg-surface-subtle);
     border-color: var(--color-border-subtle);
-    border-block-start-color: var(--color-emerald-accent);
     opacity: 0.78;
   }
 
@@ -1460,7 +1454,6 @@
   .stage-progress-box {
     background-color: var(--color-bg-surface-subtle);
     border: 1px solid var(--color-border-subtle);
-    border-block-start: 2px solid var(--color-accent-primary);
     border-radius: var(--radius-xs);
     padding: 10px 12px;
     display: flex;
@@ -1488,8 +1481,7 @@
     margin-block: 4px 8px;
     padding: 12px 14px;
     background-color: var(--color-bg-surface-subtle);
-    border: 1px solid var(--color-border-mid);
-    border-block-start: 2px solid var(--color-accent-primary);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-xs);
     display: flex;
     flex-direction: column;
@@ -1646,8 +1638,7 @@
   }
 
   .doc-inspector-card {
-    border: 1px solid var(--color-border-mid);
-    border-block-start: 2px solid var(--color-accent-primary);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-xs);
     background-color: var(--color-bg-card);
     padding: 12px 14px;
@@ -1764,8 +1755,7 @@
   }
 
   .checkpoint-section-card {
-    border: 1px solid var(--color-border-mid);
-    border-block-start: 2px solid var(--color-accent-primary);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-xs);
     background-color: var(--color-bg-card);
     padding: 12px 14px;
@@ -1994,8 +1984,7 @@
   }
 
   .doc-excerpt-frame {
-    border: 1px solid var(--color-border-mid);
-    border-block-start: 2px solid var(--color-accent-primary);
+    border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-xs);
     background-color: var(--color-bg-surface-subtle);
     padding: 12px 14px;

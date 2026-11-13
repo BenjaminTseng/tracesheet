@@ -17,7 +17,7 @@
     --color-text-primary: #111315;
     --color-text-body: #374151;
     --color-text-secondary: #4B5563;
-    --color-text-muted: #6B7280;
+    --color-text-muted: #525B68;
     --color-text-faint: #9CA3AF;
 
     /* Accent & Editorial Signal Palette (90%+ mineral paper, stone, and carbon ink) */
@@ -1954,6 +1954,126 @@
     font-weight: 600;
     text-transform: none;
     letter-spacing: 0.01em;
+  }
+
+  .sample-fixture-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--radius-xs);
+    font-family: var(--font-sans);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    border: 1px solid var(--color-border-mid);
+    background-color: var(--color-bg-surface-muted);
+    color: var(--color-text-secondary);
+  }
+
+  .source-file-link {
+    text-decoration: none;
+    color: var(--color-accent-primary);
+    font-weight: 600;
+  }
+
+  .source-file-link:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .file-table-link {
+    color: var(--color-accent-primary);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .file-table-link:hover {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .doc-excerpt-frame {
+    border: 1px solid var(--color-border-mid);
+    border-block-start: 2px solid var(--color-accent-primary);
+    border-radius: var(--radius-xs);
+    background-color: var(--color-bg-surface-subtle);
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .advanced-options-disclosure {
+    border: 1px solid var(--color-border-subtle);
+    border-radius: var(--radius-xs);
+    background-color: var(--color-bg-surface-subtle);
+    padding: 8px 12px;
+  }
+
+  .advanced-options-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--color-text-primary);
+    list-style: none;
+  }
+
+  .advanced-options-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .advanced-options-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    margin-block-start: 10px;
+    padding-block-start: 10px;
+    border-block-start: 1px solid var(--color-border-subtle);
+  }
+
+  .document-dock.is-compact {
+    padding-block: 6px;
+  }
+
+  .document-dock.is-compact .dock-text-input {
+    min-block-size: 28px;
+    padding-block: 3px;
+  }
+
+  .mobile-only-jump {
+    display: none;
+  }
+
+  @media (max-width: 1180px) {
+    .mobile-only-jump {
+      display: inline-flex;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .top-bar,
+    .spatial-viewport,
+    .document-dock {
+      padding-inline: 14px;
+    }
+  }
+
+  @media (pointer: coarse) {
+    .btn,
+    .btn-compact,
+    .btn-icon-only,
+    .status-filter-btn,
+    .plate-action-btn,
+    .dock-mode-btn {
+      min-block-size: 44px;
+      min-inline-size: 44px;
+    }
   }
 }
 

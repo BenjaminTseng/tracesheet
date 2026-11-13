@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, Union
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
@@ -249,6 +250,25 @@ def _sanitize_slug(raw: str) -> str:
     return slug
 
 
+def _infer_inline_media_type(filename: str) -> str:
+    """Returns a browser-friendly media type so text/PDF files render inline in a new tab."""
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".pdf":
+        return "application/pdf"
+    if suffix in {".md", ".txt"}:
+        return "text/plain; charset=utf-8"
+    if suffix == ".csv":
+        return "text/csv; charset=utf-8"
+    if suffix == ".xlsx":
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if suffix == ".xlsm":
+        return "application/vnd.ms-excel.sheet.macroEnabled.12"
+    if suffix == ".docx":
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
 def _make_run_reader(request: Request) -> AuditPipelineRunner:
     """Builds a pipeline runner suitable for reading/listing persisted run JSON without an LLM call."""
     canonical_router, matter_ingestor, _ = _get_corpus_services(request)
@@ -450,15 +470,29 @@ async def list_bundles() -> List[BundleSummaryItem]:
 
 
 @router.get("/api/bundles/{bundle_id}", response_model=CompiledBundle)
-async def get_bundle(bundle_id: str) -> CompiledBundle:
+async def get_bundle(bundle_id: str, request: Request) -> CompiledBundle:
     """Retrieves a specific compiled audit bundle by its identifier."""
     if bundle_id not in BUNDLE_STORE:
         logger.warning("Requested unknown bundle_id=%s", bundle_id)
         raise HTTPException(
             status_code=404, detail=f"Bundle '{bundle_id}' was not found."
         )
+    bundle = BUNDLE_STORE[bundle_id]
+    if bundle.matter_id:
+        _, matter_ingestor, _ = _get_corpus_services(request)
+        slug = _sanitize_slug(bundle.matter_id)
+        _, raw_dir, _, _ = matter_ingestor._matter_dirs(slug)
+        if raw_dir.exists():
+            raw_files = sorted(
+                p.name
+                for p in raw_dir.iterdir()
+                if p.is_file() and not p.name.startswith(".")
+            )
+        else:
+            raw_files = []
+        bundle.artifact.metadata["available_raw_files"] = raw_files
     logger.info("Serving compiled bundle_id=%s", bundle_id)
-    return BUNDLE_STORE[bundle_id]
+    return bundle
 
 
 @router.post("/api/bundles", response_model=CompiledBundle)
@@ -563,6 +597,49 @@ async def get_canonical_document_detail(doc_id: str, request: Request) -> Dict[s
     if detail["card"] is None and not detail["authorities"] and not detail["toc_markdown"]:
         raise HTTPException(status_code=404, detail=f"Canonical document '{doc_id}' not found.")
     return detail
+
+
+@router.get("/api/canonical/files/{domain}/{filename}/raw")
+async def get_canonical_raw_file(
+    domain: str,
+    filename: str,
+    request: Request,
+) -> FileResponse:
+    """Serves a raw or encoded canonical source document inline for direct verification."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    safe_domain = _sanitize_slug(domain)
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename or ".." in filename:
+        raise HTTPException(status_code=422, detail=f"Invalid filename: {filename}")
+
+    canonical_root = canonical_ingestor.canonical_dir.resolve()
+    candidates = [
+        (canonical_ingestor.raw_dir / safe_domain / safe_name).resolve(),
+        (canonical_ingestor.canonical_dir / safe_domain / safe_name).resolve(),
+    ]
+    stem = Path(safe_name).stem
+    if not stem.endswith("_source"):
+        candidates.append(
+            (canonical_ingestor.raw_dir / safe_domain / f"{stem}_source.md").resolve()
+        )
+
+    for candidate in candidates:
+        if (
+            canonical_root in candidate.parents
+            and candidate.exists()
+            and candidate.is_file()
+        ):
+            return FileResponse(
+                path=candidate,
+                media_type=_infer_inline_media_type(candidate.name),
+                filename=candidate.name,
+                content_disposition_type="inline",
+            )
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Canonical file '{safe_name}' not found in domain '{safe_domain}'.",
+    )
 
 
 @router.delete("/api/canonical/files/{domain}/{filename}")
@@ -699,6 +776,36 @@ async def list_matter_files(matter_id: str, request: Request) -> Dict[str, Any]:
     _, matter_ingestor, _ = _get_corpus_services(request)
     slug = _sanitize_slug(matter_id)
     return matter_ingestor.list_matter_files(slug)
+
+
+@router.get("/api/matters/{matter_id}/files/{filename}/raw")
+async def get_matter_raw_file(
+    matter_id: str,
+    filename: str,
+    request: Request,
+) -> FileResponse:
+    """Serves an uploaded raw matter file `(a)` inline or as a download for citation verification."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename or ".." in filename:
+        raise HTTPException(status_code=422, detail=f"Invalid filename: {filename}")
+
+    _, raw_dir, _, _ = matter_ingestor._matter_dirs(slug)
+    raw_root = raw_dir.resolve()
+    target = (raw_dir / safe_name).resolve()
+    if raw_root not in target.parents or not target.exists() or not target.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Matter file '{safe_name}' not found in '{slug}'.",
+        )
+
+    return FileResponse(
+        path=target,
+        media_type=_infer_inline_media_type(safe_name),
+        filename=safe_name,
+        content_disposition_type="inline",
+    )
 
 
 @router.delete("/api/matters/{matter_id}/files/{filename}")

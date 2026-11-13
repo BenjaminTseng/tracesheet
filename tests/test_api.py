@@ -754,3 +754,63 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
         app.state.llm_provider = None
         app.state.blueprint_store = None
 
+
+def test_raw_file_serving_and_bundle_available_files_metadata(tmp_path: Path) -> None:
+    """Verifies raw file serving for matters/canonical sources and bundle raw-file metadata."""
+    from fastapi.testclient import TestClient
+    from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+    from app.llm import MockLLMProvider
+
+    canonical_dir = tmp_path / "canonical"
+    matters_root = tmp_path / "matters"
+    client = TestClient(app)
+
+    app.state.canonical_router = CanonicalRouter(canonical_dir)
+    app.state.canonical_ingestor = CanonicalIngestor(canonical_dir)
+    app.state.matter_ingestor = MatterIngestor(matters_root)
+    app.state.llm_provider = MockLLMProvider()
+
+    try:
+        client.post("/api/matters", json={"matter_id": "m_raw_serve"})
+        matter_bytes = b"# Exhibit A\n\nSigned statement from CFO confirming wire amount.\n"
+        up_matter = client.post(
+            "/api/matters/m_raw_serve/upload",
+            files={"file": ("Exhibit_A.md", matter_bytes, "text/markdown")},
+        )
+        assert up_matter.status_code == 200
+
+        raw_matter_res = client.get("/api/matters/m_raw_serve/files/Exhibit_A.md/raw")
+        assert raw_matter_res.status_code == 200
+        assert "inline" in raw_matter_res.headers.get("content-disposition", "").lower()
+        assert raw_matter_res.headers.get("content-type", "").startswith("text/plain")
+        assert raw_matter_res.content == matter_bytes
+
+        missing_matter_res = client.get("/api/matters/m_raw_serve/files/Missing.pdf/raw")
+        assert missing_matter_res.status_code == 404
+
+        canonical_bytes = b"# Jurisdiction Statute\n\n## Section 1332\nDiversity threshold applies.\n"
+        up_canonical = client.post(
+            "/api/canonical/upload",
+            data={"domain": "legal"},
+            files={"file": ("statutes.md", canonical_bytes, "text/markdown")},
+        )
+        assert up_canonical.status_code == 200
+
+        raw_canonical_res = client.get("/api/canonical/files/legal/statutes.md/raw")
+        assert raw_canonical_res.status_code == 200
+        assert "inline" in raw_canonical_res.headers.get("content-disposition", "").lower()
+        assert raw_canonical_res.content == canonical_bytes
+
+        missing_canonical_res = client.get("/api/canonical/files/legal/missing.pdf/raw")
+        assert missing_canonical_res.status_code == 404
+
+        bundle_res = client.get("/api/bundles/legal_motion_1332")
+        assert bundle_res.status_code == 200
+        available = bundle_res.json()["artifact"]["metadata"].get("available_raw_files")
+        assert isinstance(available, list)
+    finally:
+        app.state.canonical_router = None
+        app.state.canonical_ingestor = None
+        app.state.matter_ingestor = None
+        app.state.llm_provider = None
+

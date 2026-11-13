@@ -39,6 +39,12 @@ function Icon({ name, size = 14 }) {
       return html`<svg ...${props}><path d="M6 3.5L10.5 8L6 12.5" /></svg>`;
     case 'chevronDown':
       return html`<svg ...${props}><path d="M3.5 6L8 10.5L12.5 6" /></svg>`;
+    case 'trash':
+      return html`<svg ...${props}><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5" /></svg>`;
+    case 'folder':
+      return html`<svg ...${props}><path d="M2.5 3.5h4l1.5 1.5h5.5v7.5h-11V3.5z" /></svg>`;
+    case 'play':
+      return html`<svg ...${props}><path d="M4.5 3.5L12.5 8l-8 4.5V3.5z" /></svg>`;
     default:
       return null;
   }
@@ -147,28 +153,64 @@ function formatProvenanceParts(locator) {
   }
 }
 
+const ACTIVE_RUN_STORAGE_KEY = 'jd_screen_active_run_id';
+
+function saveActiveRunId(runId) {
+  try {
+    if (runId) {
+      window.localStorage?.setItem(ACTIVE_RUN_STORAGE_KEY, runId);
+    } else {
+      window.localStorage?.removeItem(ACTIVE_RUN_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage access errors in restricted frames
+  }
+}
+
+function loadActiveRunId() {
+  try {
+    return window.localStorage?.getItem(ACTIVE_RUN_STORAGE_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function formatBytes(bytes) {
+  if (bytes == null || Number.isNaN(Number(bytes))) return '—';
+  const n = Number(bytes);
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function formatRunStatusLabel(status) {
+  const map = {
+    running: 'Running',
+    awaiting_stage1_approval: 'Paused: Stage 1 Outline',
+    awaiting_stage2_approval: 'Paused: Stage 2 Facts',
+    completed: 'Completed',
+    failed: 'Failed',
+  };
+  return map[status] || status || 'Unknown';
+}
+
 /**
- * Streams the 4-stage SSE pipeline from `/api/matters/:matter_id/ask/stream`.
+ * Consumes a `text/event-stream` response body frame-by-frame and invokes `onEvent`.
  */
-async function streamAskPipeline({ matterId, question, bundleId, onProgress }) {
-  const res = await fetch(`/api/matters/${matterId}/ask/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      question: question.trim(),
-      bundle_id: bundleId || null,
-      smooth_transitions: true,
-    }),
-  });
+async function readSSEStream(res, onEvent) {
   if (!res.ok || !res.body) {
     const errData = await res.json().catch(() => ({}));
-    throw new Error(JSON.stringify(errData.detail || `HTTP ${res.status}`));
+    throw new Error(
+      typeof errData.detail === 'string'
+        ? errData.detail
+        : JSON.stringify(errData.detail || `HTTP ${res.status}`)
+    );
   }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let resultBundle = null;
+  let lastPayload = null;
 
   while (true) {
     const { value, done } = await reader.read();
@@ -180,16 +222,120 @@ async function streamAskPipeline({ matterId, question, bundleId, onProgress }) {
       const dataLine = chunk.split('\n').find((ln) => ln.startsWith('data: '));
       if (!dataLine) continue;
       const evt = JSON.parse(dataLine.slice(6));
-      if (evt.event === 'progress') {
-        onProgress?.({ stage: evt.stage, message: evt.message });
-      } else if (evt.event === 'error') {
-        throw new Error(evt.detail || 'Pipeline execution failed');
-      } else if (evt.event === 'bundle') {
-        resultBundle = evt.bundle;
+      if (evt.event === 'error') {
+        throw new Error(evt.detail || 'Streaming request failed');
       }
+      lastPayload = evt;
+      onEvent?.(evt);
     }
   }
-  return resultBundle;
+  return lastPayload;
+}
+
+/**
+ * Executes an SSE-streaming pipeline request and returns `{ bundle, run }`.
+ */
+async function _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint }) {
+  let resultBundle = null;
+  let resultRun = null;
+
+  await readSSEStream(res, (evt) => {
+    if (evt.event === 'run_started' && evt.run) {
+      resultRun = evt.run;
+      saveActiveRunId(evt.run.run_id);
+      onRunStarted?.(evt.run);
+    } else if (evt.event === 'progress') {
+      onProgress?.({ stage: evt.stage, message: evt.message });
+    } else if (evt.event === 'checkpoint' && evt.run) {
+      resultRun = evt.run;
+      saveActiveRunId(evt.run.run_id);
+      onCheckpoint?.(evt.run);
+    } else if (evt.event === 'bundle') {
+      resultBundle = evt.bundle;
+      if (evt.run) {
+        resultRun = evt.run;
+      }
+      saveActiveRunId(null);
+    } else if (evt.event === 'run_state' && evt.run) {
+      resultRun = evt.run;
+    }
+  });
+
+  return { bundle: resultBundle, run: resultRun };
+}
+
+/**
+ * Streams the 4-stage SSE pipeline from `/api/matters/:matter_id/ask/stream`.
+ */
+async function streamAskPipeline({
+  matterId,
+  question,
+  bundleId,
+  checkpointMode = false,
+  onProgress,
+  onRunStarted,
+  onCheckpoint,
+}) {
+  const res = await fetch(`/api/matters/${matterId}/ask/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: question.trim(),
+      bundle_id: bundleId || null,
+      smooth_transitions: true,
+      checkpoint_mode: Boolean(checkpointMode),
+    }),
+  });
+  return _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint });
+}
+
+/**
+ * Streams resumption of a persisted/checkpointed run via `/api/runs/:run_id/resume/stream`.
+ */
+async function resumeRunStream({
+  runId,
+  outlinePlan = null,
+  reharvestSectionIds = null,
+  checkpointMode = null,
+  onProgress,
+  onRunStarted,
+  onCheckpoint,
+}) {
+  const payload = {};
+  if (outlinePlan !== null) payload.outline_plan = outlinePlan;
+  if (reharvestSectionIds !== null) payload.reharvest_section_ids = reharvestSectionIds;
+  if (checkpointMode !== null) payload.checkpoint_mode = checkpointMode;
+
+  const res = await fetch(`/api/runs/${runId}/resume/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint });
+}
+
+/**
+ * Replays recorded events and subscribes to live updates on `GET /api/runs/:run_id/stream`.
+ */
+async function connectRunStream({ runId, onProgress, onRunStarted, onCheckpoint }) {
+  const res = await fetch(`/api/runs/${runId}/stream`);
+  return _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint });
+}
+
+/**
+ * Streams an ingestion/upload SSE endpoint until its terminal `complete` payload.
+ */
+async function streamUploadOrIngest(url, fetchInit, onProgress) {
+  const res = await fetch(url, fetchInit);
+  let completePayload = null;
+  await readSSEStream(res, (evt) => {
+    if (evt.event === 'progress') {
+      onProgress?.({ stage: evt.stage, message: evt.message });
+    } else if (evt.event === 'complete') {
+      completePayload = evt;
+    }
+  });
+  return completePayload;
 }
 
 /**
@@ -1137,48 +1283,193 @@ function ReviewQueueDrawer({
 }
 
 /**
- * Native <dialog> for starting a New Question / Brief, uploading matter files,
- * and managing the Canonical Authorities library.
+ * Dedicated File & Controlling Rule Manager dialog for Canonical Corpus (b) and Matter Inputs (a).
  */
-function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
+function CorpusManagerModal({
+  dialogRef,
+  activeMatterHint,
+  initialTab = 'canonical',
+  onCorpusChanged,
+}) {
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const [corpusStatus, setCorpusStatus] = useState(null);
+  const [selectedDocId, setSelectedDocId] = useState(null);
+  const [docDetail, setDocDetail] = useState(null);
+  const [docLoading, setDocLoading] = useState(false);
+
+  const [canonicalDomain, setCanonicalDomain] = useState('legal');
+  const [canonicalBusy, setCanonicalBusy] = useState(false);
+  const [canonicalProgress, setCanonicalProgress] = useState([]);
+
   const [matters, setMatters] = useState([]);
-  const [canonicalAuths, setCanonicalAuths] = useState([]);
   const [selectedMatter, setSelectedMatter] = useState(activeMatterHint || 'legal_motion_1332');
   const [newMatterName, setNewMatterName] = useState('');
-  const [question, setQuestion] = useState('');
-  const [bundleSlug, setBundleSlug] = useState('');
-  const [progressEvents, setProgressEvents] = useState([]);
-  const [running, setRunning] = useState(false);
+  const [matterFilesData, setMatterFilesData] = useState(null);
+  const [matterBusy, setMatterBusy] = useState(false);
+  const [matterProgress, setMatterProgress] = useState([]);
+
   const [errorMsg, setErrorMsg] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [showCanonicalMgr, setShowCanonicalMgr] = useState(false);
-  const [canonicalDomain, setCanonicalDomain] = useState('legal');
-  const [canonicalStatusMsg, setCanonicalStatusMsg] = useState(null);
-  const [canonicalBusy, setCanonicalBusy] = useState(false);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
+    if (activeMatterHint) {
+      setSelectedMatter(activeMatterHint);
+    }
+  }, [activeMatterHint]);
+
+  const refreshCanonical = useCallback(async () => {
+    const res = await fetch('/api/canonical');
+    if (res.ok) {
+      const data = await res.json();
+      setCorpusStatus(data);
+    }
+  }, []);
 
   const refreshMatters = useCallback(async () => {
     const res = await fetch('/api/matters');
     if (res.ok) {
       const data = await res.json();
-      setMatters(data.matters || []);
-      setCanonicalAuths(data.canonical_authorities || []);
-      if (data.matters?.length > 0 && !data.matters.some((m) => m.matter_id === selectedMatter)) {
-        setSelectedMatter(data.matters[0].matter_id);
+      const list = data.matters || [];
+      setMatters(list);
+      if (list.length > 0 && !list.some((m) => m.matter_id === selectedMatter)) {
+        setSelectedMatter(list[0].matter_id);
       }
     }
   }, [selectedMatter]);
 
-  useEffect(() => {
-    refreshMatters();
-  }, [refreshMatters]);
-
-  useEffect(() => {
-    if (activeMatterHint && matters.some((m) => m.matter_id === activeMatterHint)) {
-      setSelectedMatter(activeMatterHint);
+  const refreshMatterFiles = useCallback(async (matterId) => {
+    if (!matterId) return;
+    const res = await fetch(`/api/matters/${matterId}/files`);
+    if (res.ok) {
+      setMatterFilesData(await res.json());
     }
-  }, [activeMatterHint, matters]);
+  }, []);
 
-  const activeMatterObj = matters.find((m) => m.matter_id === selectedMatter);
+  useEffect(() => {
+    refreshCanonical();
+    refreshMatters();
+  }, [refreshCanonical, refreshMatters]);
+
+  useEffect(() => {
+    if (selectedMatter) {
+      refreshMatterFiles(selectedMatter);
+    }
+  }, [selectedMatter, refreshMatterFiles]);
+
+  const handleInspectCanonicalDoc = async (docId) => {
+    setSelectedDocId(docId);
+    setDocLoading(true);
+    setErrorMsg(null);
+    try {
+      const encodedPath = docId
+        .split('/')
+        .map((seg) => encodeURIComponent(seg))
+        .join('/');
+      const res = await fetch(`/api/canonical/documents/${encodedPath}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to load ${docId}`);
+      }
+      setDocDetail(await res.json());
+    } catch (err) {
+      setErrorMsg(err.message);
+      setDocDetail(null);
+    } finally {
+      setDocLoading(false);
+    }
+  };
+
+  const handleCanonicalUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCanonicalBusy(true);
+    setErrorMsg(null);
+    setCanonicalProgress([{ stage: 'upload', message: `Uploading ${file.name}…` }]);
+    try {
+      const formData = new FormData();
+      formData.append('domain', canonicalDomain.trim() || 'general');
+      formData.append('file', file);
+      const data = await streamUploadOrIngest(
+        '/api/canonical/upload/stream',
+        { method: 'POST', body: formData },
+        (ev) => setCanonicalProgress((prev) => [...prev, ev])
+      );
+      if (data) {
+        setCorpusStatus(data);
+        await onCorpusChanged?.();
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setCanonicalBusy(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRebuildCanonical = async (purgeEncoded) => {
+    setCanonicalBusy(true);
+    setErrorMsg(null);
+    setCanonicalProgress([
+      {
+        stage: 'ingest',
+        message: purgeEncoded ? 'Purging & re-encoding canonical corpus…' : 'Rebuilding canonical index…',
+      },
+    ]);
+    try {
+      const data = await streamUploadOrIngest(
+        '/api/canonical/ingest/stream',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ purge_encoded: Boolean(purgeEncoded) }),
+        },
+        (ev) => setCanonicalProgress((prev) => [...prev, ev])
+      );
+      if (data) {
+        setCorpusStatus(data);
+        if (selectedDocId) {
+          handleInspectCanonicalDoc(selectedDocId);
+        }
+        await onCorpusChanged?.();
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setCanonicalBusy(false);
+    }
+  };
+
+  const handleDeleteCanonical = async (domain, filename, docId) => {
+    if (!window.confirm(`Delete canonical rule file '${domain}/${filename}' and rebuild INDEX.md?`)) {
+      return;
+    }
+    setCanonicalBusy(true);
+    setErrorMsg(null);
+    try {
+      const res = await fetch(
+        `/api/canonical/files/${encodeURIComponent(domain)}/${encodeURIComponent(filename)}`,
+        { method: 'DELETE' }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to delete ${filename}`);
+      }
+      const data = await res.json();
+      setCorpusStatus(data);
+      if (docId && selectedDocId === docId) {
+        setSelectedDocId(null);
+        setDocDetail(null);
+      }
+      await onCorpusChanged?.();
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setCanonicalBusy(false);
+    }
+  };
 
   const handleCreateMatter = async () => {
     if (!newMatterName.trim()) return;
@@ -1193,90 +1484,956 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
       setNewMatterName('');
       await refreshMatters();
       setSelectedMatter(created.matter_id);
+      await onCorpusChanged?.();
     } else {
-      const err = await res.json();
+      const err = await res.json().catch(() => ({}));
       setErrorMsg(JSON.stringify(err.detail || err));
     }
   };
 
-  const handleFileUpload = async (e) => {
+  const handleMatterUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file || !selectedMatter) return;
-    setUploading(true);
+    setMatterBusy(true);
     setErrorMsg(null);
+    setMatterProgress([{ stage: 'upload', message: `Uploading ${file.name} to ${selectedMatter}…` }]);
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await fetch(`/api/matters/${selectedMatter}/upload`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        setErrorMsg(JSON.stringify(err.detail || err));
-      } else {
+      const data = await streamUploadOrIngest(
+        `/api/matters/${selectedMatter}/upload/stream`,
+        { method: 'POST', body: formData },
+        (ev) => setMatterProgress((prev) => [...prev, ev])
+      );
+      if (data) {
+        setMatterFilesData(data);
+        await refreshMatters();
+        await onCorpusChanged?.();
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setMatterBusy(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleReindexMatter = async () => {
+    if (!selectedMatter) return;
+    setMatterBusy(true);
+    setErrorMsg(null);
+    setMatterProgress([{ stage: 'ingest', message: `Indexing coordinates in ${selectedMatter}…` }]);
+    try {
+      const data = await streamUploadOrIngest(
+        `/api/matters/${selectedMatter}/ingest/stream`,
+        { method: 'POST' },
+        (ev) => setMatterProgress((prev) => [...prev, ev])
+      );
+      if (data) {
+        setMatterFilesData(data);
         await refreshMatters();
       }
+    } catch (err) {
+      setErrorMsg(err.message);
     } finally {
-      setUploading(false);
-      e.target.value = '';
+      setMatterBusy(false);
     }
   };
 
-  const handleCanonicalUpload = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setCanonicalBusy(true);
+  const handleDeleteMatterFile = async (filename) => {
+    if (!selectedMatter) return;
+    if (!window.confirm(`Delete '${filename}' from matter '${selectedMatter}' and re-index?`)) {
+      return;
+    }
+    setMatterBusy(true);
     setErrorMsg(null);
-    setCanonicalStatusMsg(null);
     try {
-      const formData = new FormData();
-      formData.append('domain', canonicalDomain.trim() || 'general');
-      formData.append('file', file);
-      const res = await fetch('/api/canonical/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const res = await fetch(
+        `/api/matters/${selectedMatter}/files/${encodeURIComponent(filename)}`,
+        { method: 'DELETE' }
+      );
       if (!res.ok) {
-        const err = await res.json();
-        setErrorMsg(JSON.stringify(err.detail || err));
-      } else {
-        const data = await res.json();
-        setCanonicalAuths(data.authorities || []);
-        setCanonicalStatusMsg(
-          `Uploaded ${data.uploaded_file} into ${data.domain}/ · ${data.total_authorities} rules active.`
-        );
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to delete ${filename}`);
       }
+      setMatterFilesData(await res.json());
+      await refreshMatters();
+      await onCorpusChanged?.();
+    } catch (err) {
+      setErrorMsg(err.message);
     } finally {
-      setCanonicalBusy(false);
-      e.target.value = '';
+      setMatterBusy(false);
     }
   };
 
-  const handleRebuildCanonical = async (purgeEncoded) => {
-    setCanonicalBusy(true);
+  const catalogDocs = corpusStatus?.catalog?.documents || [];
+  const rawFiles = corpusStatus?.raw_files || [];
+  const rawByDomainStem = {};
+  for (const rf of rawFiles) {
+    const stem = rf.filename.replace(/\.[^.]+$/, '').toLowerCase();
+    rawByDomainStem[`${rf.domain}/${stem}`] = rf;
+  }
+
+  return html`
+    <dialog
+      ref=${dialogRef}
+      class="compiler-dialog is-wide"
+      closedby="any"
+      aria-labelledby="corpus-dialog-title"
+    >
+      <div class="dialog-inner">
+        <div class="modal-header-row">
+          <h2 id="corpus-dialog-title" class="card-heading" style="font-size: 18px;">
+            Corpus & File Manager
+          </h2>
+          <form method="dialog">
+            <button
+              type="submit"
+              class="btn btn-icon-only"
+              aria-label="Close file manager"
+              disabled=${canonicalBusy || matterBusy}
+            >
+              <${Icon} name="close" />
+            </button>
+          </form>
+        </div>
+
+        <div class="modal-tabs" role="tablist" aria-label="Corpus sections">
+          <button
+            type="button"
+            role="tab"
+            aria-selected=${activeTab === 'canonical'}
+            class="modal-tab-btn ${activeTab === 'canonical' ? 'is-active' : ''}"
+            onClick=${() => setActiveTab('canonical')}
+          >
+            Controlling Rules (${corpusStatus?.total_authorities ?? 0} authorities)
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected=${activeTab === 'matter'}
+            class="modal-tab-btn ${activeTab === 'matter' ? 'is-active' : ''}"
+            onClick=${() => setActiveTab('matter')}
+          >
+            Matter Inputs (${matterFilesData?.files?.length ?? 0} files)
+          </button>
+        </div>
+
+        ${errorMsg && html`
+          <pre
+            tabindex="0"
+            class="formula-box"
+            style="border-color: var(--color-danger); color: var(--color-danger); background-color: var(--color-danger-subtle);"
+          ><code>${errorMsg}</code></pre>
+        `}
+
+        ${activeTab === 'canonical' && html`
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="toolbar-action-row">
+              <div class="toolbar-cluster">
+                <label for="mgr-canonical-domain" class="control-label">Domain</label>
+                <input
+                  id="mgr-canonical-domain"
+                  type="text"
+                  class="text-input"
+                  style="width: 120px;"
+                  value=${canonicalDomain}
+                  disabled=${canonicalBusy}
+                  onInput=${(e) => setCanonicalDomain(e.target.value)}
+                />
+                <label class="btn btn-primary file-picker-label">
+                  <${Icon} name="plus" size=${13} />
+                  <span>${canonicalBusy ? 'Working…' : 'Add / Replace Rule File'}</span>
+                  <input
+                    type="file"
+                    accept=".md,.txt,.pdf,.docx"
+                    disabled=${canonicalBusy}
+                    style="display: none;"
+                    onChange=${handleCanonicalUpload}
+                  />
+                </label>
+              </div>
+              <div class="toolbar-cluster">
+                <button
+                  type="button"
+                  class="btn btn-compact"
+                  disabled=${canonicalBusy}
+                  onClick=${() => handleRebuildCanonical(false)}
+                >
+                  Rebuild Index
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-compact"
+                  disabled=${canonicalBusy}
+                  onClick=${() => handleRebuildCanonical(true)}
+                >
+                  Full Re-encode
+                </button>
+              </div>
+            </div>
+
+            ${canonicalProgress.length > 0 && html`
+              <div class="stage-progress-box">
+                ${canonicalProgress.map(
+                  (ev, idx) => html`
+                    <div key=${idx}>
+                      <span class="font-mono-data" style="color: var(--color-accent-primary);">[${ev.stage}]</span> ${ev.message}
+                    </div>
+                  `
+                )}
+              </div>
+            `}
+
+            <div class="corpus-split-grid">
+              <div class="corpus-table-wrap">
+                <table class="corpus-table">
+                  <thead>
+                    <tr>
+                      <th>Document</th>
+                      <th>Domain</th>
+                      <th>Rules</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${catalogDocs.length === 0 && rawFiles.length === 0 && html`
+                      <tr>
+                        <td colspan="4" style="text-align: center; color: var(--color-text-muted); padding: 20px;">
+                          No canonical rule documents loaded yet. Upload a Markdown, TXT, PDF, or DOCX file above.
+                        </td>
+                      </tr>
+                    `}
+                    ${catalogDocs.map((card) => {
+                      const docStem = card.doc_id
+                        .split('/')
+                        .pop()
+                        .replace(/(\.authorities)?\.[^.]+$/, '')
+                        .toLowerCase();
+                      const matchedRaw = rawByDomainStem[`${card.domain}/${docStem}`];
+                      const deleteTargetName = matchedRaw
+                        ? matchedRaw.filename
+                        : card.doc_id.split('/').pop();
+                      const isSelected = selectedDocId === card.doc_id;
+                      return html`
+                        <tr key=${card.doc_id} class=${isSelected ? 'is-selected' : ''}>
+                          <td>
+                            <div style="font-weight: 600; color: var(--color-text-primary);">${card.title || card.doc_id}</div>
+                            <div class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">${card.doc_id}</div>
+                          </td>
+                          <td><span class="font-mono-data">${card.domain}</span></td>
+                          <td class="font-mono-data">${card.authority_count}</td>
+                          <td>
+                            <div style="display: inline-flex; gap: 4px;">
+                              <button
+                                type="button"
+                                class="btn btn-compact"
+                                onClick=${() => handleInspectCanonicalDoc(card.doc_id)}
+                              >
+                                Inspect
+                              </button>
+                              <button
+                                type="button"
+                                class="btn btn-compact btn-danger-ghost"
+                                aria-label="Delete ${deleteTargetName}"
+                                disabled=${canonicalBusy}
+                                onClick=${() => handleDeleteCanonical(card.domain, deleteTargetName, card.doc_id)}
+                              >
+                                <${Icon} name="trash" size=${12} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="doc-inspector-card">
+                ${docLoading && html`<div class="provenance-caption">Loading authorities & TOC…</div>`}
+                ${!docLoading && !docDetail && html`
+                  <div class="provenance-caption">
+                    Select any document and click <strong>Inspect</strong> to review its Tier-2 table of contents and parsed <code class="font-mono-data">[AUTH:...]</code> rules.
+                  </div>
+                `}
+                ${!docLoading && docDetail && html`
+                  <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <div>
+                      <div style="font-weight: 600; color: var(--color-text-primary);">
+                        ${docDetail.card?.title || docDetail.doc_id}
+                      </div>
+                      <div class="provenance-caption">
+                        <span class="font-mono-data">${docDetail.doc_id}</span> · ${(docDetail.authorities || []).length} rules
+                      </div>
+                    </div>
+                    ${docDetail.card?.scope_synopsis && html`
+                      <div class="provenance-caption">${docDetail.card.scope_synopsis}</div>
+                    `}
+                    ${(docDetail.authorities || []).map(
+                      (auth) => html`
+                        <div key=${auth.auth_id} class="auth-detail-item">
+                          <div class="font-mono-data" style="font-size: 11px; color: var(--color-accent-primary);">
+                            [${auth.auth_id}]
+                          </div>
+                          <div style="font-weight: 600; color: var(--color-text-primary);">${auth.title}</div>
+                          <div style="color: var(--color-text-body);">${auth.verbatim_quote}</div>
+                        </div>
+                      `
+                    )}
+                    ${docDetail.toc_markdown && html`
+                      <details>
+                        <summary class="control-label" style="cursor: pointer;">Tier-2 TOC Markdown</summary>
+                        <pre class="formula-box" style="margin-top: 6px; font-size: 11px;"><code>${docDetail.toc_markdown}</code></pre>
+                      </details>
+                    `}
+                  </div>
+                `}
+              </div>
+            </div>
+          </div>
+        `}
+
+        ${activeTab === 'matter' && html`
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div class="toolbar-action-row">
+              <div class="toolbar-cluster" style="flex: 1;">
+                <label for="mgr-matter-select" class="control-label">Matter</label>
+                <select
+                  id="mgr-matter-select"
+                  class="select-control"
+                  value=${selectedMatter}
+                  onChange=${(e) => setSelectedMatter(e.target.value)}
+                >
+                  ${matters.map(
+                    (m) => html`
+                      <option key=${m.matter_id} value=${m.matter_id}>
+                        ${m.matter_id} (${m.raw_files?.length || 0} files)
+                      </option>
+                    `
+                  )}
+                </select>
+                <input
+                  type="text"
+                  class="text-input"
+                  style="width: 150px;"
+                  placeholder="New matter slug…"
+                  value=${newMatterName}
+                  onInput=${(e) => setNewMatterName(e.target.value)}
+                />
+                <button type="button" class="btn btn-compact" onClick=${handleCreateMatter}>
+                  Create
+                </button>
+              </div>
+              <div class="toolbar-cluster">
+                <label class="btn btn-primary file-picker-label">
+                  <${Icon} name="plus" size=${13} />
+                  <span>${matterBusy ? 'Indexing…' : 'Upload / Replace File'}</span>
+                  <input
+                    type="file"
+                    accept=".pdf,.xlsx,.xlsm,.csv,.md,.txt"
+                    disabled=${matterBusy || !selectedMatter}
+                    style="display: none;"
+                    onChange=${handleMatterUpload}
+                  />
+                </label>
+                <button
+                  type="button"
+                  class="btn btn-compact"
+                  disabled=${matterBusy || !selectedMatter}
+                  onClick=${handleReindexMatter}
+                >
+                  Re-Index All
+                </button>
+              </div>
+            </div>
+
+            ${matterProgress.length > 0 && html`
+              <div class="stage-progress-box">
+                ${matterProgress.map(
+                  (ev, idx) => html`
+                    <div key=${idx}>
+                      <span class="font-mono-data" style="color: var(--color-accent-primary);">[${ev.stage}]</span> ${ev.message}
+                    </div>
+                  `
+                )}
+              </div>
+            `}
+
+            <div class="corpus-table-wrap">
+              <table class="corpus-table">
+                <thead>
+                  <tr>
+                    <th>Filename</th>
+                    <th>Type</th>
+                    <th>Size</th>
+                    <th>Indexed Coordinates</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${(!matterFilesData?.files || matterFilesData.files.length === 0) && html`
+                    <tr>
+                      <td colspan="5" style="text-align: center; color: var(--color-text-muted); padding: 20px;">
+                        No files uploaded into '${selectedMatter}' yet.
+                      </td>
+                    </tr>
+                  `}
+                  ${(matterFilesData?.files || []).map(
+                    (f) => html`
+                      <tr key=${f.filename}>
+                        <td style="font-weight: 600; color: var(--color-text-primary);">${f.filename}</td>
+                        <td class="font-mono-data">${f.suffix || '—'}</td>
+                        <td class="font-mono-data">${formatBytes(f.size_bytes)}</td>
+                        <td class="font-mono-data">
+                          ${f.blocks != null
+                            ? `${f.blocks} blocks`
+                            : f.cells != null
+                            ? `${f.cells} cells`
+                            : f.indexed_artifact || 'Pending'}
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            class="btn btn-compact btn-danger-ghost"
+                            aria-label="Delete ${f.filename}"
+                            disabled=${matterBusy}
+                            onClick=${() => handleDeleteMatterFile(f.filename)}
+                          >
+                            <${Icon} name="trash" size=${12} />
+                          </button>
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `}
+      </div>
+    </dialog>
+  `;
+}
+
+/**
+ * Step-Through Checkpoint Review dialog for inspecting/editing Stage 1 OutlinePlan
+ * and Stage 2 VerifiedFactLedger before continuing Stages 3 & 4.
+ */
+function CheckpointReviewModal({
+  dialogRef,
+  run,
+  canonicalAuths,
+  onRunUpdated,
+  onBundleCreated,
+  onOpenMatterFiles,
+}) {
+  const [editedPlan, setEditedPlan] = useState(null);
+  const [resuming, setResuming] = useState(false);
+  const [progressEvents, setProgressEvents] = useState([]);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [addAuthBySec, setAddAuthBySec] = useState({});
+
+  useEffect(() => {
+    if (run?.outline_plan) {
+      setEditedPlan(JSON.parse(JSON.stringify(run.outline_plan)));
+    } else {
+      setEditedPlan(null);
+    }
+    setErrorMsg(run?.error || null);
+    setProgressEvents([]);
+  }, [run?.run_id, run?.status, run?.updated_at]);
+
+  if (!run) {
+    return html`<dialog ref=${dialogRef} class="compiler-dialog is-wide"></dialog>`;
+  }
+
+  const isStage1 = run.status === 'awaiting_stage1_approval';
+  const isStage2 = run.status === 'awaiting_stage2_approval';
+
+  const updateSectionField = (idx, field, value) => {
+    setEditedPlan((prev) => {
+      if (!prev) return prev;
+      const nextSections = [...prev.sections];
+      nextSections[idx] = { ...nextSections[idx], [field]: value };
+      return { ...prev, sections: nextSections };
+    });
+  };
+
+  const handleRemoveAuth = (secIdx, authId) => {
+    setEditedPlan((prev) => {
+      if (!prev) return prev;
+      const nextSections = [...prev.sections];
+      const curr = nextSections[secIdx];
+      nextSections[secIdx] = {
+        ...curr,
+        governing_authorities: (curr.governing_authorities || []).filter(
+          (a) => a.auth_id !== authId
+        ),
+      };
+      return { ...prev, sections: nextSections };
+    });
+  };
+
+  const handleAddAuth = (secIdx, authId) => {
+    if (!authId) return;
+    const match = (canonicalAuths || []).find((a) => a.auth_id === authId);
+    if (!match) return;
+    setEditedPlan((prev) => {
+      if (!prev) return prev;
+      const nextSections = [...prev.sections];
+      const curr = nextSections[secIdx];
+      const existing = curr.governing_authorities || [];
+      if (existing.some((a) => a.auth_id === match.auth_id)) return prev;
+      nextSections[secIdx] = {
+        ...curr,
+        governing_authorities: [...existing, match],
+      };
+      return { ...prev, sections: nextSections };
+    });
+  };
+
+  const handleAddSection = () => {
+    setEditedPlan((prev) => {
+      if (!prev) return prev;
+      const num = prev.sections.length + 1;
+      const newSec = {
+        section_id: `sec_${String(num).padStart(2, '0')}_${Date.now().toString(36).slice(-4)}`,
+        section_title: `Section ${num}`,
+        stated_intention: 'Analyze this issue using indexed project evidence.',
+        routing_rationale: 'Added manually during Stage 1 review.',
+        governing_authorities: [],
+        required_fact_queries: ['What facts establish this point?'],
+      };
+      return { ...prev, sections: [...prev.sections, newSec] };
+    });
+  };
+
+  const handleRemoveSection = (idx) => {
+    setEditedPlan((prev) => {
+      if (!prev || prev.sections.length <= 1) return prev;
+      return { ...prev, sections: prev.sections.filter((_, i) => i !== idx) };
+    });
+  };
+
+  const handleResume = async ({
+    passOutline = false,
+    reharvestIds = null,
+    checkpointMode = null,
+  } = {}) => {
+    setResuming(true);
     setErrorMsg(null);
-    setCanonicalStatusMsg(null);
+    setProgressEvents([{ stage: 'resume', message: 'Resuming persisted pipeline run…' }]);
     try {
-      const res = await fetch('/api/canonical/ingest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ purge_encoded: Boolean(purgeEncoded) }),
+      const { bundle: newBundle, run: updatedRun } = await resumeRunStream({
+        runId: run.run_id,
+        outlinePlan: passOutline ? editedPlan : null,
+        reharvestSectionIds: reharvestIds,
+        checkpointMode,
+        onProgress: (ev) => setProgressEvents((prev) => [...prev, ev]),
+        onCheckpoint: (ckptRun) => onRunUpdated?.(ckptRun),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        setErrorMsg(JSON.stringify(err.detail || err));
-      } else {
-        const data = await res.json();
-        setCanonicalAuths(data.authorities || []);
-        setCanonicalStatusMsg(
-          `Rebuilt index (${data.summary?.files_processed || 0} files -> ${data.total_authorities} authorities).`
-        );
+      if (updatedRun) {
+        onRunUpdated?.(updatedRun);
       }
+      if (newBundle) {
+        await onBundleCreated?.(newBundle);
+        dialogRef.current?.close();
+      }
+    } catch (err) {
+      setErrorMsg(err.message);
     } finally {
-      setCanonicalBusy(false);
+      setResuming(false);
     }
   };
+
+  const ledgers = run.ledgers || {};
+
+  return html`
+    <dialog
+      ref=${dialogRef}
+      class="compiler-dialog is-wide"
+      closedby="any"
+      aria-labelledby="checkpoint-dialog-title"
+    >
+      <div class="dialog-inner">
+        <div class="modal-header-row">
+          <div>
+            <h2 id="checkpoint-dialog-title" class="card-heading" style="font-size: 18px;">
+              ${isStage1
+                ? 'Stage 1 Checkpoint: Review & Edit Outline'
+                : isStage2
+                ? 'Stage 2 Checkpoint: Inspect Harvested Facts & Gaps'
+                : `Pipeline Run · ${formatRunStatusLabel(run.status)}`}
+            </h2>
+            <div class="provenance-caption">
+              Run <code class="font-mono-data">${run.run_id}</code> · Matter <code class="font-mono-data">${run.matter_id}</code>
+            </div>
+          </div>
+          <form method="dialog">
+            <button type="submit" class="btn btn-icon-only" aria-label="Close checkpoint dialog" disabled=${resuming}>
+              <${Icon} name="close" />
+            </button>
+          </form>
+        </div>
+
+        ${isStage1 && editedPlan && html`
+          <div class="checkpoint-sections-list">
+            <div class="form-field">
+              <label for="ckpt-doc-title" class="control-label">Document Title</label>
+              <input
+                id="ckpt-doc-title"
+                type="text"
+                class="text-input"
+                value=${editedPlan.document_title}
+                onInput=${(e) => setEditedPlan({ ...editedPlan, document_title: e.target.value })}
+              />
+            </div>
+            <div class="form-field">
+              <label for="ckpt-summary-intent" class="control-label">Executive Summary Intent</label>
+              <textarea
+                id="ckpt-summary-intent"
+                class="comment-textarea"
+                style="min-block-size: 56px;"
+                value=${editedPlan.executive_summary_intent}
+                onInput=${(e) =>
+                  setEditedPlan({ ...editedPlan, executive_summary_intent: e.target.value })
+                }
+              ></textarea>
+            </div>
+
+            ${editedPlan.sections.map(
+              (sec, idx) => html`
+                <div key=${sec.section_id} class="checkpoint-section-card">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                    <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                      ${sec.section_id}
+                    </span>
+                    ${editedPlan.sections.length > 1 && html`
+                      <button
+                        type="button"
+                        class="btn btn-compact btn-danger-ghost"
+                        onClick=${() => handleRemoveSection(idx)}
+                      >
+                        Remove Section
+                      </button>
+                    `}
+                  </div>
+
+                  <div class="form-field">
+                    <label class="control-label">Section Title</label>
+                    <input
+                      type="text"
+                      class="text-input"
+                      value=${sec.section_title}
+                      onInput=${(e) => updateSectionField(idx, 'section_title', e.target.value)}
+                    />
+                  </div>
+
+                  <div class="form-field">
+                    <label class="control-label">Stated Analytical Intention</label>
+                    <textarea
+                      class="comment-textarea"
+                      style="min-block-size: 48px;"
+                      value=${sec.stated_intention}
+                      onInput=${(e) => updateSectionField(idx, 'stated_intention', e.target.value)}
+                    ></textarea>
+                  </div>
+
+                  <div class="form-field">
+                    <label class="control-label">Required Fact Queries (one per line)</label>
+                    <textarea
+                      class="comment-textarea"
+                      style="min-block-size: 56px;"
+                      value=${(sec.required_fact_queries || []).join('\n')}
+                      onInput=${(e) =>
+                        updateSectionField(
+                          idx,
+                          'required_fact_queries',
+                          e.target.value
+                            .split('\n')
+                            .map((line) => line.trim())
+                            .filter(Boolean)
+                        )
+                      }
+                    ></textarea>
+                  </div>
+
+                  <div class="form-field">
+                    <span class="control-label">Governing Canonical Authorities</span>
+                    <div class="auth-pill-row">
+                      ${(sec.governing_authorities || []).length === 0 && html`
+                        <span class="provenance-caption">Evidence & commonsense reasoning only</span>
+                      `}
+                      ${(sec.governing_authorities || []).map(
+                        (a) => html`
+                          <span key=${a.auth_id} class="auth-pill">
+                            <span class="font-mono-data">${a.auth_id}</span>
+                            <span>${a.title}</span>
+                            <button
+                              type="button"
+                              class="auth-pill-remove"
+                              aria-label="Remove ${a.auth_id}"
+                              onClick=${() => handleRemoveAuth(idx, a.auth_id)}
+                            >
+                              <${Icon} name="close" size=${11} />
+                            </button>
+                          </span>
+                        `
+                      )}
+                    </div>
+                    ${(canonicalAuths || []).length > 0 && html`
+                      <div style="display: flex; gap: 6px; margin-top: 4px;">
+                        <select
+                          class="select-control"
+                          value=${addAuthBySec[sec.section_id] || ''}
+                          onChange=${(e) =>
+                            setAddAuthBySec((prev) => ({
+                              ...prev,
+                              [sec.section_id]: e.target.value,
+                            }))
+                          }
+                        >
+                          <option value="">Attach canonical [AUTH:...] rule…</option>
+                          ${canonicalAuths.map(
+                            (ca) => html`
+                              <option key=${ca.auth_id} value=${ca.auth_id}>
+                                [${ca.auth_id}] ${ca.title}
+                              </option>
+                            `
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          class="btn btn-compact"
+                          onClick=${() => {
+                            handleAddAuth(idx, addAuthBySec[sec.section_id]);
+                            setAddAuthBySec((prev) => ({ ...prev, [sec.section_id]: '' }));
+                          }}
+                        >
+                          Add Rule
+                        </button>
+                      </div>
+                    `}
+                  </div>
+                </div>
+              `
+            )}
+
+            <div>
+              <button type="button" class="btn btn-compact" onClick=${handleAddSection}>
+                <${Icon} name="plus" size=${12} />
+                <span>Add Section</span>
+              </button>
+            </div>
+          </div>
+        `}
+
+        ${isStage2 && run.outline_plan && html`
+          <div class="checkpoint-sections-list">
+            ${run.outline_plan.sections.map((sec) => {
+              const ledger = ledgers[sec.section_id] || {};
+              const facts = ledger.verified_facts || [];
+              const gaps = ledger.unresolved_gaps || [];
+              return html`
+                <div key=${sec.section_id} class="checkpoint-section-card">
+                  <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <div>
+                      <div style="font-weight: 600; color: var(--color-text-primary);">${sec.section_title}</div>
+                      <div class="provenance-caption">
+                        <span class="font-mono-data">${facts.length}</span> verified facts ·
+                        <span class="font-mono-data">${gaps.length}</span> unresolved gaps
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-compact"
+                      disabled=${resuming}
+                      onClick=${() => handleResume({ reharvestIds: [sec.section_id] })}
+                    >
+                      Re-Harvest Section
+                    </button>
+                  </div>
+
+                  ${ledger.harvest_summary && html`
+                    <div class="provenance-caption">${ledger.harvest_summary}</div>
+                  `}
+
+                  ${facts.map(
+                    (f) => html`
+                      <div key=${f.fact_id} class="fact-review-row">
+                        <div style="display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                          <strong>${f.title}</strong>
+                          <span class="font-mono-data" style="font-size: 11px; color: var(--color-accent-primary);">
+                            ${f.locator?.file_name || ''} · ${f.locator?.locator_key || f.locator?.cell_range || ''}
+                          </span>
+                        </div>
+                        <div style="color: var(--color-text-body);">${f.quote}</div>
+                      </div>
+                    `
+                  )}
+
+                  ${gaps.map(
+                    (g, gi) => html`
+                      <div key=${gi} class="gap-callout">
+                        <strong>Unresolved Gap (${g.recommended_handling || 'assumption'}): ${g.query}</strong>
+                        <span>${g.rationale}</span>
+                      </div>
+                    `
+                  )}
+                </div>
+              `;
+            })}
+          </div>
+        `}
+
+        ${(progressEvents.length > 0 || (run.events || []).length > 0) && html`
+          <details open=${progressEvents.length > 0}>
+            <summary class="control-label" style="cursor: pointer;">
+              Execution Log (${progressEvents.length > 0 ? progressEvents.length : run.events.length} events)
+            </summary>
+            <div class="stage-progress-box" style="margin-top: 6px;">
+              ${(progressEvents.length > 0 ? progressEvents : run.events).map(
+                (ev, idx) => html`
+                  <div key=${idx}>
+                    <span class="font-mono-data" style="color: var(--color-accent-primary);">[${ev.stage}]</span> ${ev.message}
+                  </div>
+                `
+              )}
+            </div>
+          </details>
+        `}
+
+        ${errorMsg && html`
+          <pre
+            tabindex="0"
+            class="formula-box"
+            style="border-color: var(--color-danger); color: var(--color-danger); background-color: var(--color-danger-subtle);"
+          ><code>${errorMsg}</code></pre>
+        `}
+
+        <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <div>
+            ${isStage2 && html`
+              <button
+                type="button"
+                class="btn"
+                disabled=${resuming}
+                onClick=${() => onOpenMatterFiles?.(run.matter_id)}
+              >
+                <${Icon} name="folder" size=${13} />
+                <span>Upload Missing Matter File…</span>
+              </button>
+            `}
+          </div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            ${isStage1 && html`
+              <button
+                type="button"
+                class="btn"
+                disabled=${resuming}
+                onClick=${() =>
+                  handleResume({ passOutline: true, checkpointMode: false })
+                }
+              >
+                ${resuming ? 'Running…' : 'Approve & Finish Automatically'}
+              </button>
+              <button
+                type="button"
+                class="btn btn-primary"
+                disabled=${resuming}
+                onClick=${() =>
+                  handleResume({ passOutline: true, checkpointMode: true })
+                }
+              >
+                ${resuming ? 'Harvesting Facts…' : 'Approve & Harvest Facts'}
+              </button>
+            `}
+            ${isStage2 && html`
+              <button
+                type="button"
+                class="btn btn-primary"
+                disabled=${resuming}
+                onClick=${() => handleResume({ checkpointMode: true })}
+              >
+                ${resuming ? 'Drafting & Auditing Memo…' : 'Approve & Draft Memo'}
+              </button>
+            `}
+            ${!isStage1 && !isStage2 && html`
+              <button
+                type="button"
+                class="btn btn-primary"
+                disabled=${resuming}
+                onClick=${() => handleResume({})}
+              >
+                ${resuming ? 'Resuming…' : 'Resume Run'}
+              </button>
+            `}
+          </div>
+        </div>
+      </div>
+    </dialog>
+  `;
+}
+
+/**
+ * Native <dialog> for starting a New Question / Brief and browsing persisted runs.
+ */
+function AskPipelineDialog({
+  dialogRef,
+  activeMatterHint,
+  onBundleCreated,
+  onCheckpointPaused,
+  onOpenCorpusManager,
+  onOpenRun,
+}) {
+  const [matters, setMatters] = useState([]);
+  const [selectedMatter, setSelectedMatter] = useState(activeMatterHint || 'legal_motion_1332');
+  const [question, setQuestion] = useState('');
+  const [bundleSlug, setBundleSlug] = useState('');
+  const [checkpointMode, setCheckpointMode] = useState(false);
+  const [runsList, setRunsList] = useState([]);
+  const [progressEvents, setProgressEvents] = useState([]);
+  const [running, setRunning] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+
+  const refreshMatters = useCallback(async () => {
+    const res = await fetch('/api/matters');
+    if (res.ok) {
+      const data = await res.json();
+      const list = data.matters || [];
+      setMatters(list);
+      if (list.length > 0 && !list.some((m) => m.matter_id === selectedMatter)) {
+        setSelectedMatter(list[0].matter_id);
+      }
+    }
+  }, [selectedMatter]);
+
+  const refreshRuns = useCallback(async (matterId) => {
+    if (!matterId) return;
+    const res = await fetch(`/api/matters/${matterId}/runs`);
+    if (res.ok) {
+      setRunsList(await res.json());
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshMatters();
+  }, [refreshMatters]);
+
+  useEffect(() => {
+    if (activeMatterHint && matters.some((m) => m.matter_id === activeMatterHint)) {
+      setSelectedMatter(activeMatterHint);
+    }
+  }, [activeMatterHint, matters]);
+
+  useEffect(() => {
+    if (selectedMatter) {
+      refreshRuns(selectedMatter);
+    }
+  }, [selectedMatter, refreshRuns]);
+
+  const activeMatterObj = matters.find((m) => m.matter_id === selectedMatter);
 
   const handleRunAsk = async (e) => {
     e.preventDefault();
@@ -1286,23 +2443,36 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
     setProgressEvents([{ stage: 'init', message: 'Starting analysis pipeline...' }]);
 
     try {
-      const newBundle = await streamAskPipeline({
+      const { bundle: newBundle, run: pausedRun } = await streamAskPipeline({
         matterId: selectedMatter,
         question,
         bundleId: bundleSlug.trim() || null,
+        checkpointMode,
         onProgress: (ev) => setProgressEvents((prev) => [...prev, ev]),
       });
+      await refreshRuns(selectedMatter);
       if (newBundle) {
         await onBundleCreated(newBundle);
         setQuestion('');
         setBundleSlug('');
         dialogRef.current?.close();
+      } else if (pausedRun) {
+        dialogRef.current?.close();
+        onCheckpointPaused?.(pausedRun);
       }
     } catch (err) {
       setErrorMsg(err.message);
     } finally {
       setRunning(false);
     }
+  };
+
+  const pillClassFor = (status) => {
+    if (status === 'awaiting_stage1_approval' || status === 'awaiting_stage2_approval') return 'is-paused';
+    if (status === 'running') return 'is-running';
+    if (status === 'completed') return 'is-completed';
+    if (status === 'failed') return 'is-failed';
+    return '';
   };
 
   return html`
@@ -1313,13 +2483,10 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
       aria-labelledby="ask-dialog-title"
     >
       <div class="dialog-inner">
-        <div class="card-meta-row">
-          <div>
-            <span class="control-label">New Document Brief</span>
-            <h2 id="ask-dialog-title" class="card-heading" style="font-size: 18px; margin-top: 2px;">
-              Workspace, Files & Controlling Rules
-            </h2>
-          </div>
+        <div class="modal-header-row">
+          <h2 id="ask-dialog-title" class="card-heading" style="font-size: 18px;">
+            New Analytical Brief
+          </h2>
           <form method="dialog">
             <button type="submit" class="btn btn-icon-only" aria-label="Close dialog" disabled=${running}>
               <${Icon} name="close" />
@@ -1328,115 +2495,34 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
         </div>
 
         <div class="form-field">
-          <label for="matter-select" class="control-label">Matter Workspace</label>
-          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <select
-              id="matter-select"
-              class="select-control"
-              style="flex: 1;"
-              value=${selectedMatter}
-              onChange=${(e) => setSelectedMatter(e.target.value)}
-            >
-              ${matters.map(
-                (m) => html`
-                  <option key=${m.matter_id} value=${m.matter_id}>
-                    ${m.matter_id} (${m.raw_files?.length || 0} files${m.indexed ? ' · indexed' : ''})
-                  </option>
-                `
-              )}
-            </select>
-            <input
-              type="text"
-              class="text-input"
-              style="width: 170px;"
-              placeholder="New matter slug..."
-              value=${newMatterName}
-              onInput=${(e) => setNewMatterName(e.target.value)}
-            />
-            <button type="button" class="btn" onClick=${handleCreateMatter}>
-              <${Icon} name="plus" size=${13} />
-              Create
-            </button>
-          </div>
-          ${activeMatterObj && html`
-            <div class="provenance-caption">
-              Files: ${(activeMatterObj.raw_files || []).join(', ') || 'None uploaded yet'}
-            </div>
-          `}
-        </div>
-
-        <div class="form-field">
-          <label for="matter-file-upload" class="control-label">
-            Upload Matter File (.pdf, .xlsx, .csv, .md)
-          </label>
-          <input
-            id="matter-file-upload"
-            type="file"
-            accept=".pdf,.xlsx,.xlsm,.csv,.md,.txt"
-            disabled=${uploading || running}
-            onChange=${handleFileUpload}
-          />
-          ${uploading && html`<span class="provenance-caption">Indexing uploaded file coordinates…</span>`}
-        </div>
-
-        <div class="form-field">
-          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <div class="provenance-caption">
-              <strong>Controlling Rules:</strong> <span class="font-mono-data">${canonicalAuths.length}</span> loaded
-            </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+            <label for="matter-select" class="control-label">Matter Workspace</label>
             <button
               type="button"
               class="btn btn-compact"
-              onClick=${() => setShowCanonicalMgr((prev) => !prev)}
+              onClick=${() => onOpenCorpusManager?.('matter', selectedMatter)}
             >
-              ${showCanonicalMgr ? 'Hide Rule Library' : 'Manage Rule Library'}
+              <${Icon} name="folder" size=${12} />
+              <span>Manage Files & Rules…</span>
             </button>
           </div>
-
-          ${showCanonicalMgr && html`
-            <div class="inline-comment-well" style="margin-top: 6px; border: 1px solid var(--color-border-subtle);">
-              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                <label for="canonical-domain-input" class="control-label">Domain</label>
-                <input
-                  id="canonical-domain-input"
-                  type="text"
-                  class="text-input"
-                  style="width: 130px;"
-                  value=${canonicalDomain}
-                  onInput=${(e) => setCanonicalDomain(e.target.value)}
-                  disabled=${canonicalBusy || running}
-                />
-                <input
-                  id="canonical-file-upload"
-                  type="file"
-                  accept=".md,.txt,.pdf,.docx"
-                  disabled=${canonicalBusy || running}
-                  onChange=${handleCanonicalUpload}
-                />
-              </div>
-              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                <button
-                  type="button"
-                  class="btn btn-compact"
-                  disabled=${canonicalBusy || running}
-                  onClick=${() => handleRebuildCanonical(false)}
-                >
-                  Rebuild Index
-                </button>
-                <button
-                  type="button"
-                  class="btn btn-compact"
-                  disabled=${canonicalBusy || running}
-                  onClick=${() => handleRebuildCanonical(true)}
-                >
-                  Full Re-encode
-                </button>
-              </div>
-              ${canonicalStatusMsg && html`
-                <div class="provenance-caption" style="color: var(--color-emerald-accent);">
-                  ${canonicalStatusMsg}
-                </div>
-              `}
+          <select
+            id="matter-select"
+            class="select-control"
+            value=${selectedMatter}
+            onChange=${(e) => setSelectedMatter(e.target.value)}
+          >
+            ${matters.map(
+              (m) => html`
+                <option key=${m.matter_id} value=${m.matter_id}>
+                  ${m.matter_id} (${m.raw_files?.length || 0} files${m.indexed ? ' · indexed' : ''})
+                </option>
+              `
+            )}
+          </select>
+          ${activeMatterObj && html`
+            <div class="provenance-caption">
+              Files: ${(activeMatterObj.raw_files || []).join(', ') || 'None uploaded yet'}
             </div>
           `}
         </div>
@@ -1467,6 +2553,15 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
             />
           </div>
 
+          <label class="checkbox-row">
+            <input
+              type="checkbox"
+              checked=${checkpointMode}
+              onChange=${(e) => setCheckpointMode(Boolean(e.target.checked))}
+            />
+            <span>Step-through checkpoints (pause after Stage 1 outline & Stage 2 fact harvest)</span>
+          </label>
+
           ${progressEvents.length > 0 && html`
             <div class="stage-progress-box">
               ${progressEvents.map(
@@ -1489,10 +2584,47 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
 
           <div style="display: flex; justify-content: flex-end; gap: 8px;">
             <button type="submit" class="btn btn-primary" disabled=${running}>
-              ${running ? 'Generating Brief…' : 'Generate Brief'}
+              ${running ? 'Running Pipeline…' : checkpointMode ? 'Start Stage 1 Outline' : 'Generate Brief'}
             </button>
           </div>
         </form>
+
+        ${runsList.length > 0 && html`
+          <div class="form-field" style="border-block-start: 1px solid var(--color-border-subtle); padding-top: 12px;">
+            <span class="control-label">Persisted Runs in ${selectedMatter}</span>
+            <div class="runs-list">
+              ${runsList.slice(0, 6).map(
+                (r) => html`
+                  <div key=${r.run_id} class="run-row">
+                    <div style="min-width: 0; flex: 1;">
+                      <div style="display: flex; align-items: center; gap: 8px;">
+                        <span class="run-status-pill ${pillClassFor(r.status)}">
+                          ${formatRunStatusLabel(r.status)}
+                        </span>
+                        <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
+                          ${r.run_id}
+                        </span>
+                      </div>
+                      <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
+                        ${r.question}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="btn btn-compact"
+                      onClick=${() => {
+                        dialogRef.current?.close();
+                        onOpenRun?.(r);
+                      }}
+                    >
+                      ${r.status === 'completed' ? 'Open Bundle' : 'Inspect / Resume'}
+                    </button>
+                  </div>
+                `
+              )}
+            </div>
+          </div>
+        `}
       </div>
     </dialog>
   `;
@@ -1504,9 +2636,14 @@ function AskPipelineDialog({ dialogRef, activeMatterHint, onBundleCreated }) {
 function App() {
   const [bundlesList, setBundlesList] = useState([]);
   const [mattersList, setMattersList] = useState([]);
+  const [canonicalAuths, setCanonicalAuths] = useState([]);
   const [currentBundleId, setCurrentBundleId] = useState('legal_motion_1332');
   const [bundle, setBundle] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [activeRun, setActiveRun] = useState(null);
+  const [activeRunLiveMsg, setActiveRunLiveMsg] = useState(null);
+  const [corpusTabHint, setCorpusTabHint] = useState('canonical');
+  const [corpusMatterHint, setCorpusMatterHint] = useState(null);
 
   // Progressive 3-column canvas state
   const [pinnedClaimId, setPinnedClaimId] = useState(null);
@@ -1537,6 +2674,8 @@ function App() {
   // Native <dialog> refs
   const dialogRef = useRef(null);
   const askDialogRef = useRef(null);
+  const corpusDialogRef = useRef(null);
+  const checkpointDialogRef = useRef(null);
   const toolsMenuRef = useRef(null);
   const [compilerJsonText, setCompilerJsonText] = useState(
     JSON.stringify(SAMPLE_TIER1_COMPILE_PAYLOAD, null, 2)
@@ -1561,6 +2700,7 @@ function App() {
     if (res.ok) {
       const data = await res.json();
       setMattersList(data.matters || []);
+      setCanonicalAuths(data.canonical_authorities || []);
     }
   }, []);
 
@@ -1585,11 +2725,87 @@ function App() {
     }
   }, []);
 
+  const applyCreatedBundle = useCallback(
+    async (newBundle) => {
+      await fetchBundlesList();
+      await fetchMattersList();
+      setBundle(newBundle);
+      setCurrentBundleId(newBundle.bundle_id);
+      setPinnedClaimId(null);
+      setExpandedLevel2Ids([]);
+      setActiveRun(null);
+      setActiveRunLiveMsg(null);
+      saveActiveRunId(null);
+    },
+    [fetchBundlesList, fetchMattersList]
+  );
+
+  const openPersistedRun = useCallback(
+    async (runObj) => {
+      if (!runObj) return;
+      if (runObj.status === 'completed' && runObj.result_bundle_id) {
+        await loadBundle(runObj.result_bundle_id);
+        return;
+      }
+      setActiveRun(runObj);
+      saveActiveRunId(runObj.run_id);
+      if (runObj.status === 'running') {
+        setActiveRunLiveMsg('Reconnecting to active pipeline stream…');
+        try {
+          const { bundle: doneBundle, run: updatedRun } = await connectRunStream({
+            runId: runObj.run_id,
+            onProgress: (ev) => setActiveRunLiveMsg(`[${ev.stage}] ${ev.message}`),
+            onCheckpoint: (ckptRun) => {
+              setActiveRun(ckptRun);
+              setActiveRunLiveMsg(null);
+              checkpointDialogRef.current?.showModal();
+            },
+          });
+          if (doneBundle) {
+            await applyCreatedBundle(doneBundle);
+          } else if (updatedRun) {
+            setActiveRun(updatedRun);
+            setActiveRunLiveMsg(null);
+            checkpointDialogRef.current?.showModal();
+          }
+        } catch (err) {
+          setActionError(err.message);
+          setActiveRunLiveMsg(null);
+        }
+        return;
+      }
+      checkpointDialogRef.current?.showModal();
+    },
+    [applyCreatedBundle, loadBundle]
+  );
+
   useEffect(() => {
     fetchBundlesList();
     fetchMattersList();
     loadBundle('legal_motion_1332');
-  }, [fetchBundlesList, fetchMattersList, loadBundle]);
+
+    const storedRunId = loadActiveRunId();
+    if (storedRunId) {
+      fetch(`/api/runs/${storedRunId}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((runData) => {
+          if (!runData) {
+            saveActiveRunId(null);
+            return;
+          }
+          if (runData.status === 'completed' && runData.result_bundle_id) {
+            saveActiveRunId(null);
+            loadBundle(runData.result_bundle_id);
+          } else if (runData.status !== 'failed') {
+            setActiveRun(runData);
+            if (runData.status === 'running') {
+              openPersistedRun(runData);
+            }
+          }
+        })
+        .catch(() => {});
+    }
+  }, [fetchBundlesList, fetchMattersList, loadBundle, openPersistedRun]);
 
   // Close tools overflow popover on outside click
   useEffect(() => {
@@ -2023,10 +3239,11 @@ function App() {
       const contextualQuestion = bundle?.artifact?.title
         ? `Follow-up to "${bundle.artifact.title}": ${text}`
         : text;
-      const newBundle = await streamAskPipeline({
+      const { bundle: newBundle } = await streamAskPipeline({
         matterId: activeMatterId,
         question: contextualQuestion,
         bundleId: null,
+        checkpointMode: false,
         onProgress: (ev) => setFollowupStatusMsg(`[${ev.stage}] ${ev.message}`),
       });
       if (newBundle) {
@@ -2168,14 +3385,32 @@ function App() {
                   role="menuitem"
                   onClick=${() => {
                     setToolsMenuOpen(false);
-                    askDialogRef.current?.showModal();
+                    setCorpusTabHint('canonical');
+                    setCorpusMatterHint(activeMatterId);
+                    corpusDialogRef.current?.showModal();
                   }}
                 >
                   <div>
                     <div>Corpus & Rule Library</div>
-                    <span class="tools-menu-sub">Upload matter files or legal authorities</span>
+                    <span class="tools-menu-sub">Inspect, add, or remove rules & matter files</span>
                   </div>
                 </button>
+                ${activeRun && html`
+                  <button
+                    type="button"
+                    class="tools-menu-item"
+                    role="menuitem"
+                    onClick=${() => {
+                      setToolsMenuOpen(false);
+                      checkpointDialogRef.current?.showModal();
+                    }}
+                  >
+                    <div>
+                      <div>Active Checkpoint Run</div>
+                      <span class="tools-menu-sub">${formatRunStatusLabel(activeRun.status)}</span>
+                    </div>
+                  </button>
+                `}
                 <div class="tools-divider"></div>
                 <button
                   type="button"
@@ -2197,6 +3432,44 @@ function App() {
           </div>
         </div>
       </header>
+
+      ${activeRun && activeRun.status !== 'completed' && html`
+        <div
+          class="active-run-banner ${
+            activeRun.status === 'awaiting_stage1_approval' || activeRun.status === 'awaiting_stage2_approval'
+              ? 'is-paused'
+              : ''
+          }"
+        >
+          <span>
+            <strong>${formatRunStatusLabel(activeRun.status)}</strong>
+            ${activeRunLiveMsg
+              ? ` · ${activeRunLiveMsg}`
+              : ` · Run ${activeRun.run_id} (${activeRun.matter_id})`}
+          </span>
+          <div style="display: inline-flex; gap: 8px; align-items: center;">
+            <button
+              type="button"
+              class="btn btn-compact btn-primary"
+              onClick=${() => checkpointDialogRef.current?.showModal()}
+            >
+              <${Icon} name="play" size=${12} />
+              <span>Open Checkpoint Review</span>
+            </button>
+            <button
+              type="button"
+              class="btn btn-compact"
+              onClick=${() => {
+                setActiveRun(null);
+                setActiveRunLiveMsg(null);
+                saveActiveRunId(null);
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      `}
 
       <main
         id="workspace-main"
@@ -2795,17 +4068,47 @@ function App() {
         regenerating=${regenerating}
       />
 
-      <!-- WORKSPACE / NEW QUESTION / CORPUS DIALOG -->
+      <!-- WORKSPACE / NEW QUESTION / RUNS DIALOG -->
       <${AskPipelineDialog}
         dialogRef=${askDialogRef}
         activeMatterHint=${activeMatterId}
-        onBundleCreated=${async (newBundle) => {
-          await fetchBundlesList();
-          await fetchMattersList();
-          setBundle(newBundle);
-          setCurrentBundleId(newBundle.bundle_id);
-          setPinnedClaimId(null);
-          setExpandedLevel2Ids([]);
+        onBundleCreated=${applyCreatedBundle}
+        onCheckpointPaused=${(ckptRun) => {
+          setActiveRun(ckptRun);
+          checkpointDialogRef.current?.showModal();
+        }}
+        onOpenCorpusManager=${(tab, matterHint) => {
+          setCorpusTabHint(tab || 'canonical');
+          setCorpusMatterHint(matterHint || activeMatterId);
+          corpusDialogRef.current?.showModal();
+        }}
+        onOpenRun=${openPersistedRun}
+      />
+
+      <!-- CORPUS & MATTER FILE MANAGER DIALOG -->
+      <${CorpusManagerModal}
+        dialogRef=${corpusDialogRef}
+        activeMatterHint=${corpusMatterHint || activeMatterId}
+        initialTab=${corpusTabHint}
+        onCorpusChanged=${fetchMattersList}
+      />
+
+      <!-- STAGE 1 & STAGE 2 CHECKPOINT REVIEW DIALOG -->
+      <${CheckpointReviewModal}
+        dialogRef=${checkpointDialogRef}
+        run=${activeRun}
+        canonicalAuths=${canonicalAuths}
+        onRunUpdated=${(updatedRun) => {
+          setActiveRun(updatedRun);
+          if (updatedRun?.run_id) {
+            saveActiveRunId(updatedRun.status === 'completed' ? null : updatedRun.run_id);
+          }
+        }}
+        onBundleCreated=${applyCreatedBundle}
+        onOpenMatterFiles=${(mId) => {
+          setCorpusTabHint('matter');
+          setCorpusMatterHint(mId);
+          corpusDialogRef.current?.showModal();
         }}
       />
 

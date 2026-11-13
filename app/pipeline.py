@@ -14,17 +14,19 @@ review comments with smart Stage-2 fallback triage.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
 from app.ingest import CanonicalRouter, MatterIngestor
-from app.llm import LLMProvider
+from app.llm import LLMProvider, ToolDefinition
 from app.models import (
     AuditStatus,
     CompiledBundle,
@@ -32,6 +34,8 @@ from app.models import (
     ExtractedFactItem,
     NodeAudit,
     OutlinePlan,
+    PipelineProgressEvent,
+    PipelineRunRecord,
     ReviewComment,
     SectionAuditResult,
     SectionOutput,
@@ -115,11 +119,54 @@ class AuditPipelineRunner:
         if callback is not None:
             callback(stage, message)
 
+    def _wrap_tools_with_progress(
+        self,
+        tools: List[ToolDefinition],
+        callback: Optional[Callable[[str, str], None]],
+        stage: str,
+    ) -> List[ToolDefinition]:
+        """Wraps tool handlers so each invocation emits a concise granular progress event."""
+        if callback is None:
+            return tools
+
+        wrapped: List[ToolDefinition] = []
+        for tool in tools:
+            orig_handler = tool.handler
+
+            def _make_handler(t_name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
+                def _runner(**kwargs: Any) -> Any:
+                    arg_preview = ", ".join(
+                        f"{k}={repr(v)[:48]}" for k, v in kwargs.items()
+                    )
+                    self._emit_progress(
+                        callback,
+                        stage,
+                        f"Tool {t_name}({arg_preview})" if arg_preview else f"Tool {t_name}()",
+                    )
+                    return fn(**kwargs)
+
+                return _runner
+
+            wrapped.append(
+                ToolDefinition(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters_schema=tool.parameters_schema,
+                    handler=_make_handler(tool.name, orig_handler),
+                )
+            )
+        return wrapped
+
     # ------------------------------------------------------------------
     # Stage 1: Question Decomposition & Canonical Rule Mapping
     # ------------------------------------------------------------------
 
-    def run_stage1_outline(self, matter_id: str, question: str) -> OutlinePlan:
+    def run_stage1_outline(
+        self,
+        matter_id: str,
+        question: str,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> OutlinePlan:
         """Decomposes user request `(c)` into sections routed over catalog `(b)`.
 
         Reads ONLY the compact Tier 1 `canonical/INDEX.md` catalog and gives Stage 1
@@ -129,12 +176,17 @@ class AuditPipelineRunner:
         Args:
             matter_id: Target project/matter identifier.
             question: User analytical or legal question `(c)`.
+            progress_callback: Optional `(stage, message)` progress callback.
 
         Returns:
             Validated `OutlinePlan` with hydrated canonical authorities.
         """
         index_md = self.canonical_router.get_index_markdown()
-        stage1_tools = self.canonical_router.build_stage1_tools()
+        stage1_tools = self._wrap_tools_with_progress(
+            self.canonical_router.build_stage1_tools(),
+            progress_callback,
+            "stage_1",
+        )
         matter_info = next(
             (m for m in self.matter_ingestor.list_matters() if m["matter_id"] == matter_id),
             {"matter_id": matter_id, "raw_files": []},
@@ -184,6 +236,7 @@ class AuditPipelineRunner:
         matter_id: str,
         section_plan: SectionPlan,
         extra_queries: Optional[List[str]] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
     ) -> VerifiedFactLedger:
         """Runs a tool-assisted fact & authority verification loop over `(a)` and `(b)`.
 
@@ -195,12 +248,18 @@ class AuditPipelineRunner:
         # Ensure deterministic ingestion has run before harvesting
         _, _, indexed_dir, _ = self.matter_ingestor._matter_dirs(matter_id)
         if not (indexed_dir / "manifest.json").exists():
+            self._emit_progress(
+                progress_callback,
+                "stage_2",
+                f"Indexing raw matter files for '{matter_id}' before fact search...",
+            )
             self.matter_ingestor.ingest_matter(matter_id)
 
-        tools = (
+        raw_tools = (
             self.matter_ingestor.build_stage2_tools(matter_id)
             + self.canonical_router.build_stage1_tools()
         )
+        tools = self._wrap_tools_with_progress(raw_tools, progress_callback, "stage_2")
         queries = list(section_plan.required_fact_queries)
         if extra_queries:
             queries.extend(q for q in extra_queries if q not in queries)
@@ -639,6 +698,7 @@ class AuditPipelineRunner:
         prior_draft: Optional[SectionOutput] = None,
         review_comments: Optional[List[ReviewComment]] = None,
         max_audit_retries: int = 2,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
     ) -> Tuple[SectionOutput, SectionAuditResult]:
         """Runs Stage 3 + Stage 4 Section Auditor with up to 2 congruence retries."""
         critique: Optional[str] = None
@@ -646,12 +706,22 @@ class AuditPipelineRunner:
         audit_res: Optional[SectionAuditResult] = None
 
         for attempt in range(max_audit_retries + 1):
+            self._emit_progress(
+                progress_callback,
+                "stage_3",
+                f"Drafting '{section_plan.section_title}' (attempt {attempt + 1}/{max_audit_retries + 1})...",
+            )
             draft = self.run_stage3_section_drafter(
                 section_plan=section_plan,
                 ledger=ledger,
                 prior_draft=prior_draft,
                 review_comments=review_comments,
                 audit_critique=critique,
+            )
+            self._emit_progress(
+                progress_callback,
+                "stage_4_audit",
+                f"Auditing claim entailment & congruence for '{section_plan.section_title}' (attempt {attempt + 1})...",
             )
             audit_res = self.run_stage4_section_auditor(matter_id, section_plan, draft)
             if audit_res.passed:
@@ -664,6 +734,11 @@ class AuditPipelineRunner:
             critique = audit_res.critique_for_retry or (
                 f"Failed invariants: relevance={audit_res.check_a_relevance}, "
                 f"congruence={audit_res.check_b_congruence}, intent={audit_res.check_c_intent}"
+            )
+            self._emit_progress(
+                progress_callback,
+                "stage_4_audit",
+                f"Audit retry requested for '{section_plan.section_title}': {critique[:140]}",
             )
             logger.warning(
                 "Section '%s' failed Stage 4 audit (attempt %d): %s",
@@ -797,6 +872,231 @@ class AuditPipelineRunner:
         out_path.write_text(bundle.model_dump_json(indent=2), encoding="utf-8")
         return out_path
 
+    def _runs_dir(self, matter_id: str) -> Path:
+        """Returns the directory storing persisted run checkpoints for a matter."""
+        return self.matter_ingestor.matters_root / matter_id / "runs"
+
+    def save_run(self, run: PipelineRunRecord) -> Path:
+        """Persists a `PipelineRunRecord` JSON under `matters/<matter_id>/runs/`."""
+        run.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        runs_dir = self._runs_dir(run.matter_id)
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        out_path = runs_dir / f"{run.run_id}.json"
+        out_path.write_text(run.model_dump_json(indent=2), encoding="utf-8")
+        return out_path
+
+    def load_run(self, matter_id: str, run_id: str) -> PipelineRunRecord:
+        """Loads one persisted `PipelineRunRecord` from disk."""
+        run_path = self._runs_dir(matter_id) / f"{run_id}.json"
+        if not run_path.exists():
+            raise FileNotFoundError(f"Run '{run_id}' not found in matter '{matter_id}'.")
+        return PipelineRunRecord.model_validate_json(run_path.read_text(encoding="utf-8"))
+
+    def list_runs(self, matter_id: str) -> List[PipelineRunRecord]:
+        """Lists persisted `PipelineRunRecord` objects for a matter, newest first."""
+        runs_dir = self._runs_dir(matter_id)
+        if not runs_dir.exists():
+            return []
+        records: List[PipelineRunRecord] = []
+        for path in runs_dir.glob("*.json"):
+            try:
+                records.append(PipelineRunRecord.model_validate_json(path.read_text(encoding="utf-8")))
+            except Exception as exc:
+                logger.warning("Skipping corrupt run file %s: %s", path, exc)
+        records.sort(key=lambda r: (r.updated_at, r.created_at), reverse=True)
+        return records
+
+    def find_run(self, run_id: str) -> Optional[PipelineRunRecord]:
+        """Searches all matters for a persisted run matching `run_id`."""
+        if not self.matter_ingestor.matters_root.exists():
+            return None
+        for match in self.matter_ingestor.matters_root.glob(f"*/runs/{run_id}.json"):
+            try:
+                return PipelineRunRecord.model_validate_json(match.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Skipping corrupt run file %s: %s", match, exc)
+        return None
+
+    def _hydrate_outline_authorities(self, plan: OutlinePlan) -> None:
+        """Hydrates canonical authority quotes/URLs onto each section in `plan`."""
+        for sec in plan.sections:
+            hydrated = []
+            for ref in sec.governing_authorities:
+                canonical_entry = self.canonical_router.get_authority(ref.auth_id)
+                hydrated.append(canonical_entry if canonical_entry is not None else ref)
+            sec.governing_authorities = hydrated
+
+    def _compile_run_bundle(
+        self,
+        run: PipelineRunRecord,
+        plan: OutlinePlan,
+        sections: List[SectionOutput],
+        tensions: List[TensionObject],
+        smoothed_map: Optional[Dict[str, str]],
+    ) -> CompiledBundle:
+        """Compiles validated sections into a `CompiledBundle` and saves it to disk."""
+        builder = CompiledGraphBuilder(
+            document_title=plan.document_title,
+            summary=plan.executive_summary_intent,
+            metadata={"document_type": "Audit-Grounded Agentic Brief", "matter_id": run.matter_id},
+        )
+        bundle = builder.compile_sections(
+            sections=sections,
+            smoothed_sections=smoothed_map,
+            tensions=tensions,
+        )
+        slug = run.bundle_id or re.sub(
+            r"[^a-z0-9]+", "_", f"{run.matter_id}_{plan.document_title[:24]}".lower()
+        ).strip("_")
+        bundle.bundle_id = slug
+        bundle.matter_id = run.matter_id
+        bundle.question = run.question
+        bundle.stage_artifacts = {
+            "outline_plan": plan.model_dump(),
+            "ledgers": {k: v.model_dump() for k, v in run.ledgers.items()},
+            "sections": [s.model_dump() for s in sections],
+            "audits": {k: v.model_dump() for k, v in run.audits.items()},
+        }
+        self.save_bundle(bundle)
+        return bundle
+
+    def execute_run(
+        self,
+        run: PipelineRunRecord,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> Tuple[PipelineRunRecord, Optional[CompiledBundle]]:
+        """Executes or resumes a persisted 4-stage pipeline run, honoring optional checkpoints."""
+
+        def record_progress(stage: str, message: str) -> None:
+            run.current_stage = stage
+            run.events.append(PipelineProgressEvent(stage=stage, message=message))
+            self.save_run(run)
+            self._emit_progress(progress_callback, stage, message)
+
+        try:
+            run.status = "running"
+            run.error = None
+            self.save_run(run)
+
+            # Stage 1: Question decomposition & canonical mapping
+            if run.outline_plan is None:
+                record_progress("stage_1", "Decomposing question and mapping canonical authorities...")
+                plan = self.run_stage1_outline(
+                    run.matter_id, run.question, progress_callback=record_progress
+                )
+                run.outline_plan = plan
+                record_progress("stage_1", f"Planned {len(plan.sections)} sections.")
+                if run.checkpoint_mode:
+                    run.status = "awaiting_stage1_approval"
+                    record_progress(
+                        "stage_1_checkpoint",
+                        "Paused at Stage 1 checkpoint — review or edit the outline before harvesting facts.",
+                    )
+                    return run, None
+            else:
+                plan = run.outline_plan
+                self._hydrate_outline_authorities(plan)
+
+            # Prune state maps to active section IDs in case Stage 1 outline was edited
+            active_ids = {s.section_id for s in plan.sections}
+            run.ledgers = {k: v for k, v in run.ledgers.items() if k in active_ids}
+            run.sections = [s for s in run.sections if s.section_id in active_ids]
+            run.audits = {k: v for k, v in run.audits.items() if k in active_ids}
+
+            # Stage 2: Harvest coordinate-stamped facts for any sections without ledgers
+            total_secs = len(plan.sections)
+            missing_ledger_ids = [
+                s.section_id for s in plan.sections if s.section_id not in run.ledgers
+            ]
+            if missing_ledger_ids:
+                for idx, sec_plan in enumerate(plan.sections, start=1):
+                    if sec_plan.section_id in run.ledgers:
+                        continue
+                    record_progress(
+                        "stage_2",
+                        f"Harvesting coordinate-stamped facts [{idx}/{total_secs}]: '{sec_plan.section_title}'...",
+                    )
+                    ledger = self.run_stage2_harvester(
+                        run.matter_id,
+                        sec_plan,
+                        progress_callback=record_progress,
+                    )
+                    run.ledgers[sec_plan.section_id] = ledger
+                    record_progress(
+                        "stage_2",
+                        f"Verified {len(ledger.verified_facts)} fact(s) and "
+                        f"{len(ledger.unresolved_gaps)} gap(s) for '{sec_plan.section_title}'.",
+                    )
+                if run.checkpoint_mode:
+                    run.status = "awaiting_stage2_approval"
+                    record_progress(
+                        "stage_2_checkpoint",
+                        "Paused at Stage 2 checkpoint — inspect verified facts & gaps before drafting memo.",
+                    )
+                    return run, None
+
+            # Stage 3 & Stage 4 per-section drafting and congruence audit
+            sections_by_id = {s.section_id: s for s in run.sections}
+            for idx, sec_plan in enumerate(plan.sections, start=1):
+                if sec_plan.section_id in sections_by_id and sec_plan.section_id in run.audits:
+                    continue
+                ledger = run.ledgers[sec_plan.section_id]
+                record_progress(
+                    "stage_3_4",
+                    f"Drafting and auditing section [{idx}/{total_secs}]: '{sec_plan.section_title}'...",
+                )
+                section_out, audit_res = self._draft_and_audit_section(
+                    run.matter_id,
+                    sec_plan,
+                    ledger,
+                    progress_callback=record_progress,
+                )
+                sections_by_id[sec_plan.section_id] = section_out
+                run.audits[sec_plan.section_id] = audit_res
+                run.sections = [
+                    sections_by_id[s.section_id]
+                    for s in plan.sections
+                    if s.section_id in sections_by_id
+                ]
+                self.save_run(run)
+
+            ordered_sections = [sections_by_id[s.section_id] for s in plan.sections]
+            record_progress(
+                "stage_4_global",
+                "Checking cross-section tensions and compiling DAG...",
+            )
+            tensions = self.run_stage4_cross_section_tensions(ordered_sections)
+            smoothed_map: Optional[Dict[str, str]] = None
+            if run.smooth_transitions:
+                record_progress(
+                    "stage_4_stitch",
+                    "Polishing cross-section transitions while enforcing claim tag invariants...",
+                )
+                smoothed_map = self.run_stage4_stitcher(ordered_sections)
+
+            bundle = self._compile_run_bundle(
+                run=run,
+                plan=plan,
+                sections=ordered_sections,
+                tensions=tensions,
+                smoothed_map=smoothed_map,
+            )
+            run.status = "completed"
+            run.result_bundle_id = bundle.bundle_id
+            record_progress(
+                "completed",
+                f"Compiled bundle '{bundle.bundle_id}' with {bundle.audit_summary.total_claims} claims.",
+            )
+            return run, bundle
+        except Exception as exc:
+            run.status = "failed"
+            run.error = str(exc)
+            run.events.append(
+                PipelineProgressEvent(stage="error", message=f"Pipeline failed: {exc}")
+            )
+            self.save_run(run)
+            raise
+
     def run_full_pipeline(
         self,
         matter_id: str,
@@ -817,57 +1117,16 @@ class AuditPipelineRunner:
         Returns:
             Compiled and persisted `CompiledBundle`.
         """
-        self._emit_progress(progress_callback, "stage_1", "Decomposing question and mapping canonical authorities...")
-        plan = self.run_stage1_outline(matter_id, question)
-
-        ledgers: Dict[str, VerifiedFactLedger] = {}
-        sections: List[SectionOutput] = []
-        audits: Dict[str, SectionAuditResult] = {}
-
-        for sec_plan in plan.sections:
-            self._emit_progress(
-                progress_callback,
-                "stage_2",
-                f"Harvesting coordinate-stamped facts for '{sec_plan.section_title}'...",
-            )
-            ledger = self.run_stage2_harvester(matter_id, sec_plan)
-            ledgers[sec_plan.section_id] = ledger
-
-            self._emit_progress(
-                progress_callback,
-                "stage_3_4",
-                f"Drafting and auditing section '{sec_plan.section_title}'...",
-            )
-            section_out, audit_res = self._draft_and_audit_section(matter_id, sec_plan, ledger)
-            sections.append(section_out)
-            audits[sec_plan.section_id] = audit_res
-
-        self._emit_progress(progress_callback, "stage_4_global", "Checking cross-section tensions and compiling DAG...")
-        tensions = self.run_stage4_cross_section_tensions(sections)
-        smoothed_map = self.run_stage4_stitcher(sections) if smooth_transitions else None
-
-        builder = CompiledGraphBuilder(
-            document_title=plan.document_title,
-            summary=plan.executive_summary_intent,
-            metadata={"document_type": "Audit-Grounded Agentic Brief", "matter_id": matter_id},
+        run = PipelineRunRecord(
+            run_id=f"run_{uuid.uuid4().hex[:10]}",
+            matter_id=matter_id,
+            question=question,
+            bundle_id=bundle_id,
+            checkpoint_mode=False,
+            smooth_transitions=smooth_transitions,
         )
-        bundle = builder.compile_sections(
-            sections=sections,
-            smoothed_sections=smoothed_map,
-            tensions=tensions,
-        )
-        slug = bundle_id or re.sub(r"[^a-z0-9]+", "_", f"{matter_id}_{plan.document_title[:24]}".lower()).strip("_")
-        bundle.bundle_id = slug
-        bundle.matter_id = matter_id
-        bundle.question = question
-        bundle.stage_artifacts = {
-            "outline_plan": plan.model_dump(),
-            "ledgers": {k: v.model_dump() for k, v in ledgers.items()},
-            "sections": [s.model_dump() for s in sections],
-            "audits": {k: v.model_dump() for k, v in audits.items()},
-        }
-        self.save_bundle(bundle)
-        self._emit_progress(progress_callback, "completed", f"Compiled bundle '{slug}' with {bundle.audit_summary.total_claims} claims.")
+        _, bundle = self.execute_run(run, progress_callback=progress_callback)
+        assert bundle is not None
         return bundle
 
     # ------------------------------------------------------------------

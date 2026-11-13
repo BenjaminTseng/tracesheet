@@ -7,8 +7,9 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, Union
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -16,12 +17,14 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
 from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import LLMProvider, create_llm_provider
+from app.llm import LLMProvider, MockLLMProvider, create_llm_provider
 from app.models import (
     AuditStatus,
     CommentScope,
     CompiledBundle,
     CompiledGraphBuilder,
+    OutlinePlan,
+    PipelineRunRecord,
     ReviewComment,
     SectionOutput,
     SectionValidator,
@@ -103,6 +106,17 @@ class AskMatterRequest(BaseModel):
     question: str = Field(min_length=1)
     bundle_id: Optional[str] = None
     smooth_transitions: bool = True
+    checkpoint_mode: bool = False
+    run_id: Optional[str] = None
+
+
+class ResumeRunRequest(BaseModel):
+    """Request body for resuming a persisted or checkpointed pipeline run."""
+
+    outline_plan: Optional[OutlinePlan] = None
+    reharvest_section_ids: Optional[List[str]] = None
+    smooth_transitions: Optional[bool] = None
+    checkpoint_mode: Optional[bool] = None
 
 
 class AddCommentRequest(BaseModel):
@@ -204,6 +218,144 @@ def _sanitize_slug(raw: str) -> str:
     if not slug:
         raise HTTPException(status_code=422, detail="Invalid identifier slug.")
     return slug
+
+
+def _make_run_reader(request: Request) -> AuditPipelineRunner:
+    """Builds a pipeline runner suitable for reading/listing persisted run JSON without an LLM call."""
+    canonical_router, matter_ingestor, _ = _get_corpus_services(request)
+    llm = _get_optional_llm_provider(request) or MockLLMProvider()
+    return AuditPipelineRunner(llm, canonical_router, matter_ingestor)
+
+
+def _stream_worker_sse(
+    work_fn: Callable[[Callable[[str, str], None]], Dict[str, Any]],
+) -> StreamingResponse:
+    """Runs a blocking ingestion helper in a worker thread while streaming SSE progress events."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+
+    def on_progress(stage: str, message: str) -> None:
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"event": "progress", "stage": stage, "message": message},
+        )
+
+    async def worker() -> None:
+        try:
+            payload = await asyncio.to_thread(work_fn, on_progress)
+            await queue.put({"event": "complete", **payload})
+        except Exception as exc:
+            logger.exception("Streaming ingestion error")
+            await queue.put({"event": "error", "detail": str(exc)})
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(worker())
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@dataclass
+class _ActiveRunStream:
+    """Tracks live SSE subscribers for an actively executing `PipelineRunRecord`."""
+
+    run_id: str
+    subscribers: List[Tuple[asyncio.AbstractEventLoop, asyncio.Queue[Optional[Dict[str, Any]]]]] = (
+        field(default_factory=list)
+    )
+    done: bool = False
+
+
+def _get_run_streams(request: Request) -> Dict[str, _ActiveRunStream]:
+    """Returns per-app active SSE run registry stored on `app.state`."""
+    streams = getattr(request.app.state, "active_run_streams", None)
+    if streams is None:
+        streams = {}
+        request.app.state.active_run_streams = streams
+    return streams
+
+
+def _broadcast_run_event(stream: _ActiveRunStream, payload: Optional[Dict[str, Any]]) -> None:
+    """Delivers an event (or `None` sentinel) thread-safely to all subscribers on `stream`."""
+    for loop, queue in list(stream.subscribers):
+        try:
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+        except RuntimeError:
+            pass
+
+
+def _launch_run_background(
+    request: Request,
+    runner: AuditPipelineRunner,
+    run: PipelineRunRecord,
+) -> Tuple[_ActiveRunStream, asyncio.Queue[Optional[Dict[str, Any]]]]:
+    """Starts `runner.execute_run` in the background and returns `(stream, initial_queue)`."""
+    streams = _get_run_streams(request)
+    loop = asyncio.get_running_loop()
+    initial_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+    stream = _ActiveRunStream(run_id=run.run_id, subscribers=[(loop, initial_queue)])
+    streams[run.run_id] = stream
+
+    runner.save_run(run)
+    initial_queue.put_nowait({"event": "run_started", "run": run.model_dump()})
+
+    def on_progress(stage: str, message: str) -> None:
+        _broadcast_run_event(
+            stream,
+            {
+                "event": "progress",
+                "stage": stage,
+                "message": message,
+                "run_id": run.run_id,
+                "seq": len(run.events),
+            },
+        )
+
+    async def worker() -> None:
+        try:
+            updated_run, bundle = await asyncio.to_thread(
+                runner.execute_run, run, on_progress
+            )
+            if bundle is not None:
+                if bundle.bundle_id:
+                    BUNDLE_STORE[bundle.bundle_id] = bundle
+                _broadcast_run_event(
+                    stream,
+                    {
+                        "event": "bundle",
+                        "bundle": bundle.model_dump(),
+                        "run": updated_run.model_dump(),
+                    },
+                )
+            else:
+                _broadcast_run_event(
+                    stream,
+                    {"event": "checkpoint", "run": updated_run.model_dump()},
+                )
+        except Exception as exc:
+            logger.exception("Streaming pipeline error for run=%s", run.run_id)
+            _broadcast_run_event(
+                stream,
+                {
+                    "event": "error",
+                    "detail": str(exc),
+                    "run": run.model_dump(),
+                },
+            )
+        finally:
+            stream.done = True
+            _broadcast_run_event(stream, None)
+            streams.pop(run.run_id, None)
+
+    asyncio.create_task(worker())
+    return stream, initial_queue
 
 
 # =====================================================================
@@ -344,6 +496,41 @@ async def get_canonical_corpus(request: Request) -> Dict[str, Any]:
     return canonical_ingestor.get_corpus_status()
 
 
+@router.get("/api/canonical/documents/{doc_id:path}")
+async def get_canonical_document_detail(doc_id: str, request: Request) -> Dict[str, Any]:
+    """Returns Tier 2 TOC markdown and parsed `[AUTH:...]` rules for a single canonical document."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    try:
+        detail = canonical_ingestor.get_document_detail(doc_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if detail["card"] is None and not detail["authorities"] and not detail["toc_markdown"]:
+        raise HTTPException(status_code=404, detail=f"Canonical document '{doc_id}' not found.")
+    return detail
+
+
+@router.delete("/api/canonical/files/{domain}/{filename}")
+async def delete_canonical_document(
+    domain: str,
+    filename: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """Deletes a canonical raw/encoded file and rebuilds `INDEX.md`."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    optional_llm = _get_optional_llm_provider(request)
+    try:
+        return await asyncio.to_thread(
+            canonical_ingestor.delete_canonical_file,
+            domain,
+            filename,
+            optional_llm,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/api/canonical/upload")
 async def upload_canonical_file(
     request: Request,
@@ -369,6 +556,35 @@ async def upload_canonical_file(
     }
 
 
+@router.post("/api/canonical/upload/stream")
+async def upload_canonical_file_stream(
+    request: Request,
+    domain: str = Form("general"),
+    file: UploadFile = File(...),
+) -> StreamingResponse:
+    """Uploads a canonical file and streams SSE progress events during encoding & index rebuild."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    domain_dir = canonical_ingestor.create_domain(domain)
+
+    safe_name = Path(file.filename or "canonical_source.md").name
+    dest_path = domain_dir / safe_name
+    content = await file.read()
+    dest_path.write_bytes(content)
+    optional_llm = _get_optional_llm_provider(request)
+
+    def run_work(cb: Callable[[str, str], None]) -> Dict[str, Any]:
+        cb("upload", f"Saved {safe_name} into canonical/raw/{domain_dir.name}/")
+        summary = canonical_ingestor.ingest_corpus(False, optional_llm, progress_callback=cb)
+        return {
+            "domain": domain_dir.name,
+            "uploaded_file": safe_name,
+            "summary": summary,
+            **canonical_ingestor.get_corpus_status(),
+        }
+
+    return _stream_worker_sse(run_work)
+
+
 @router.post("/api/canonical/ingest")
 async def ingest_canonical_corpus(
     request: Request,
@@ -380,6 +596,23 @@ async def ingest_canonical_corpus(
     optional_llm = _get_optional_llm_provider(request)
     summary = await asyncio.to_thread(canonical_ingestor.ingest_corpus, purge, optional_llm)
     return {"summary": summary, **canonical_ingestor.get_corpus_status()}
+
+
+@router.post("/api/canonical/ingest/stream")
+async def ingest_canonical_corpus_stream(
+    request: Request,
+    req: Optional[CanonicalIngestRequest] = None,
+) -> StreamingResponse:
+    """Streams SSE progress events while re-encoding raw canonical files and rebuilding `INDEX.md`."""
+    _, _, canonical_ingestor = _get_corpus_services(request)
+    purge = req.purge_encoded if req is not None else False
+    optional_llm = _get_optional_llm_provider(request)
+
+    def run_work(cb: Callable[[str, str], None]) -> Dict[str, Any]:
+        summary = canonical_ingestor.ingest_corpus(purge, optional_llm, progress_callback=cb)
+        return {"summary": summary, **canonical_ingestor.get_corpus_status()}
+
+    return _stream_worker_sse(run_work)
 
 
 @router.get("/api/matters")
@@ -404,6 +637,31 @@ async def create_matter(req: CreateMatterRequest, request: Request) -> Dict[str,
     return {"matter_id": slug, "path": str(matter_dir)}
 
 
+@router.get("/api/matters/{matter_id}/files")
+async def list_matter_files(matter_id: str, request: Request) -> Dict[str, Any]:
+    """Lists raw and indexed file metadata for a specific project matter."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+    return matter_ingestor.list_matter_files(slug)
+
+
+@router.delete("/api/matters/{matter_id}/files/{filename}")
+async def delete_matter_file(
+    matter_id: str,
+    filename: str,
+    request: Request,
+) -> Dict[str, Any]:
+    """Deletes a raw project file and refreshes the matter's coordinate index."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+    try:
+        return await asyncio.to_thread(matter_ingestor.delete_matter_file, slug, filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/api/matters/{matter_id}/upload")
 async def upload_matter_file(
     matter_id: str,
@@ -422,7 +680,42 @@ async def upload_matter_file(
     dest_path.write_bytes(content)
 
     manifest = await asyncio.to_thread(matter_ingestor.ingest_matter, slug)
-    return {"matter_id": slug, "uploaded_file": safe_name, "manifest": manifest}
+    return {
+        "matter_id": slug,
+        "uploaded_file": safe_name,
+        "manifest": manifest,
+        **matter_ingestor.list_matter_files(slug),
+    }
+
+
+@router.post("/api/matters/{matter_id}/upload/stream")
+async def upload_matter_file_stream(
+    matter_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+) -> StreamingResponse:
+    """Uploads a raw project file and streams SSE progress events while indexing coordinates."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+    matter_ingestor.create_matter(slug)
+    _, raw_dir, _, _ = matter_ingestor._matter_dirs(slug)
+
+    safe_name = Path(file.filename or "uploaded_input.md").name
+    dest_path = raw_dir / safe_name
+    content = await file.read()
+    dest_path.write_bytes(content)
+
+    def run_work(cb: Callable[[str, str], None]) -> Dict[str, Any]:
+        cb("upload", f"Saved {safe_name} into matters/{slug}/inputs/raw/")
+        manifest = matter_ingestor.ingest_matter(slug, progress_callback=cb)
+        return {
+            "matter_id": slug,
+            "uploaded_file": safe_name,
+            "manifest": manifest,
+            **matter_ingestor.list_matter_files(slug),
+        }
+
+    return _stream_worker_sse(run_work)
 
 
 @router.post("/api/matters/{matter_id}/ingest")
@@ -434,27 +727,64 @@ async def ingest_matter_inputs(matter_id: str, request: Request) -> Dict[str, An
     return manifest
 
 
-@router.post("/api/matters/{matter_id}/ask", response_model=CompiledBundle)
+@router.post("/api/matters/{matter_id}/ingest/stream")
+async def ingest_matter_inputs_stream(matter_id: str, request: Request) -> StreamingResponse:
+    """Streams SSE progress events while indexing `matters/<matter_id>/inputs/raw/`."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+
+    def run_work(cb: Callable[[str, str], None]) -> Dict[str, Any]:
+        manifest = matter_ingestor.ingest_matter(slug, progress_callback=cb)
+        return {"manifest": manifest, **matter_ingestor.list_matter_files(slug)}
+
+    return _stream_worker_sse(run_work)
+
+
+@router.post("/api/matters/{matter_id}/ask", response_model=Union[CompiledBundle, PipelineRunRecord])
 async def ask_matter_question(
     matter_id: str,
     req: AskMatterRequest,
     request: Request,
-) -> CompiledBundle:
-    """Executes the 4-stage agentic pipeline for question `(c)` and registers the bundle."""
+) -> Union[CompiledBundle, PipelineRunRecord]:
+    """Executes the 4-stage pipeline for `(c)`, returning the bundle or paused checkpoint run."""
     canonical_router, matter_ingestor, llm_provider = _get_services(request)
     slug = _sanitize_slug(matter_id)
     runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
 
-    bundle = await asyncio.to_thread(
-        runner.run_full_pipeline,
-        slug,
-        req.question,
-        req.bundle_id,
-        req.smooth_transitions,
+    run = PipelineRunRecord(
+        run_id=req.run_id or f"run_{uuid.uuid4().hex[:10]}",
+        matter_id=slug,
+        question=req.question,
+        bundle_id=req.bundle_id,
+        checkpoint_mode=req.checkpoint_mode,
+        smooth_transitions=req.smooth_transitions,
     )
-    if bundle.bundle_id:
-        BUNDLE_STORE[bundle.bundle_id] = bundle
-    return bundle
+    updated_run, bundle = await asyncio.to_thread(runner.execute_run, run)
+    if bundle is not None:
+        if bundle.bundle_id:
+            BUNDLE_STORE[bundle.bundle_id] = bundle
+        return bundle
+    return updated_run
+
+
+def _sse_queue_stream(
+    queue: asyncio.Queue[Optional[Dict[str, Any]]],
+    on_close: Optional[Callable[[], None]] = None,
+) -> StreamingResponse:
+    """Creates a `text/event-stream` response draining `queue` until `None`."""
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield f"data: {json.dumps(item)}\n\n"
+        finally:
+            if on_close is not None:
+                on_close()
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
 @router.post("/api/matters/{matter_id}/ask/stream")
@@ -463,48 +793,192 @@ async def ask_matter_question_stream(
     req: AskMatterRequest,
     request: Request,
 ) -> StreamingResponse:
-    """Streams SSE stage progress while running the 4-stage pipeline, ending with the bundle."""
+    """Streams granular SSE progress for a persisted 4-stage pipeline run."""
     canonical_router, matter_ingestor, llm_provider = _get_services(request)
     slug = _sanitize_slug(matter_id)
     runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
 
+    run = PipelineRunRecord(
+        run_id=req.run_id or f"run_{uuid.uuid4().hex[:10]}",
+        matter_id=slug,
+        question=req.question,
+        bundle_id=req.bundle_id,
+        checkpoint_mode=req.checkpoint_mode,
+        smooth_transitions=req.smooth_transitions,
+    )
+    stream, queue = _launch_run_background(request, runner, run)
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
 
-    def on_progress(stage: str, message: str) -> None:
-        loop.call_soon_threadsafe(
-            queue.put_nowait, {"event": "progress", "stage": stage, "message": message}
+    def cleanup() -> None:
+        try:
+            stream.subscribers.remove((loop, queue))
+        except ValueError:
+            pass
+
+    return _sse_queue_stream(queue, on_close=cleanup)
+
+
+@router.get("/api/matters/{matter_id}/runs", response_model=List[PipelineRunRecord])
+async def list_matter_runs(matter_id: str, request: Request) -> List[PipelineRunRecord]:
+    """Lists all persisted pipeline runs and checkpoint records for a project matter."""
+    runner = _make_run_reader(request)
+    slug = _sanitize_slug(matter_id)
+    return runner.list_runs(slug)
+
+
+@router.get("/api/runs/{run_id}", response_model=PipelineRunRecord)
+async def get_pipeline_run(run_id: str, request: Request) -> PipelineRunRecord:
+    """Fetches a single persisted `PipelineRunRecord` by `run_id`."""
+    runner = _make_run_reader(request)
+    run = runner.find_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
+    return run
+
+
+@router.get("/api/runs/{run_id}/stream")
+async def stream_pipeline_run(run_id: str, request: Request) -> StreamingResponse:
+    """Replays recorded run events and subscribes to live progress if the run is active."""
+    runner = _make_run_reader(request)
+    run = runner.find_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
+
+    queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    queue.put_nowait({"event": "run_started", "run": run.model_dump()})
+    replayed_count = len(run.events)
+    for ev in run.events:
+        queue.put_nowait(
+            {
+                "event": "progress",
+                "stage": ev.stage,
+                "message": ev.message,
+                "run_id": run.run_id,
+            }
         )
 
-    async def worker() -> None:
-        try:
-            bundle = await asyncio.to_thread(
-                runner.run_full_pipeline,
-                slug,
-                req.question,
-                req.bundle_id,
-                req.smooth_transitions,
-                on_progress,
+    streams = _get_run_streams(request)
+    active = streams.get(run_id)
+    if active is not None and not active.done:
+        sub_queue: asyncio.Queue[Optional[Dict[str, Any]]] = asyncio.Queue()
+        active.subscribers.append((loop, sub_queue))
+
+        async def forward_stream() -> AsyncGenerator[str, None]:
+            try:
+                while not queue.empty():
+                    item = queue.get_nowait()
+                    if item is not None:
+                        yield f"data: {json.dumps(item)}\n\n"
+                while True:
+                    item = await sub_queue.get()
+                    if item is None:
+                        break
+                    seq = item.get("seq")
+                    if seq is not None and seq <= replayed_count:
+                        continue
+                    yield f"data: {json.dumps(item)}\n\n"
+            finally:
+                try:
+                    active.subscribers.remove((loop, sub_queue))
+                except ValueError:
+                    pass
+
+        return StreamingResponse(forward_stream(), media_type="text/event-stream")
+
+    # Terminal or paused run already on disk
+    if run.status == "completed" and run.result_bundle_id:
+        bundle = BUNDLE_STORE.get(run.result_bundle_id)
+        if bundle is None:
+            _, _, _, bundles_dir = runner.matter_ingestor._matter_dirs(run.matter_id)
+            b_path = bundles_dir / f"{run.result_bundle_id}.json"
+            if b_path.exists():
+                bundle = CompiledBundle.model_validate_json(b_path.read_text(encoding="utf-8"))
+                BUNDLE_STORE[run.result_bundle_id] = bundle
+        if bundle is not None:
+            queue.put_nowait(
+                {"event": "bundle", "bundle": bundle.model_dump(), "run": run.model_dump()}
             )
-            if bundle.bundle_id:
-                BUNDLE_STORE[bundle.bundle_id] = bundle
-            await queue.put({"event": "bundle", "bundle": bundle.model_dump()})
-        except Exception as exc:
-            logger.exception("Streaming pipeline error for matter=%s", slug)
-            await queue.put({"event": "error", "detail": str(exc)})
-        finally:
-            await queue.put(None)
+    elif run.status in ("awaiting_stage1_approval", "awaiting_stage2_approval"):
+        queue.put_nowait({"event": "checkpoint", "run": run.model_dump()})
+    elif run.status == "failed":
+        queue.put_nowait(
+            {"event": "error", "detail": run.error or "Pipeline failed.", "run": run.model_dump()}
+        )
+    else:
+        queue.put_nowait({"event": "run_state", "run": run.model_dump()})
+    queue.put_nowait(None)
+    return _sse_queue_stream(queue)
 
-    asyncio.create_task(worker())
 
-    async def event_stream() -> AsyncGenerator[str, None]:
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            yield f"data: {json.dumps(item)}\n\n"
+def _prepare_run_for_resume(
+    run: PipelineRunRecord,
+    req: Optional[ResumeRunRequest],
+) -> PipelineRunRecord:
+    """Applies user edits, section re-harvest flags, and toggles onto `run` prior to resuming."""
+    if req is None:
+        return run
+    if req.outline_plan is not None:
+        run.outline_plan = req.outline_plan
+    if req.smooth_transitions is not None:
+        run.smooth_transitions = req.smooth_transitions
+    if req.checkpoint_mode is not None:
+        run.checkpoint_mode = req.checkpoint_mode
+    if req.reharvest_section_ids:
+        target_ids = set(req.reharvest_section_ids)
+        for sec_id in target_ids:
+            run.ledgers.pop(sec_id, None)
+            run.audits.pop(sec_id, None)
+        run.sections = [s for s in run.sections if s.section_id not in target_ids]
+    return run
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@router.post("/api/runs/{run_id}/resume", response_model=Union[CompiledBundle, PipelineRunRecord])
+async def resume_pipeline_run(
+    run_id: str,
+    request: Request,
+    req: Optional[ResumeRunRequest] = None,
+) -> Union[CompiledBundle, PipelineRunRecord]:
+    """Resumes a checkpointed or interrupted run synchronously, returning the bundle or next checkpoint."""
+    canonical_router, matter_ingestor, llm_provider = _get_services(request)
+    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    run = runner.find_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
+
+    run = _prepare_run_for_resume(run, req)
+    updated_run, bundle = await asyncio.to_thread(runner.execute_run, run)
+    if bundle is not None:
+        if bundle.bundle_id:
+            BUNDLE_STORE[bundle.bundle_id] = bundle
+        return bundle
+    return updated_run
+
+
+@router.post("/api/runs/{run_id}/resume/stream")
+async def resume_pipeline_run_stream(
+    run_id: str,
+    request: Request,
+    req: Optional[ResumeRunRequest] = None,
+) -> StreamingResponse:
+    """Resumes a checkpointed or interrupted run and streams granular SSE progress."""
+    canonical_router, matter_ingestor, llm_provider = _get_services(request)
+    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    run = runner.find_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
+
+    run = _prepare_run_for_resume(run, req)
+    stream, queue = _launch_run_background(request, runner, run)
+    loop = asyncio.get_running_loop()
+
+    def cleanup() -> None:
+        try:
+            stream.subscribers.remove((loop, queue))
+        except ValueError:
+            pass
+
+    return _sse_queue_stream(queue, on_close=cleanup)
 
 
 # =====================================================================

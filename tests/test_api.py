@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 
@@ -379,4 +380,216 @@ def test_canonical_upload_and_rebuild_endpoints(tmp_path: Path) -> None:
     finally:
         app.state.canonical_router = None
         app.state.canonical_ingestor = None
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parses `data: {...}` frames from a `text/event-stream` response body."""
+    events = []
+    for chunk in body.split("\n\n"):
+        for line in chunk.splitlines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    return events
+
+
+def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) -> None:
+    """Verifies canonical/matter file inspection, delete, streaming ingest, and Stage 1/2 checkpoints."""
+    canonical_dir = tmp_path / "canonical"
+    matters_root = tmp_path / "matters"
+    canonical_dir.mkdir(parents=True)
+    matters_root.mkdir(parents=True)
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "CanonicalDocumentSynopsisDraft": {
+                "title": "Jurisdiction Rules",
+                "authority_tier": "controlling",
+                "jurisdiction_scope": "Federal diversity rules",
+                "scope_synopsis": "Statutory diversity rules.",
+            },
+            "OutlinePlan": {
+                "document_title": "API Checkpoint Brief",
+                "executive_summary_intent": "Verify Delaware notice.",
+                "sections": [
+                    {
+                        "section_id": "sec_notice",
+                        "section_title": "I. Written Notice",
+                        "stated_intention": "Check written notice.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:STATUTES-1",
+                                "title": "Written Notice Rule",
+                                "verbatim_quote": "Written notice is mandatory.",
+                            }
+                        ],
+                        "required_fact_queries": ["Was notice delivered in writing?"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_notice",
+                "harvest_summary": "Found Exhibit A quote.",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Was notice delivered in writing?",
+                        "title": "Exhibit A",
+                        "quote": "Delivered signed notice on October 12, 2026.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Exhibit_A.md",
+                            "locator_key": "EXHIBIT_A-SEC-1",
+                        },
+                    }
+                ],
+                "unresolved_gaps": [],
+            },
+            "SectionOutput": {
+                "section_id": "sec_notice",
+                "section_title": "I. Written Notice",
+                "text": "Written notice was <ref n='1'>delivered October 12, 2026</ref>.",
+                "supports": [
+                    {
+                        "n": 1,
+                        "reasoning": "Signed written delivery satisfies the notice rule.",
+                        "items": [
+                            {
+                                "ref_id": "f1",
+                                "type": "evidence",
+                                "title": "Exhibit A",
+                                "quote": "Delivered signed notice on October 12, 2026.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Exhibit_A.md",
+                                    "locator_key": "EXHIBIT_A-SEC-1",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_notice",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+            "StitchedDocumentOutput": {
+                "sections": [
+                    {
+                        "section_id": "sec_notice",
+                        "smoothed_text": "Written notice was <ref n='sec_notice:1'>delivered October 12, 2026</ref>.",
+                    }
+                ]
+            },
+        }
+    )
+
+    app.state.canonical_router = CanonicalRouter(canonical_dir)
+    app.state.canonical_ingestor = CanonicalIngestor(canonical_dir)
+    app.state.matter_ingestor = MatterIngestor(matters_root)
+    app.state.llm_provider = mock_llm
+
+    try:
+        # 1. Stream canonical upload, inspect detail, upload + delete a temp rule file
+        stream_up = client.post(
+            "/api/canonical/upload/stream",
+            data={"domain": "legal"},
+            files={
+                "file": (
+                    "statutes.md",
+                    b"# Jurisdiction Rules\n\n## Notice Rule\nWritten notice is mandatory.\n",
+                    "text/markdown",
+                )
+            },
+        )
+        assert stream_up.status_code == 200
+        up_events = _parse_sse_events(stream_up.text)
+        assert any(e.get("event") == "progress" for e in up_events)
+        assert up_events[-1]["event"] == "complete"
+        assert up_events[-1]["total_authorities"] == 1
+
+        detail_res = client.get("/api/canonical/documents/legal/statutes.md")
+        assert detail_res.status_code == 200
+        assert len(detail_res.json()["authorities"]) == 1
+        assert "Written notice is mandatory" in detail_res.json()["toc_markdown"]
+
+        extra_up = client.post(
+            "/api/canonical/upload",
+            data={"domain": "legal"},
+            files={"file": ("temp_rule.md", b"# Temp\n\n## Rule\nTemporary.\n", "text/markdown")},
+        )
+        assert extra_up.status_code == 200
+        del_can = client.delete("/api/canonical/files/legal/temp_rule.md")
+        assert del_can.status_code == 200
+        assert del_can.json()["total_authorities"] == 1
+
+        # 2. Matter upload, file listing, delete, and streaming ingest
+        client.post("/api/matters", json={"matter_id": "m_api_ckpt"})
+        client.post(
+            "/api/matters/m_api_ckpt/upload",
+            files={"file": ("Exhibit_A.md", b"Delivered signed notice on October 12, 2026.\n", "text/markdown")},
+        )
+        client.post(
+            "/api/matters/m_api_ckpt/upload",
+            files={"file": ("Noise.md", b"Unneeded file.\n", "text/markdown")},
+        )
+        files_res = client.get("/api/matters/m_api_ckpt/files")
+        assert files_res.status_code == 200
+        assert {f["filename"] for f in files_res.json()["files"]} == {"Exhibit_A.md", "Noise.md"}
+
+        del_matter_res = client.delete("/api/matters/m_api_ckpt/files/Noise.md")
+        assert del_matter_res.status_code == 200
+        assert [f["filename"] for f in del_matter_res.json()["files"]] == ["Exhibit_A.md"]
+
+        ingest_stream_res = client.post("/api/matters/m_api_ckpt/ingest/stream")
+        assert ingest_stream_res.status_code == 200
+        ing_events = _parse_sse_events(ingest_stream_res.text)
+        assert any(e.get("event") == "progress" for e in ing_events)
+        assert ing_events[-1]["event"] == "complete"
+
+        # 3. Start checkpointed streaming run -> Stage 1 pause -> GET /runs/{id}/stream replay
+        ask_stream = client.post(
+            "/api/matters/m_api_ckpt/ask/stream",
+            json={
+                "question": "Check written notice compliance.",
+                "bundle_id": "api_ckpt_bundle",
+                "checkpoint_mode": True,
+            },
+        )
+        assert ask_stream.status_code == 200
+        s1_events = _parse_sse_events(ask_stream.text)
+        assert s1_events[0]["event"] == "run_started"
+        run_id = s1_events[0]["run"]["run_id"]
+        assert s1_events[-1]["event"] == "checkpoint"
+        assert s1_events[-1]["run"]["status"] == "awaiting_stage1_approval"
+
+        list_runs_res = client.get("/api/matters/m_api_ckpt/runs")
+        assert list_runs_res.status_code == 200
+        assert list_runs_res.json()[0]["run_id"] == run_id
+
+        replay_res = client.get(f"/api/runs/{run_id}/stream")
+        assert replay_res.status_code == 200
+        replay_events = _parse_sse_events(replay_res.text)
+        assert replay_events[-1]["event"] == "checkpoint"
+
+        # 4. Resume Stage 1 -> Stage 2 pause via /resume/stream
+        resume_s2 = client.post(f"/api/runs/{run_id}/resume/stream", json={})
+        assert resume_s2.status_code == 200
+        s2_events = _parse_sse_events(resume_s2.text)
+        assert s2_events[-1]["event"] == "checkpoint"
+        assert s2_events[-1]["run"]["status"] == "awaiting_stage2_approval"
+
+        # 5. Resume Stage 2 -> Completed bundle via /resume
+        resume_final = client.post(f"/api/runs/{run_id}/resume", json={})
+        assert resume_final.status_code == 200
+        assert resume_final.json()["bundle_id"] == "api_ckpt_bundle"
+        assert "api_ckpt_bundle" in BUNDLE_STORE
+    finally:
+        BUNDLE_STORE.pop("api_ckpt_bundle", None)
+        app.state.canonical_router = None
+        app.state.canonical_ingestor = None
+        app.state.matter_ingestor = None
+        app.state.llm_provider = None
 

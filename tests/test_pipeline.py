@@ -12,6 +12,7 @@ from app.llm import MockLLMProvider
 from app.models import (
     AuditStatus,
     NodeAudit,
+    PipelineRunRecord,
     ReviewComment,
     SectionPlan,
     VerifiedFactLedger,
@@ -1278,3 +1279,153 @@ def test_stage4_stitch_invariant_violation_falls_back_to_unsmoothed_sections(
     )
     assert "<ref id='claim_sec_01_1'>located in Wilmington</ref>" in bundle.artifact.sections[0].content
     assert "<ref id='claim_sec_02_1'>total $42,150</ref>" in bundle.artifact.sections[1].content
+
+
+def test_persisted_run_with_stage1_and_stage2_checkpoints_and_granular_progress(
+    tmp_path: Path,
+) -> None:
+    """Verifies disk-persisted runs pause at Stage 1 & Stage 2 checkpoints and emit tool-call progress."""
+    router, ingestor = _setup_workspace(tmp_path)
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Checkpoint Memo",
+                "executive_summary_intent": "Verify headquarters and unpaid invoice total.",
+                "sections": [
+                    {
+                        "section_id": "sec_01",
+                        "section_title": "I. Nerve Center",
+                        "stated_intention": "Check HQ.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:HERTZ-2010",
+                                "title": "Hertz",
+                                "verbatim_quote": "Principal place of business is the nerve center.",
+                            }
+                        ],
+                        "required_fact_queries": ["Where is HQ?"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01",
+                "harvest_summary": "Verified Wilmington headquarters.",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Where is HQ?",
+                        "title": "Exhibit B",
+                        "quote": "1209 North Orange St, Wilmington, DE.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Exhibit_B.md",
+                            "locator_key": "EXHIBIT_B-SEC-1",
+                        },
+                    }
+                ],
+                "unresolved_gaps": [
+                    {
+                        "query": "Where are federal tax returns filed?",
+                        "recommended_handling": "assumption",
+                        "rationale": "Tax return exhibit not yet uploaded.",
+                    }
+                ],
+            },
+            "SectionOutput": {
+                "section_id": "sec_01",
+                "section_title": "I. Nerve Center",
+                "text": "Operations are anchored in <ref n='1'>Wilmington, DE</ref>.",
+                "supports": [
+                    {
+                        "n": 1,
+                        "reasoning": "Principal executive offices establish corporate citizenship.",
+                        "items": [
+                            {
+                                "ref_id": "f1",
+                                "type": "evidence",
+                                "title": "Exhibit B",
+                                "quote": "1209 North Orange St, Wilmington, DE.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Exhibit_B.md",
+                                    "locator_key": "EXHIBIT_B-SEC-1",
+                                },
+                            },
+                            {
+                                "ref_id": "AUTH:HERTZ-2010",
+                                "type": "authority",
+                                "title": "Hertz Corp. v. Friend, 559 U.S. 77 (2010)",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+            "StitchedDocumentOutput": StitchedDocumentOutput(
+                sections=[
+                    {
+                        "section_id": "sec_01",
+                        "smoothed_text": "Operations are anchored in <ref n='sec_01:1'>Wilmington, DE</ref>.",
+                    }
+                ]
+            ),
+        },
+        tool_invocations=[
+            {"name": "browse_canonical_toc", "arguments": {"doc_id": "legal/jurisdiction.md"}},
+            {"name": "grep_indexed_inputs", "arguments": {"pattern": "Wilmington"}},
+        ],
+    )
+
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    seen_events: list[tuple[str, str]] = []
+    run = PipelineRunRecord(
+        run_id="run_ckpt_01",
+        matter_id="m_test",
+        question="Analyze corporate citizenship",
+        bundle_id="ckpt_bundle",
+        checkpoint_mode=True,
+    )
+
+    # 1. Stage 1 checkpoint pause
+    paused_s1, bundle_s1 = runner.execute_run(
+        run, progress_callback=lambda s, m: seen_events.append((s, m))
+    )
+    assert bundle_s1 is None
+    assert paused_s1.status == "awaiting_stage1_approval"
+    assert paused_s1.outline_plan is not None
+    assert (tmp_path / "matters" / "m_test" / "runs" / "run_ckpt_01.json").exists()
+    assert any("Tool browse_canonical_toc" in msg for _, msg in seen_events)
+
+    # Human edits outline before approving Stage 1 -> Stage 2
+    paused_s1.outline_plan.sections[0].stated_intention = "Confirm Wilmington HQ under Hertz."
+    paused_s2, bundle_s2 = runner.execute_run(
+        paused_s1, progress_callback=lambda s, m: seen_events.append((s, m))
+    )
+    assert bundle_s2 is None
+    assert paused_s2.status == "awaiting_stage2_approval"
+    assert "sec_01" in paused_s2.ledgers
+    assert len(paused_s2.ledgers["sec_01"].unresolved_gaps) == 1
+    assert paused_s2.ledgers["sec_01"].unresolved_gaps[0].rationale == "Tax return exhibit not yet uploaded."
+    assert any("[1/1]" in msg and "Harvesting coordinate-stamped facts" in msg for _, msg in seen_events)
+    assert any("Tool grep_indexed_inputs" in msg for _, msg in seen_events)
+
+    # Human inspects ledger and approves -> completes Stages 3 & 4
+    reloaded = runner.find_run("run_ckpt_01")
+    assert reloaded is not None
+    assert reloaded.status == "awaiting_stage2_approval"
+
+    completed_run, final_bundle = runner.execute_run(
+        reloaded, progress_callback=lambda s, m: seen_events.append((s, m))
+    )
+    assert final_bundle is not None
+    assert completed_run.status == "completed"
+    assert completed_run.result_bundle_id == "ckpt_bundle"
+    assert len(runner.list_runs("m_test")) == 1
+    assert any("attempt 1/3" in msg for _, msg in seen_events)

@@ -115,6 +115,19 @@ function formatScopeTag(comment, nodesMap) {
   return { label: node ? formatNodeRole(node.type) : 'Node', cls: '' };
 }
 
+function formatReliabilityTier(tier) {
+  switch (tier) {
+    case 'primary_record':
+      return { label: 'Primary Record', cls: 'is-primary' };
+    case 'secondary_analysis':
+      return { label: 'Secondary Analysis', cls: 'is-secondary' };
+    case 'self_reported':
+      return { label: 'Self-Reported', cls: 'is-self-reported' };
+    default:
+      return null;
+  }
+}
+
 function formatProvenanceParts(locator) {
   if (!locator) return { label: '', coord: '' };
   switch (locator.source_type) {
@@ -146,6 +159,11 @@ function formatProvenanceParts(locator) {
     case 'markdown':
       return {
         label: locator.file_name || 'Document.md',
+        coord: locator.locator_key || '',
+      };
+    case 'docx':
+      return {
+        label: locator.file_name || 'Document.docx',
         coord: locator.locator_key || '',
       };
     default:
@@ -272,6 +290,9 @@ async function streamAskPipeline({
   question,
   bundleId,
   checkpointMode = false,
+  canonicalDomains = null,
+  blueprintId = null,
+  blueprintMode = 'none',
   onProgress,
   onRunStarted,
   onCheckpoint,
@@ -284,6 +305,9 @@ async function streamAskPipeline({
       bundle_id: bundleId || null,
       smooth_transitions: true,
       checkpoint_mode: Boolean(checkpointMode),
+      canonical_domains: canonicalDomains,
+      blueprint_id: blueprintId || null,
+      blueprint_mode: blueprintId ? blueprintMode || 'guided' : 'none',
     }),
   });
   return _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint });
@@ -457,6 +481,19 @@ function SourceInspectorDrawer({ node, onClose }) {
             </span>
           </div>
 
+          ${(loc.reliability_tier || loc.origin_description) && html`
+            <div class="provenance-origin-row">
+              ${formatReliabilityTier(loc.reliability_tier) && html`
+                <span class="reliability-pill ${formatReliabilityTier(loc.reliability_tier).cls}">
+                  ${formatReliabilityTier(loc.reliability_tier).label}
+                </span>
+              `}
+              ${loc.origin_description && html`
+                <span class="provenance-origin-text">${loc.origin_description}</span>
+              `}
+            </div>
+          `}
+
           ${audit.evaluator_note && html`
             <p class="card-body-prose">
               <strong>Audit Record:</strong> ${audit.evaluator_note}
@@ -606,7 +643,7 @@ function SourceInspectorDrawer({ node, onClose }) {
             </div>
           `}
 
-          ${loc.source_type === 'markdown' && html`
+          ${(loc.source_type === 'markdown' || loc.source_type === 'docx') && html`
             <div class="pdf-page-simulator">
               <div class="card-meta-row">
                 <span class="control-label">${loc.file_name}</span>
@@ -1013,6 +1050,21 @@ function SpatialNodeCard({
       <div class="plate-body-stage">
         <h3 class="card-heading">${node.title}</h3>
 
+        ${(node.locator?.reliability_tier || node.locator?.origin_description) && html`
+          <div class="provenance-origin-row">
+            ${formatReliabilityTier(node.locator?.reliability_tier) && html`
+              <span class="reliability-pill ${formatReliabilityTier(node.locator.reliability_tier).cls}">
+                ${formatReliabilityTier(node.locator.reliability_tier).label}
+              </span>
+            `}
+            ${node.locator?.origin_description && html`
+              <span class="provenance-origin-text" title=${node.locator.origin_description}>
+                ${node.locator.origin_description}
+              </span>
+            `}
+          </div>
+        `}
+
         ${node.quote && html`
           <figure class="evidence-figure">
             <blockquote class="evidence-blockquote" cite=${node.url || node.locator?.url || ''}>
@@ -1307,8 +1359,23 @@ function CorpusManagerModal({
   const [matterFilesData, setMatterFilesData] = useState(null);
   const [matterBusy, setMatterBusy] = useState(false);
   const [matterProgress, setMatterProgress] = useState([]);
+  const [uploadReliabilityTier, setUploadReliabilityTier] = useState('primary_record');
+  const [uploadOriginDescription, setUploadOriginDescription] = useState('');
+  const [rowMetaDrafts, setRowMetaDrafts] = useState({});
+  const [savingMetaFile, setSavingMetaFile] = useState(null);
 
   const [errorMsg, setErrorMsg] = useState(null);
+
+  useEffect(() => {
+    const nextDrafts = {};
+    for (const f of matterFilesData?.files || []) {
+      nextDrafts[f.filename] = {
+        reliability_tier: f.reliability_tier || 'primary_record',
+        origin_description: f.origin_description || '',
+      };
+    }
+    setRowMetaDrafts(nextDrafts);
+  }, [matterFilesData]);
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -1500,6 +1567,10 @@ function CorpusManagerModal({
     try {
       const formData = new FormData();
       formData.append('file', file);
+      formData.append('reliability_tier', uploadReliabilityTier || 'primary_record');
+      if (uploadOriginDescription.trim()) {
+        formData.append('origin_description', uploadOriginDescription.trim());
+      }
       const data = await streamUploadOrIngest(
         `/api/matters/${selectedMatter}/upload/stream`,
         { method: 'POST', body: formData },
@@ -1507,6 +1578,7 @@ function CorpusManagerModal({
       );
       if (data) {
         setMatterFilesData(data);
+        setUploadOriginDescription('');
         await refreshMatters();
         await onCorpusChanged?.();
       }
@@ -1515,6 +1587,38 @@ function CorpusManagerModal({
     } finally {
       setMatterBusy(false);
       e.target.value = '';
+    }
+  };
+
+  const handleSaveFileMetadata = async (filename) => {
+    if (!selectedMatter || !filename) return;
+    const draft = rowMetaDrafts[filename];
+    if (!draft) return;
+    setSavingMetaFile(filename);
+    setErrorMsg(null);
+    try {
+      const res = await fetch(
+        `/api/matters/${selectedMatter}/files/${encodeURIComponent(filename)}/metadata`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            reliability_tier: draft.reliability_tier,
+            origin_description: draft.origin_description.trim() || null,
+          }),
+        }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `Failed to update metadata for ${filename}`);
+      }
+      const updated = await res.json();
+      setMatterFilesData(updated);
+      await refreshMatters();
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setSavingMetaFile(null);
     }
   };
 
@@ -1826,12 +1930,33 @@ function CorpusManagerModal({
                 </button>
               </div>
               <div class="toolbar-cluster">
+                <select
+                  aria-label="Upload reliability tier"
+                  class="select-control"
+                  value=${uploadReliabilityTier}
+                  disabled=${matterBusy || !selectedMatter}
+                  onChange=${(e) => setUploadReliabilityTier(e.target.value)}
+                >
+                  <option value="primary_record">Primary Record</option>
+                  <option value="secondary_analysis">Secondary Analysis</option>
+                  <option value="self_reported">Self-Reported</option>
+                </select>
+                <input
+                  type="text"
+                  aria-label="Origin description"
+                  class="text-input"
+                  style="width: 190px;"
+                  placeholder="Origin (e.g., QB P&L export)"
+                  value=${uploadOriginDescription}
+                  disabled=${matterBusy || !selectedMatter}
+                  onInput=${(e) => setUploadOriginDescription(e.target.value)}
+                />
                 <label class="btn btn-primary file-picker-label">
                   <${Icon} name="plus" size=${13} />
                   <span>${matterBusy ? 'Indexing…' : 'Upload / Replace File'}</span>
                   <input
                     type="file"
-                    accept=".pdf,.xlsx,.xlsm,.csv,.md,.txt"
+                    accept=".pdf,.docx,.xlsx,.xlsm,.csv,.md,.txt"
                     disabled=${matterBusy || !selectedMatter}
                     style="display: none;"
                     onChange=${handleMatterUpload}
@@ -1868,43 +1993,97 @@ function CorpusManagerModal({
                     <th>Type</th>
                     <th>Size</th>
                     <th>Indexed Coordinates</th>
+                    <th>Source & Origin</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   ${(!matterFilesData?.files || matterFilesData.files.length === 0) && html`
                     <tr>
-                      <td colspan="5" style="text-align: center; color: var(--color-text-muted); padding: 20px;">
+                      <td colspan="6" style="text-align: center; color: var(--color-text-muted); padding: 20px;">
                         No files uploaded into '${selectedMatter}' yet.
                       </td>
                     </tr>
                   `}
                   ${(matterFilesData?.files || []).map(
-                    (f) => html`
-                      <tr key=${f.filename}>
-                        <td style="font-weight: 600; color: var(--color-text-primary);">${f.filename}</td>
-                        <td class="font-mono-data">${f.suffix || '—'}</td>
-                        <td class="font-mono-data">${formatBytes(f.size_bytes)}</td>
-                        <td class="font-mono-data">
-                          ${f.blocks != null
-                            ? `${f.blocks} blocks`
-                            : f.cells != null
-                            ? `${f.cells} cells`
-                            : f.indexed_artifact || 'Pending'}
-                        </td>
-                        <td>
-                          <button
-                            type="button"
-                            class="btn btn-compact btn-danger-ghost"
-                            aria-label="Delete ${f.filename}"
-                            disabled=${matterBusy}
-                            onClick=${() => handleDeleteMatterFile(f.filename)}
-                          >
-                            <${Icon} name="trash" size=${12} />
-                          </button>
-                        </td>
-                      </tr>
-                    `
+                    (f) => {
+                      const draft = rowMetaDrafts[f.filename] || {
+                        reliability_tier: f.reliability_tier || 'primary_record',
+                        origin_description: f.origin_description || '',
+                      };
+                      const isDirty =
+                        draft.reliability_tier !== (f.reliability_tier || 'primary_record') ||
+                        draft.origin_description !== (f.origin_description || '');
+                      return html`
+                        <tr key=${f.filename}>
+                          <td style="font-weight: 600; color: var(--color-text-primary);">${f.filename}</td>
+                          <td class="font-mono-data">${f.suffix || '—'}</td>
+                          <td class="font-mono-data">${formatBytes(f.size_bytes)}</td>
+                          <td class="font-mono-data">
+                            ${f.blocks != null
+                              ? `${f.blocks} blocks`
+                              : f.cells != null
+                              ? `${f.cells} cells`
+                              : f.indexed_artifact || 'Pending'}
+                          </td>
+                          <td>
+                            <div class="meta-inline-row">
+                              <select
+                                aria-label="Reliability tier for ${f.filename}"
+                                class="select-control select-compact"
+                                value=${draft.reliability_tier}
+                                disabled=${matterBusy || savingMetaFile === f.filename}
+                                onChange=${(e) =>
+                                  setRowMetaDrafts((prev) => ({
+                                    ...prev,
+                                    [f.filename]: { ...draft, reliability_tier: e.target.value },
+                                  }))
+                                }
+                              >
+                                <option value="primary_record">Primary Record</option>
+                                <option value="secondary_analysis">Secondary Analysis</option>
+                                <option value="self_reported">Self-Reported</option>
+                              </select>
+                              <input
+                                type="text"
+                                aria-label="Origin description for ${f.filename}"
+                                class="text-input input-compact"
+                                placeholder="Origin note…"
+                                value=${draft.origin_description}
+                                disabled=${matterBusy || savingMetaFile === f.filename}
+                                onInput=${(e) =>
+                                  setRowMetaDrafts((prev) => ({
+                                    ...prev,
+                                    [f.filename]: { ...draft, origin_description: e.target.value },
+                                  }))
+                                }
+                              />
+                              ${isDirty && html`
+                                <button
+                                  type="button"
+                                  class="btn btn-compact btn-primary"
+                                  disabled=${savingMetaFile === f.filename}
+                                  onClick=${() => handleSaveFileMetadata(f.filename)}
+                                >
+                                  ${savingMetaFile === f.filename ? 'Saving…' : 'Save'}
+                                </button>
+                              `}
+                            </div>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              class="btn btn-compact btn-danger-ghost"
+                              aria-label="Delete ${f.filename}"
+                              disabled=${matterBusy}
+                              onClick=${() => handleDeleteMatterFile(f.filename)}
+                            >
+                              <${Icon} name="trash" size=${12} />
+                            </button>
+                          </td>
+                        </tr>
+                      `;
+                    }
                   )}
                 </tbody>
               </table>
@@ -1933,13 +2112,28 @@ function CheckpointReviewModal({
   const [progressEvents, setProgressEvents] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
   const [addAuthBySec, setAddAuthBySec] = useState({});
+  const [blueprintSaveOpen, setBlueprintSaveOpen] = useState(false);
+  const [blueprintTitle, setBlueprintTitle] = useState('');
+  const [blueprintDomain, setBlueprintDomain] = useState('general');
+  const [savingBlueprint, setSavingBlueprint] = useState(false);
+  const [blueprintSaveMsg, setBlueprintSaveMsg] = useState(null);
 
   useEffect(() => {
     if (run?.outline_plan) {
       setEditedPlan(JSON.parse(JSON.stringify(run.outline_plan)));
+      setBlueprintTitle(run.outline_plan.document_title || '');
+      const inferredDomain =
+        run.canonical_domains?.[0] ||
+        run.outline_plan.sections?.[0]?.governing_authorities?.[0]?.domain ||
+        'general';
+      setBlueprintDomain(inferredDomain);
     } else {
       setEditedPlan(null);
+      setBlueprintTitle('');
+      setBlueprintDomain('general');
     }
+    setBlueprintSaveOpen(false);
+    setBlueprintSaveMsg(null);
     setErrorMsg(run?.error || null);
     setProgressEvents([]);
   }, [run?.run_id, run?.status, run?.updated_at]);
@@ -1950,6 +2144,39 @@ function CheckpointReviewModal({
 
   const isStage1 = run.status === 'awaiting_stage1_approval';
   const isStage2 = run.status === 'awaiting_stage2_approval';
+
+  const handleSaveAsBlueprint = async () => {
+    if (!editedPlan) return;
+    setSavingBlueprint(true);
+    setErrorMsg(null);
+    setBlueprintSaveMsg(null);
+    try {
+      const domainVal = blueprintDomain.trim() || 'general';
+      const titleVal = blueprintTitle.trim() || editedPlan.document_title || 'Saved Blueprint';
+      const res = await fetch('/api/blueprints', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: titleVal,
+          domain: domainVal,
+          default_domains: run.canonical_domains || (domainVal !== 'general' ? [domainVal] : []),
+          outline_plan: editedPlan,
+          source_run_id: run.run_id,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to save blueprint');
+      }
+      const saved = await res.json();
+      setBlueprintSaveMsg(`Saved template “${saved.title}” (${saved.blueprint_id})`);
+      setBlueprintSaveOpen(false);
+    } catch (err) {
+      setErrorMsg(err.message);
+    } finally {
+      setSavingBlueprint(false);
+    }
+  };
 
   const updateSectionField = (idx, field, value) => {
     setEditedPlan((prev) => {
@@ -2312,8 +2539,66 @@ function CheckpointReviewModal({
           ><code>${errorMsg}</code></pre>
         `}
 
+        ${blueprintSaveMsg && html`
+          <div class="provenance-caption" style="color: var(--color-emerald-accent); font-weight: 600;">
+            ${blueprintSaveMsg}
+          </div>
+        `}
+
+        ${isStage1 && editedPlan && blueprintSaveOpen && html`
+          <div class="blueprint-save-bar">
+            <input
+              type="text"
+              aria-label="Blueprint title"
+              class="text-input input-compact"
+              style="flex: 2; min-width: 180px;"
+              placeholder="Blueprint template title…"
+              value=${blueprintTitle}
+              disabled=${savingBlueprint}
+              onInput=${(e) => setBlueprintTitle(e.target.value)}
+            />
+            <input
+              type="text"
+              aria-label="Blueprint domain"
+              class="text-input input-compact"
+              style="flex: 1; min-width: 110px;"
+              placeholder="Domain (e.g. bankruptcy)"
+              value=${blueprintDomain}
+              disabled=${savingBlueprint}
+              onInput=${(e) => setBlueprintDomain(e.target.value)}
+            />
+            <button
+              type="button"
+              class="btn btn-compact btn-primary"
+              disabled=${savingBlueprint}
+              onClick=${handleSaveAsBlueprint}
+            >
+              ${savingBlueprint ? 'Saving…' : 'Save Template'}
+            </button>
+            <button
+              type="button"
+              class="btn btn-compact"
+              disabled=${savingBlueprint}
+              onClick=${() => setBlueprintSaveOpen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        `}
+
         <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            ${isStage1 && editedPlan && html`
+              <button
+                type="button"
+                class="btn"
+                disabled=${resuming || savingBlueprint}
+                onClick=${() => setBlueprintSaveOpen((prev) => !prev)}
+              >
+                <${Icon} name="source" size=${13} />
+                <span>Save as Blueprint (d)…</span>
+              </button>
+            `}
             ${isStage2 && html`
               <button
                 type="button"
@@ -2392,6 +2677,12 @@ function AskPipelineDialog({
   const [question, setQuestion] = useState('');
   const [bundleSlug, setBundleSlug] = useState('');
   const [checkpointMode, setCheckpointMode] = useState(false);
+  const [canonicalDomainsList, setCanonicalDomainsList] = useState([]);
+  const [autoSelectDomains, setAutoSelectDomains] = useState(true);
+  const [selectedDomains, setSelectedDomains] = useState([]);
+  const [blueprintsList, setBlueprintsList] = useState([]);
+  const [selectedBlueprintId, setSelectedBlueprintId] = useState('');
+  const [blueprintMode, setBlueprintMode] = useState('guided');
   const [runsList, setRunsList] = useState([]);
   const [progressEvents, setProgressEvents] = useState([]);
   const [running, setRunning] = useState(false);
@@ -2409,6 +2700,25 @@ function AskPipelineDialog({
     }
   }, [selectedMatter]);
 
+  const refreshAskOptions = useCallback(async () => {
+    try {
+      const [canRes, bpRes] = await Promise.all([
+        fetch('/api/canonical'),
+        fetch('/api/blueprints'),
+      ]);
+      if (canRes.ok) {
+        const canData = await canRes.json();
+        setCanonicalDomainsList(canData.canonical_domains || []);
+      }
+      if (bpRes.ok) {
+        const bpData = await bpRes.json();
+        setBlueprintsList(Array.isArray(bpData) ? bpData : []);
+      }
+    } catch {
+      // Non-fatal: pipeline defaults to auto domain selection
+    }
+  }, []);
+
   const refreshRuns = useCallback(async (matterId) => {
     if (!matterId) return;
     const res = await fetch(`/api/matters/${matterId}/runs`);
@@ -2419,7 +2729,21 @@ function AskPipelineDialog({
 
   useEffect(() => {
     refreshMatters();
-  }, [refreshMatters]);
+    refreshAskOptions();
+  }, [refreshMatters, refreshAskOptions]);
+
+  useEffect(() => {
+    const dlg = dialogRef?.current;
+    if (!dlg || typeof MutationObserver === 'undefined') return undefined;
+    const observer = new MutationObserver(() => {
+      if (dlg.hasAttribute('open')) {
+        refreshMatters();
+        refreshAskOptions();
+      }
+    });
+    observer.observe(dlg, { attributes: true, attributeFilter: ['open'] });
+    return () => observer.disconnect();
+  }, [dialogRef, refreshMatters, refreshAskOptions]);
 
   useEffect(() => {
     if (activeMatterHint && matters.some((m) => m.matter_id === activeMatterHint)) {
@@ -2435,6 +2759,29 @@ function AskPipelineDialog({
 
   const activeMatterObj = matters.find((m) => m.matter_id === selectedMatter);
 
+  const handleSelectBlueprint = (bpId) => {
+    setSelectedBlueprintId(bpId);
+    if (!bpId) return;
+    const bp = blueprintsList.find((item) => item.blueprint_id === bpId);
+    if (bp?.default_domains && bp.default_domains.length > 0) {
+      const availSet = new Set(canonicalDomainsList.map((d) => d.domain));
+      const matched = bp.default_domains.filter((d) => availSet.size === 0 || availSet.has(d));
+      if (matched.length > 0) {
+        setAutoSelectDomains(false);
+        setSelectedDomains(matched);
+      }
+    }
+  };
+
+  const handleToggleDomain = (domainName) => {
+    setAutoSelectDomains(false);
+    setSelectedDomains((prev) =>
+      prev.includes(domainName)
+        ? prev.filter((d) => d !== domainName)
+        : [...prev, domainName]
+    );
+  };
+
   const handleRunAsk = async (e) => {
     e.preventDefault();
     if (!question.trim() || !selectedMatter) return;
@@ -2448,6 +2795,9 @@ function AskPipelineDialog({
         question,
         bundleId: bundleSlug.trim() || null,
         checkpointMode,
+        canonicalDomains: autoSelectDomains ? null : selectedDomains,
+        blueprintId: selectedBlueprintId || null,
+        blueprintMode: selectedBlueprintId ? blueprintMode : 'none',
         onProgress: (ev) => setProgressEvents((prev) => [...prev, ev]),
       });
       await refreshRuns(selectedMatter);
@@ -2539,6 +2889,98 @@ function AskPipelineDialog({
               onInput=${(e) => setQuestion(e.target.value)}
               required
             ></textarea>
+          </div>
+
+          <div class="form-field">
+            <label for="ask-blueprint-select" class="control-label">
+              Document Blueprint (d)
+            </label>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <select
+                id="ask-blueprint-select"
+                class="select-control"
+                style="flex: 2; min-width: 210px;"
+                value=${selectedBlueprintId}
+                disabled=${running}
+                onChange=${(e) => handleSelectBlueprint(e.target.value)}
+              >
+                <option value="">No Blueprint — Free Iterate</option>
+                ${blueprintsList.map(
+                  (bp) => html`
+                    <option key=${bp.blueprint_id} value=${bp.blueprint_id}>
+                      ${bp.title} (${bp.domain} · ${bp.sections?.length || 0} sections)
+                    </option>
+                  `
+                )}
+              </select>
+              <select
+                aria-label="Blueprint constraint mode"
+                class="select-control"
+                style="flex: 1; min-width: 150px;"
+                value=${selectedBlueprintId ? blueprintMode : 'none'}
+                disabled=${running || !selectedBlueprintId}
+                onChange=${(e) => setBlueprintMode(e.target.value)}
+              >
+                ${!selectedBlueprintId && html`<option value="none">Mode: Free Iterate</option>`}
+                <option value="guided">Guided (adapt to facts)</option>
+                <option value="strict">Strict (lock sections)</option>
+              </select>
+            </div>
+            ${selectedBlueprintId && html`
+              <div class="provenance-caption">
+                ${blueprintsList.find((b) => b.blueprint_id === selectedBlueprintId)?.description || ''}
+              </div>
+            `}
+          </div>
+
+          <div class="form-field">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+              <span class="control-label">Canonical Rule Domains</span>
+              <label class="checkbox-row" style="font-size: 12px;">
+                <input
+                  type="checkbox"
+                  checked=${autoSelectDomains}
+                  disabled=${running}
+                  onChange=${(e) => {
+                    const checked = Boolean(e.target.checked);
+                    setAutoSelectDomains(checked);
+                    if (!checked && selectedDomains.length === 0) {
+                      setSelectedDomains(canonicalDomainsList.map((d) => d.domain));
+                    }
+                  }}
+                />
+                <span>Auto-select from corpus</span>
+              </label>
+            </div>
+            ${canonicalDomainsList.length > 0 ? html`
+              <div class="domain-chip-group">
+                ${canonicalDomainsList.map((d) => {
+                  const isChecked = autoSelectDomains
+                    ? false
+                    : selectedDomains.includes(d.domain);
+                  return html`
+                    <label
+                      key=${d.domain}
+                      class="domain-chip ${isChecked ? 'is-selected' : ''} ${autoSelectDomains ? 'is-auto' : ''}"
+                      title=${(d.titles || []).join(', ')}
+                    >
+                      <input
+                        type="checkbox"
+                        checked=${isChecked}
+                        disabled=${running}
+                        onChange=${() => handleToggleDomain(d.domain)}
+                      />
+                      <span>${d.domain}</span>
+                      <span class="font-mono-data" style="font-size: 10.5px; color: var(--color-text-muted);">
+                        ${d.document_count}
+                      </span>
+                    </label>
+                  `;
+                })}
+              </div>
+            ` : html`
+              <div class="provenance-caption">No indexed canonical domain packs yet (auto-select active).</div>
+            `}
           </div>
 
           <div class="form-field">
@@ -3602,7 +4044,18 @@ function App() {
                     class="tension-callout ${ten.severity === 'warning' ? 'is-warning' : ''}"
                   >
                     <div class="tension-callout-header ${ten.severity === 'warning' ? 'is-warning' : ''}">
-                      <span>Cross-Section Tension (${ten.severity})</span>
+                      <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span>
+                          ${ten.tension_scope === 'cross_bundle'
+                            ? `Cross-Bundle Contradiction (${ten.severity})`
+                            : `Cross-Section Tension (${ten.severity})`}
+                        </span>
+                        ${ten.tension_scope === 'cross_bundle' && html`
+                          <span class="tension-scope-badge">
+                            vs. ${ten.conflicting_bundle_title || ten.conflicting_bundle_id}
+                          </span>
+                        `}
+                      </span>
                       <span class="font-mono-data">${ten.tension_id}</span>
                     </div>
                     <p class="tension-desc">${ten.description}</p>
@@ -3620,6 +4073,15 @@ function App() {
                           </button>
                         `;
                       })}
+                      ${ten.conflicting_bundle_id && html`
+                        <button
+                          type="button"
+                          class="btn-link"
+                          onClick=${() => loadBundle(ten.conflicting_bundle_id)}
+                        >
+                          Open ${ten.conflicting_bundle_title || ten.conflicting_bundle_id} →
+                        </button>
+                      `}
                     </div>
                   </div>
                 `

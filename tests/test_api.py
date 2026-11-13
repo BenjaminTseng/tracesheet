@@ -593,3 +593,164 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
         app.state.matter_ingestor = None
         app.state.llm_provider = None
 
+
+def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path: Path) -> None:
+    """Verifies reliability metadata upload/PATCH, blueprint CRUD, canonical domains, and strict ask."""
+    from fastapi.testclient import TestClient
+    from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+    from app.llm import MockLLMProvider
+    from app.pipeline import BlueprintStore
+
+    canonical_dir = tmp_path / "canonical"
+    (canonical_dir / "raw" / "legal").mkdir(parents=True)
+    (canonical_dir / "raw" / "legal" / "rules.md").write_text(
+        "# Rules\n\n## Cap\nLimit is $15,150.\n", encoding="utf-8"
+    )
+    c_ing = CanonicalIngestor(canonical_dir)
+    c_ing.ingest_corpus(llm=MockLLMProvider())
+    router = CanonicalRouter(canonical_dir)
+    m_ing = MatterIngestor(tmp_path / "matters")
+    bp_store = BlueprintStore(tmp_path / "blueprints")
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "VerifiedFactLedger": {
+                "section_id": "sec_01",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Survey balance",
+                        "title": "Survey",
+                        "quote": "Reported payroll is $10,000.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Survey.md",
+                            "locator_key": "SURVEY-SEC-1",
+                        },
+                    }
+                ],
+            },
+            "SectionOutput": {
+                "section_id": "sec_01",
+                "section_title": "Payroll Check",
+                "text": "Owner reported <ref n='1'>$10,000 payroll</ref>.",
+                "supports": [
+                    {
+                        "n": 1,
+                        "reasoning": "From Survey.md",
+                        "items": [
+                            {
+                                "ref_id": "f1",
+                                "type": "evidence",
+                                "title": "Survey.md",
+                                "quote": "Reported payroll is $10,000.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Survey.md",
+                                    "locator_key": "SURVEY-SEC-1",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+        }
+    )
+
+    app.state.canonical_router = router
+    app.state.canonical_ingestor = c_ing
+    app.state.matter_ingestor = m_ing
+    app.state.llm_provider = mock_llm
+    app.state.blueprint_store = bp_store
+
+    try:
+        client = TestClient(app)
+
+        # 1. Canonical status exposes domain summaries
+        can_res = client.get("/api/canonical")
+        assert can_res.status_code == 200
+        assert [d["domain"] for d in can_res.json()["canonical_domains"]] == ["legal"]
+
+        # 2. Upload matter file with reliability_tier & origin_description, then PATCH metadata
+        client.post("/api/matters", json={"matter_id": "m_api_rel"})
+        up_res = client.post(
+            "/api/matters/m_api_rel/upload",
+            data={
+                "reliability_tier": "self_reported",
+                "origin_description": "Client intake questionnaire",
+            },
+            files={"file": ("Survey.md", b"Reported payroll is $10,000.\n", "text/markdown")},
+        )
+        assert up_res.status_code == 200
+        assert up_res.json()["files"][0]["reliability_tier"] == "self_reported"
+        assert up_res.json()["files"][0]["origin_description"] == "Client intake questionnaire"
+
+        patch_res = client.patch(
+            "/api/matters/m_api_rel/files/Survey.md/metadata",
+            json={"reliability_tier": "self_reported", "origin_description": "Signed intake PDF"},
+        )
+        assert patch_res.status_code == 200
+        assert patch_res.json()["files"][0]["origin_description"] == "Signed intake PDF"
+
+        # 3. Blueprint CRUD + strict ask execution
+        bp_list = client.get("/api/blueprints")
+        assert bp_list.status_code == 200
+        assert len(bp_list.json()) >= 2
+
+        create_bp = client.post(
+            "/api/blueprints",
+            json={
+                "blueprint_id": "api_custom_bp",
+                "title": "API Custom Blueprint",
+                "domain": "legal",
+                "default_domains": ["legal"],
+                "outline_plan": {
+                    "document_title": "Strict API Memo",
+                    "executive_summary_intent": "Verify survey payroll under reliability floor.",
+                    "sections": [
+                        {
+                            "section_id": "sec_01",
+                            "section_title": "Payroll Check",
+                            "stated_intention": "Check payroll claim.",
+                            "required_fact_queries": ["Survey balance"],
+                        }
+                    ],
+                },
+            },
+        )
+        assert create_bp.status_code == 200
+        assert create_bp.json()["blueprint_id"] == "api_custom_bp"
+
+        ask_res = client.post(
+            "/api/matters/m_api_rel/ask",
+            json={
+                "question": "Check payroll liability.",
+                "bundle_id": "api_bp_bundle",
+                "smooth_transitions": False,
+                "canonical_domains": ["legal"],
+                "blueprint_id": "api_custom_bp",
+                "blueprint_mode": "strict",
+            },
+        )
+        assert ask_res.status_code == 200
+        claim = ask_res.json()["nodes"]["claim_sec_01_1"]
+        # Uncorroborated self_reported survey evidence deterministically downgraded to assumption
+        assert claim["audit"]["status"] == "assumption"
+
+        del_bp = client.delete("/api/blueprints/api_custom_bp")
+        assert del_bp.status_code == 200
+    finally:
+        BUNDLE_STORE.pop("api_bp_bundle", None)
+        app.state.canonical_router = None
+        app.state.canonical_ingestor = None
+        app.state.matter_ingestor = None
+        app.state.llm_provider = None
+        app.state.blueprint_store = None
+

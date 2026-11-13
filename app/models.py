@@ -390,19 +390,25 @@ class ArtifactEnvelope(BaseModel):
 
 
 class TensionObject(BaseModel):
-    """Represents a cross-section contradiction or tension flagged by the global audit.
+    """Represents a cross-section or cross-bundle contradiction flagged by auditing.
 
     Attributes:
         tension_id: Unique identifier for the tension warning.
         involved_claim_ids: Claim node IDs whose assertions are in tension.
         severity: Either `warning` (nuance/scope friction) or `blocker` (contradiction).
         description: Plain-English explanation of the discrepancy.
+        tension_scope: Whether tension is within the active document or against a prior bundle.
+        conflicting_bundle_id: Identifier of the prior bundle in conflict (for `cross_bundle`).
+        conflicting_bundle_title: Title of the prior bundle in conflict (for `cross_bundle`).
     """
 
     tension_id: str
     involved_claim_ids: List[str]
     severity: Literal["warning", "blocker"] = "warning"
     description: str
+    tension_scope: Literal["intra_document", "cross_bundle"] = "intra_document"
+    conflicting_bundle_id: Optional[str] = None
+    conflicting_bundle_title: Optional[str] = None
 
 
 class AuditSummary(BaseModel):
@@ -736,6 +742,28 @@ class PipelineProgressEvent(BaseModel):
     message: str
 
 
+BlueprintMode = Literal["guided", "strict", "none"]
+
+
+class DocumentBlueprint(BaseModel):
+    """Reusable document outline template `(d)` for recurring filings or reports."""
+
+    blueprint_id: str
+    title: str
+    domain: str = "general"
+    description: Optional[str] = None
+    default_domains: List[str] = Field(default_factory=list)
+    document_title_template: str
+    executive_summary_intent: str
+    sections: List[SectionPlan] = Field(default_factory=list)
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    updated_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+
+
 class PipelineRunRecord(BaseModel):
     """Disk-persisted state of a 4-stage pipeline execution (`matters/<id>/runs/<run_id>.json`)."""
 
@@ -747,6 +775,8 @@ class PipelineRunRecord(BaseModel):
     smooth_transitions: bool = True
     canonical_domains: Optional[List[str]] = None
     selected_domains: List[str] = Field(default_factory=list)
+    blueprint_id: Optional[str] = None
+    blueprint_mode: BlueprintMode = "none"
     status: PipelineRunStatus = "running"
     current_stage: str = "init"
     created_at: str = Field(

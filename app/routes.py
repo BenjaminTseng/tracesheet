@@ -20,18 +20,22 @@ from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import LLMProvider, MockLLMProvider, create_llm_provider
 from app.models import (
     AuditStatus,
+    BlueprintMode,
     CommentScope,
     CompiledBundle,
     CompiledGraphBuilder,
+    DocumentBlueprint,
     OutlinePlan,
     PipelineRunRecord,
     ReviewComment,
     SectionOutput,
+    SectionPlan,
     SectionValidator,
+    SourceReliabilityTier,
     StitchInvariantGate,
     TensionObject,
 )
-from app.pipeline import AuditPipelineRunner
+from app.pipeline import AuditPipelineRunner, BlueprintStore
 from app.sample_data import get_sample_bundles
 
 logger = logging.getLogger("jd_screen")
@@ -108,6 +112,31 @@ class AskMatterRequest(BaseModel):
     smooth_transitions: bool = True
     checkpoint_mode: bool = False
     run_id: Optional[str] = None
+    canonical_domains: Optional[List[str]] = None
+    blueprint_id: Optional[str] = None
+    blueprint_mode: BlueprintMode = "none"
+
+
+class UpdateMatterFileMetadataRequest(BaseModel):
+    """Request body for updating origin & reliability tier metadata on a matter input `(a)`."""
+
+    reliability_tier: SourceReliabilityTier = "primary_record"
+    origin_description: Optional[str] = None
+
+
+class CreateBlueprintRequest(BaseModel):
+    """Request body for saving a reusable Document Blueprint `(d)`."""
+
+    blueprint_id: Optional[str] = None
+    title: str = Field(min_length=1)
+    domain: str = "general"
+    description: Optional[str] = None
+    default_domains: List[str] = Field(default_factory=list)
+    document_title_template: Optional[str] = None
+    executive_summary_intent: Optional[str] = None
+    sections: List[SectionPlan] = Field(default_factory=list)
+    outline_plan: Optional[OutlinePlan] = None
+    source_run_id: Optional[str] = None
 
 
 class ResumeRunRequest(BaseModel):
@@ -224,7 +253,32 @@ def _make_run_reader(request: Request) -> AuditPipelineRunner:
     """Builds a pipeline runner suitable for reading/listing persisted run JSON without an LLM call."""
     canonical_router, matter_ingestor, _ = _get_corpus_services(request)
     llm = _get_optional_llm_provider(request) or MockLLMProvider()
-    return AuditPipelineRunner(llm, canonical_router, matter_ingestor)
+    blueprints_root = getattr(request.app.state, "blueprints_root", None)
+    return AuditPipelineRunner(
+        llm, canonical_router, matter_ingestor, blueprints_root=blueprints_root
+    )
+
+
+def _build_pipeline_runner(request: Request) -> AuditPipelineRunner:
+    """Instantiates `AuditPipelineRunner` with resolved services and blueprint store."""
+    canonical_router, matter_ingestor, llm_provider = _get_services(request)
+    blueprints_root = _get_blueprint_store(request).blueprints_root
+    return AuditPipelineRunner(
+        llm_provider,
+        canonical_router,
+        matter_ingestor,
+        blueprints_root=blueprints_root,
+    )
+
+
+def _get_blueprint_store(request: Request) -> BlueprintStore:
+    """Resolves `BlueprintStore` respecting optional `app.state` test overrides."""
+    explicit = getattr(request.app.state, "blueprint_store", None)
+    if explicit is not None:
+        return explicit
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    blueprints_root = getattr(request.app.state, "blueprints_root", None)
+    return BlueprintStore(blueprints_root or (matter_ingestor.matters_root.parent / "blueprints"))
 
 
 def _stream_worker_sse(
@@ -491,9 +545,11 @@ async def compile_intermediate_sections(
 
 @router.get("/api/canonical")
 async def get_canonical_corpus(request: Request) -> Dict[str, Any]:
-    """Returns canonical `INDEX.md`, active `[AUTH:...]` blocks, and raw source inventory."""
-    _, _, canonical_ingestor = _get_corpus_services(request)
-    return canonical_ingestor.get_corpus_status()
+    """Returns canonical `INDEX.md`, active `[AUTH:...]` blocks, domains, and raw source inventory."""
+    canonical_router, _, canonical_ingestor = _get_corpus_services(request)
+    status = canonical_ingestor.get_corpus_status()
+    status["canonical_domains"] = canonical_router.list_domains()
+    return status
 
 
 @router.get("/api/canonical/documents/{doc_id:path}")
@@ -662,13 +718,43 @@ async def delete_matter_file(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.patch("/api/matters/{matter_id}/files/{filename}/metadata")
+async def update_matter_file_metadata(
+    matter_id: str,
+    filename: str,
+    req: UpdateMatterFileMetadataRequest,
+    request: Request,
+) -> Dict[str, Any]:
+    """Updates the `reliability_tier` and `origin_description` metadata on an uploaded matter file `(a)`."""
+    _, matter_ingestor, _ = _get_corpus_services(request)
+    slug = _sanitize_slug(matter_id)
+    _, raw_dir, _, _ = matter_ingestor._matter_dirs(slug)
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename or ".." in filename:
+        raise HTTPException(status_code=422, detail=f"Invalid filename: {filename}")
+    target = raw_dir / safe_name
+    if not target.exists() or not target.is_file():
+        raise HTTPException(
+            status_code=404, detail=f"Matter file '{safe_name}' not found in '{slug}'."
+        )
+    matter_ingestor.set_file_metadata(
+        slug,
+        safe_name,
+        reliability_tier=req.reliability_tier,
+        origin_description=req.origin_description,
+    )
+    return matter_ingestor.list_matter_files(slug)
+
+
 @router.post("/api/matters/{matter_id}/upload")
 async def upload_matter_file(
     matter_id: str,
     request: Request,
     file: UploadFile = File(...),
+    reliability_tier: SourceReliabilityTier = Form("primary_record"),
+    origin_description: Optional[str] = Form(None),
 ) -> Dict[str, Any]:
-    """Uploads a raw project file (`.pdf`, `.xlsx`, `.csv`, `.md`, `.txt`) and ingests it."""
+    """Uploads a raw project file (`.pdf`, `.docx`, `.xlsx`, `.csv`, `.md`, `.txt`) and ingests it."""
     _, matter_ingestor, _ = _get_corpus_services(request)
     slug = _sanitize_slug(matter_id)
     matter_ingestor.create_matter(slug)
@@ -678,6 +764,12 @@ async def upload_matter_file(
     dest_path = raw_dir / safe_name
     content = await file.read()
     dest_path.write_bytes(content)
+    matter_ingestor.set_file_metadata(
+        slug,
+        safe_name,
+        reliability_tier=reliability_tier,
+        origin_description=origin_description,
+    )
 
     manifest = await asyncio.to_thread(matter_ingestor.ingest_matter, slug)
     return {
@@ -693,6 +785,8 @@ async def upload_matter_file_stream(
     matter_id: str,
     request: Request,
     file: UploadFile = File(...),
+    reliability_tier: SourceReliabilityTier = Form("primary_record"),
+    origin_description: Optional[str] = Form(None),
 ) -> StreamingResponse:
     """Uploads a raw project file and streams SSE progress events while indexing coordinates."""
     _, matter_ingestor, _ = _get_corpus_services(request)
@@ -704,9 +798,15 @@ async def upload_matter_file_stream(
     dest_path = raw_dir / safe_name
     content = await file.read()
     dest_path.write_bytes(content)
+    matter_ingestor.set_file_metadata(
+        slug,
+        safe_name,
+        reliability_tier=reliability_tier,
+        origin_description=origin_description,
+    )
 
     def run_work(cb: Callable[[str, str], None]) -> Dict[str, Any]:
-        cb("upload", f"Saved {safe_name} into matters/{slug}/inputs/raw/")
+        cb("upload", f"Saved {safe_name} into matters/{slug}/inputs/raw/ ({reliability_tier})")
         manifest = matter_ingestor.ingest_matter(slug, progress_callback=cb)
         return {
             "matter_id": slug,
@@ -747,9 +847,8 @@ async def ask_matter_question(
     request: Request,
 ) -> Union[CompiledBundle, PipelineRunRecord]:
     """Executes the 4-stage pipeline for `(c)`, returning the bundle or paused checkpoint run."""
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
     slug = _sanitize_slug(matter_id)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    runner = _build_pipeline_runner(request)
 
     run = PipelineRunRecord(
         run_id=req.run_id or f"run_{uuid.uuid4().hex[:10]}",
@@ -758,6 +857,9 @@ async def ask_matter_question(
         bundle_id=req.bundle_id,
         checkpoint_mode=req.checkpoint_mode,
         smooth_transitions=req.smooth_transitions,
+        canonical_domains=req.canonical_domains,
+        blueprint_id=req.blueprint_id,
+        blueprint_mode=req.blueprint_mode,
     )
     updated_run, bundle = await asyncio.to_thread(runner.execute_run, run)
     if bundle is not None:
@@ -794,9 +896,8 @@ async def ask_matter_question_stream(
     request: Request,
 ) -> StreamingResponse:
     """Streams granular SSE progress for a persisted 4-stage pipeline run."""
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
     slug = _sanitize_slug(matter_id)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    runner = _build_pipeline_runner(request)
 
     run = PipelineRunRecord(
         run_id=req.run_id or f"run_{uuid.uuid4().hex[:10]}",
@@ -805,6 +906,9 @@ async def ask_matter_question_stream(
         bundle_id=req.bundle_id,
         checkpoint_mode=req.checkpoint_mode,
         smooth_transitions=req.smooth_transitions,
+        canonical_domains=req.canonical_domains,
+        blueprint_id=req.blueprint_id,
+        blueprint_mode=req.blueprint_mode,
     )
     stream, queue = _launch_run_background(request, runner, run)
     loop = asyncio.get_running_loop()
@@ -940,8 +1044,7 @@ async def resume_pipeline_run(
     req: Optional[ResumeRunRequest] = None,
 ) -> Union[CompiledBundle, PipelineRunRecord]:
     """Resumes a checkpointed or interrupted run synchronously, returning the bundle or next checkpoint."""
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    runner = _build_pipeline_runner(request)
     run = runner.find_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
@@ -962,8 +1065,7 @@ async def resume_pipeline_run_stream(
     req: Optional[ResumeRunRequest] = None,
 ) -> StreamingResponse:
     """Resumes a checkpointed or interrupted run and streams granular SSE progress."""
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    runner = _build_pipeline_runner(request)
     run = runner.find_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"Pipeline run '{run_id}' not found.")
@@ -979,6 +1081,82 @@ async def resume_pipeline_run_stream(
             pass
 
     return _sse_queue_stream(queue, on_close=cleanup)
+
+
+# =====================================================================
+# Reusable Document Blueprints (d)
+# =====================================================================
+
+
+@router.get("/api/blueprints")
+async def list_blueprints(request: Request) -> List[Dict[str, Any]]:
+    """Lists all persisted Document Blueprints `(d)` (auto-seeding starters on first access)."""
+    store = _get_blueprint_store(request)
+    return [bp.model_dump() for bp in store.list_blueprints()]
+
+
+@router.post("/api/blueprints")
+async def create_or_update_blueprint(
+    req: CreateBlueprintRequest,
+    request: Request,
+) -> Dict[str, Any]:
+    """Saves a reusable Document Blueprint `(d)` directly or derived from a Stage 1 outline/run."""
+    store = _get_blueprint_store(request)
+    sections = list(req.sections)
+    title_tmpl = req.document_title_template
+    exec_intent = req.executive_summary_intent
+    default_domains = list(req.default_domains)
+
+    source_plan = req.outline_plan
+    if source_plan is None and req.source_run_id:
+        runner = _make_run_reader(request)
+        run = runner.find_run(req.source_run_id)
+        if run is None:
+            raise HTTPException(
+                status_code=404, detail=f"Pipeline run '{req.source_run_id}' not found."
+            )
+        source_plan = run.outline_plan
+        if not default_domains and run.selected_domains:
+            default_domains = list(run.selected_domains)
+
+    if source_plan is not None:
+        if not sections:
+            sections = [s.model_copy(deep=True) for s in source_plan.sections]
+        title_tmpl = title_tmpl or source_plan.document_title
+        exec_intent = exec_intent or source_plan.executive_summary_intent
+
+    if not sections:
+        raise HTTPException(
+            status_code=422,
+            detail="Document Blueprint must contain at least one section or reference an outline_plan.",
+        )
+
+    slug = _sanitize_slug(req.blueprint_id or req.title)
+    bp = DocumentBlueprint(
+        blueprint_id=slug,
+        title=req.title.strip(),
+        domain=req.domain.strip() or "general",
+        description=(req.description or "").strip() or None,
+        default_domains=default_domains,
+        document_title_template=title_tmpl or f"{req.title.strip()} — {{matter_id}}",
+        executive_summary_intent=exec_intent or f"Structured synthesis using blueprint '{req.title.strip()}'.",
+        sections=sections,
+    )
+    saved = store.save_blueprint(bp)
+    return saved.model_dump()
+
+
+@router.delete("/api/blueprints/{blueprint_id}")
+async def delete_blueprint(blueprint_id: str, request: Request) -> Dict[str, Any]:
+    """Deletes a persisted Document Blueprint `(d)` by ID."""
+    store = _get_blueprint_store(request)
+    try:
+        removed = store.delete_blueprint(blueprint_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Blueprint '{blueprint_id}' not found.")
+    return {"deleted": blueprint_id}
 
 
 # =====================================================================
@@ -1065,8 +1243,7 @@ async def regenerate_from_feedback(
         raise HTTPException(status_code=404, detail=f"Bundle '{bundle_id}' not found.")
 
     bundle = BUNDLE_STORE[bundle_id]
-    canonical_router, matter_ingestor, llm_provider = _get_services(request)
-    runner = AuditPipelineRunner(llm_provider, canonical_router, matter_ingestor)
+    runner = _build_pipeline_runner(request)
 
     updated = await asyncio.to_thread(
         runner.apply_comments_and_recompile,

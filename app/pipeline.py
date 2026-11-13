@@ -25,12 +25,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from app.ingest import CanonicalRouter, MatterIngestor
+from app.ingest import CanonicalRouter, MatterIngestor, _sha256_short
 from app.llm import LLMProvider, ToolDefinition
 from app.models import (
     AuditStatus,
+    BlueprintMode,
     CompiledBundle,
     CompiledGraphBuilder,
+    DocumentBlueprint,
     ExtractedFactItem,
     NodeAudit,
     OutlinePlan,
@@ -88,6 +90,158 @@ class FeedbackTriageDecision(BaseModel):
 # Pipeline Runner
 # =====================================================================
 
+def _default_starter_blueprints() -> List[DocumentBlueprint]:
+    """Starter Document Blueprints `(d)` seeded on first run when `blueprints/` is empty."""
+    return [
+        DocumentBlueprint(
+            blueprint_id="ch11_wage_motion",
+            title="Chapter 11 First-Day Pre-Petition Wage Motion",
+            domain="legal",
+            description="Structured outline for Ch. 11 first-day employee wage & benefit continuity motions.",
+            default_domains=["legal"],
+            document_title_template="Chapter 11 Pre-Petition Wage Motion — {matter_id}",
+            executive_summary_intent=(
+                "Establish statutory priority, payroll liabilities, and operational necessity "
+                "for paying pre-petition employee wages and withholding obligations."
+            ),
+            sections=[
+                SectionPlan(
+                    section_id="sec_01",
+                    section_title="I. Payroll Obligations & Statutory Wage Cap",
+                    stated_intention="Quantify unpaid pre-petition wages per employee against 11 U.S.C. § 507(a)(4) caps.",
+                    routing_rationale="Requires statutory priority thresholds and payroll register totals.",
+                    required_fact_queries=[
+                        "Total pre-petition accrued employee wages and pay period dates",
+                        "Maximum unpaid wage amount owed to any individual employee",
+                    ],
+                ),
+                SectionPlan(
+                    section_id="sec_02",
+                    section_title="II. Trust-Fund Taxes, Benefits & Lien Priorities",
+                    stated_intention="Verify payroll taxes, benefit withholdings, and secured lender cash-collateral position.",
+                    routing_rationale="Checks trust-fund exclusions and secured lender consent or carve-outs.",
+                    required_fact_queries=[
+                        "Unremitted payroll tax withholdings and benefit premiums",
+                        "Secured loan / cash collateral restrictions on operational disbursements",
+                    ],
+                ),
+                SectionPlan(
+                    section_id="sec_03",
+                    section_title="III. Cash Liquidity & Doctrine of Necessity",
+                    stated_intention="Demonstrate post-petition liquidity coverage and going-concern harm if unpaid.",
+                    routing_rationale="Synthesizes debtor cash runway and workforce retention risks.",
+                    required_fact_queries=[
+                        "Current operating cash balance and 13-week cash forecast",
+                        "Operational dependencies and workforce attrition risk disclosures",
+                    ],
+                ),
+            ],
+        ),
+        DocumentBlueprint(
+            blueprint_id="clinical_intervention_synthesis",
+            title="Clinical Intervention Evidence Synthesis",
+            domain="medical",
+            description="Structured guideline-vs-trial evidence review for therapeutic efficacy & safety.",
+            default_domains=["medical"],
+            document_title_template="Clinical Evidence Synthesis — {matter_id}",
+            executive_summary_intent=(
+                "Synthesize consensus guidelines, randomized trial efficacy outcomes, "
+                "contraindications, and residual uncertainty across provided literature."
+            ),
+            sections=[
+                SectionPlan(
+                    section_id="sec_01",
+                    section_title="I. Guideline Standard of Care & Diagnostic Criteria",
+                    stated_intention="Establish baseline society/government guideline recommendations and patient eligibility.",
+                    routing_rationale="Anchor recommendations in authoritative clinical guidelines `(b)`.",
+                    required_fact_queries=[
+                        "Target patient population, baseline severity, and exclusion criteria in provided packet",
+                    ],
+                ),
+                SectionPlan(
+                    section_id="sec_02",
+                    section_title="II. Comparative Efficacy From Trials & Observational Studies",
+                    stated_intention="Quantify effect sizes, confidence intervals, and endpoints across primary studies.",
+                    routing_rationale="Extract quantitative primary endpoints and distinguish RCTs from observational cohorts.",
+                    required_fact_queries=[
+                        "Primary clinical trial sample sizes, endpoints, and hazard/odds ratios",
+                        "Observational cohort outcomes and confounding adjustments",
+                    ],
+                ),
+                SectionPlan(
+                    section_id="sec_03",
+                    section_title="III. Safety Profile, Contraindications & Evidence Gaps",
+                    stated_intention="Document adverse event rates, conflicting trial results, and methodological limitations.",
+                    routing_rationale="Surface safety trade-offs and open trial/guideline discrepancies honestly.",
+                    required_fact_queries=[
+                        "Reported severe adverse events, discontinuation rates, and contraindications",
+                    ],
+                ),
+            ],
+        ),
+    ]
+
+
+class BlueprintStore:
+    """Disk-backed registry for reusable Document Blueprints `(d)` (`blueprints/<id>.json`)."""
+
+    def __init__(self, blueprints_root: Path) -> None:
+        self.blueprints_root = blueprints_root
+
+    def _ensure_seeded(self) -> None:
+        if not self.blueprints_root.exists():
+            self.blueprints_root.mkdir(parents=True, exist_ok=True)
+            for bp in _default_starter_blueprints():
+                self.save_blueprint(bp)
+
+    def _path_for(self, blueprint_id: str) -> Path:
+        safe_id = re.sub(r"[^a-zA-Z0-9_-]+", "_", blueprint_id.strip()).strip("_")
+        if not safe_id:
+            raise ValueError(f"Invalid blueprint_id: {blueprint_id}")
+        return self.blueprints_root / f"{safe_id}.json"
+
+    def list_blueprints(self) -> List[DocumentBlueprint]:
+        """Lists all persisted Document Blueprints sorted by domain and title."""
+        self._ensure_seeded()
+        items: List[DocumentBlueprint] = []
+        for path in sorted(self.blueprints_root.glob("*.json")):
+            try:
+                items.append(DocumentBlueprint.model_validate_json(path.read_text(encoding="utf-8")))
+            except Exception as exc:
+                logger.warning("Skipping invalid blueprint %s: %s", path, exc)
+        items.sort(key=lambda b: (b.domain.lower(), b.title.lower()))
+        return items
+
+    def get_blueprint(self, blueprint_id: str) -> Optional[DocumentBlueprint]:
+        """Loads a single Document Blueprint by ID, or `None` if not found."""
+        self._ensure_seeded()
+        try:
+            path = self._path_for(blueprint_id)
+        except ValueError:
+            return None
+        if not path.exists():
+            return None
+        return DocumentBlueprint.model_validate_json(path.read_text(encoding="utf-8"))
+
+    def save_blueprint(self, blueprint: DocumentBlueprint) -> DocumentBlueprint:
+        """Persists a `DocumentBlueprint` JSON file to `blueprints/`."""
+        self.blueprints_root.mkdir(parents=True, exist_ok=True)
+        blueprint.updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        path = self._path_for(blueprint.blueprint_id)
+        blueprint.blueprint_id = path.stem
+        path.write_text(blueprint.model_dump_json(indent=2), encoding="utf-8")
+        return blueprint
+
+    def delete_blueprint(self, blueprint_id: str) -> bool:
+        """Deletes a persisted blueprint by ID; returns `True` if removed."""
+        self._ensure_seeded()
+        path = self._path_for(blueprint_id)
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
+
 class AuditPipelineRunner:
     """Executes the 4-stage grounded authoring pipeline and incremental feedback loops."""
 
@@ -96,6 +250,7 @@ class AuditPipelineRunner:
         llm: LLMProvider,
         canonical_router: CanonicalRouter,
         matter_ingestor: MatterIngestor,
+        blueprints_root: Optional[Path] = None,
     ) -> None:
         """Initializes the pipeline runner.
 
@@ -103,10 +258,14 @@ class AuditPipelineRunner:
             llm: Configured `LLMProvider` (`GeminiInteractionsProvider`, etc.).
             canonical_router: Router providing `canonical/INDEX.md` and `[AUTH:...]` texts.
             matter_ingestor: Ingestor providing indexed inputs `(a)` and Stage 2 tools.
+            blueprints_root: Optional root folder for reusable Document Blueprints `(d)`.
         """
         self.llm = llm
         self.canonical_router = canonical_router
         self.matter_ingestor = matter_ingestor
+        self.blueprint_store = BlueprintStore(
+            blueprints_root or (matter_ingestor.matters_root.parent / "blueprints")
+        )
 
     def _emit_progress(
         self,
@@ -253,12 +412,14 @@ class AuditPipelineRunner:
         question: str,
         progress_callback: Optional[Callable[[str, str], None]] = None,
         canonical_domains: Optional[List[str]] = None,
+        blueprint: Optional[DocumentBlueprint] = None,
     ) -> OutlinePlan:
         """Decomposes user request `(c)` into sections routed over catalog `(b)`.
 
         Reads ONLY the compact Tier 1 `canonical/INDEX.md` catalog (optionally
         scoped to `canonical_domains`) and gives Stage 1 canonical browse/search/read
-        tools so large corpora stay token-efficient. Hydrates exact `verbatim_quote`
+        tools so large corpora stay token-efficient. Optionally incorporates a
+        Document Blueprint `(d)` in guided mode. Hydrates exact `verbatim_quote`
         and `url` fields from `CanonicalRouter`.
 
         Args:
@@ -266,6 +427,7 @@ class AuditPipelineRunner:
             question: User analytical or legal question `(c)`.
             progress_callback: Optional `(stage, message)` progress callback.
             canonical_domains: Optional domain whitelist (e.g. `["legal"]`).
+            blueprint: Optional `DocumentBlueprint` template `(d)` for guided mode.
 
         Returns:
             Validated `OutlinePlan` with hydrated canonical authorities.
@@ -280,6 +442,15 @@ class AuditPipelineRunner:
             (m for m in self.matter_ingestor.list_matters() if m["matter_id"] == matter_id),
             {"matter_id": matter_id, "raw_files": []},
         )
+
+        blueprint_block = ""
+        if blueprint is not None:
+            blueprint_block = (
+                f"\n### Suggested Document Blueprint (d): {blueprint.title}\n"
+                f"Executive Summary Intent: {blueprint.executive_summary_intent}\n"
+                f"Starter Sections (adapt, refine, or expand to fit matter evidence & question):\n"
+                f"{json.dumps([s.model_dump() for s in blueprint.sections], indent=2)}\n"
+            )
 
         system_instruction = (
             "You are the Lead Analytical Architect. Decompose the user's question (c) into "
@@ -296,7 +467,8 @@ class AuditPipelineRunner:
             f"### User Request (c)\n{question}\n\n"
             f"### Available Project Files (a) in matter '{matter_id}'\n"
             f"{json.dumps(matter_info.get('raw_files', []), indent=2)}\n\n"
-            f"### Canonical Knowledge Catalog (b) — INDEX.md\n{index_md}\n\n"
+            f"### Canonical Knowledge Catalog (b) — INDEX.md\n{index_md}\n"
+            f"{blueprint_block}\n"
             "Inspect relevant canonical TOCs/authorities with your tools if needed, then emit an OutlinePlan JSON."
         )
         plan = self.llm.run_tool_loop(
@@ -307,18 +479,110 @@ class AuditPipelineRunner:
         )
 
         # Hydrate exact canonical quotes/URLs from disk to prevent paraphrase drift
-        for sec in plan.sections:
-            hydrated = []
-            for ref in sec.governing_authorities:
-                canonical_entry = self.canonical_router.get_authority(ref.auth_id)
-                hydrated.append(canonical_entry if canonical_entry is not None else ref)
-            sec.governing_authorities = hydrated
-
+        self._hydrate_outline_authorities(plan)
         return plan
 
     # ------------------------------------------------------------------
-    # Stage 2: Agentic Evidence Harvesting
+    # Stage 2: Shared Matter Fact Pool & Agentic Evidence Harvesting
     # ------------------------------------------------------------------
+
+    def _shared_facts_path(self, matter_id: str) -> Path:
+        matter_dir, _, _, _ = self.matter_ingestor._matter_dirs(matter_id)
+        return matter_dir / "shared_facts.json"
+
+    def _active_raw_hashes(self, matter_id: str) -> Dict[str, str]:
+        _, raw_dir, _, _ = self.matter_ingestor._matter_dirs(matter_id)
+        if not raw_dir.exists():
+            return {}
+        return {
+            p.name: _sha256_short(p.read_bytes())
+            for p in raw_dir.iterdir()
+            if p.is_file()
+        }
+
+    def load_shared_facts(self, matter_id: str) -> List[Dict[str, Any]]:
+        """Loads cached verified facts for `matter_id`, pruning deleted/stale files."""
+        sf_path = self._shared_facts_path(matter_id)
+        if not sf_path.exists():
+            return []
+        try:
+            payload = json.loads(sf_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        raw_facts = payload.get("facts", []) if isinstance(payload, dict) else []
+        active_hashes = self._active_raw_hashes(matter_id)
+
+        valid: List[Dict[str, Any]] = []
+        pruned = False
+        for entry in raw_facts:
+            if not isinstance(entry, dict):
+                pruned = True
+                continue
+            loc = entry.get("locator") or {}
+            fn = loc.get("file_name")
+            if active_hashes:
+                if not fn or fn not in active_hashes:
+                    pruned = True
+                    continue
+                cached_hash = loc.get("payload_hash")
+                if cached_hash and cached_hash != active_hashes[fn]:
+                    pruned = True
+                    continue
+            valid.append(entry)
+
+        if pruned:
+            sf_path.write_text(
+                json.dumps(
+                    {
+                        "matter_id": matter_id,
+                        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        "facts": valid,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        return valid
+
+    def merge_shared_facts(
+        self, matter_id: str, facts: List[ExtractedFactItem]
+    ) -> int:
+        """Merges verified facts into `matters/<matter_id>/shared_facts.json`."""
+        if not facts:
+            return len(self.load_shared_facts(matter_id))
+        existing = self.load_shared_facts(matter_id)
+        by_key: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+
+        def _dedupe_key(item: Dict[str, Any]) -> Tuple[str, str, str, str]:
+            loc = item.get("locator") or {}
+            return (
+                str(loc.get("file_name") or ""),
+                str(loc.get("locator_key") or ""),
+                str(loc.get("sheet") or ""),
+                str(loc.get("cell_range") or str(item.get("quote") or "")[:80]),
+            )
+
+        for entry in existing:
+            by_key[_dedupe_key(entry)] = entry
+        for fact in facts:
+            dumped = fact.model_dump(exclude_none=True)
+            by_key[_dedupe_key(dumped)] = dumped
+
+        merged = list(by_key.values())
+        sf_path = self._shared_facts_path(matter_id)
+        sf_path.parent.mkdir(parents=True, exist_ok=True)
+        sf_path.write_text(
+            json.dumps(
+                {
+                    "matter_id": matter_id,
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "facts": merged,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return len(merged)
 
     def run_stage2_harvester(
         self,
@@ -331,9 +595,10 @@ class AuditPipelineRunner:
         """Runs a tool-assisted fact & authority verification loop over `(a)` and `(b)`.
 
         Combines project file search tools `(a)` with canonical discovery tools `(b)`,
-        verifies and hydrates returned locators/values against disk via
-        `MatterIngestor.verify_and_hydrate_ledger`, and merges any newly discovered
-        canonical authorities into `section_plan.governing_authorities`.
+        injects reusable verified facts from prior filings in the same matter when active
+        file hashes still match, verifies returned locators/values against disk via
+        `MatterIngestor.verify_and_hydrate_ledger`, and persists newly verified facts into
+        `matters/<matter_id>/shared_facts.json`.
         """
         # Ensure deterministic ingestion has run before harvesting
         _, _, indexed_dir, _ = self.matter_ingestor._matter_dirs(matter_id)
@@ -354,18 +619,35 @@ class AuditPipelineRunner:
         if extra_queries:
             queries.extend(q for q in extra_queries if q not in queries)
 
+        shared_facts = self.load_shared_facts(matter_id)
+        shared_block = ""
+        if shared_facts:
+            compact_shared = [
+                {
+                    "fact_id": f.get("fact_id"),
+                    "title": f.get("title"),
+                    "quote": f.get("quote"),
+                    "locator": f.get("locator"),
+                }
+                for f in shared_facts[:25]
+            ]
+            shared_block = (
+                "\n\n### Verified Facts From Prior Filings in This Matter (Reuse Exact Locators If Relevant)\n"
+                + json.dumps(compact_shared, indent=2)
+            )
+
         system_instruction = (
             "You are a Forensic Fact Extractor. Use the project search and spreadsheet tools "
             "to gather exact evidence from the coordinate-indexed project inputs (a). You MUST "
             "copy the exact `locator` coordinates and verbatim `quote` (or `raw_value` and `formula`) "
             "returned by the tools—never invent page numbers, locator keys, or cell coordinates. "
             "MANDATORY LOCATOR COORDINATES: "
-            "(1) For markdown/pdf sources, set `locator.source_type` to `'markdown'` or `'pdf'`, set "
-            "`locator.file_name`, and ALWAYS populate `locator.locator_key` (preferring substantive body "
+            "(1) For markdown/pdf/docx sources, set `locator.source_type` to `'markdown'`, `'pdf'`, or `'docx'`, "
+            "set `locator.file_name`, and ALWAYS populate `locator.locator_key` (preferring substantive body "
             "paragraph or table-row locators over bare `# Heading` locators). "
-            "(2) For spreadsheet/CSV sources, set `locator.source_type` to `'spreadsheet'`, set "
-            "`locator.file_name`, and ALWAYS populate BOTH `locator.sheet` (e.g. `'CSV'`) AND exact "
-            "`locator.cell_range` (e.g. `'C2'`). "
+            "(2) For spreadsheet/CSV or extracted table cell sources, set `locator.source_type`, set "
+            "`locator.file_name`, and ALWAYS populate BOTH `locator.sheet` (e.g. `'CSV'`, `'DOCX_TBL_1'`, "
+            "`'PDF_P1_TBL1'`) AND exact `locator.cell_range` (e.g. `'C2'`). "
             "If evidence reveals an unanticipated issue governed by a canonical rule not listed "
             "under Governing Authorities, use the canonical browse/search/read tools to fetch it "
             "and list it in `additional_authorities`. Record unanswerable queries in `unresolved_gaps`, "
@@ -380,6 +662,7 @@ class AuditPipelineRunner:
             f"{json.dumps([a.model_dump() for a in section_plan.governing_authorities], indent=2)}\n\n"
             f"Required Fact Queries:\n"
             + "\n".join(f"- {q}" for q in queries)
+            + shared_block
             + "\n\nSearch the indexed files now and emit a VerifiedFactLedger JSON."
         )
 
@@ -393,6 +676,8 @@ class AuditPipelineRunner:
 
         # Programmatic L1 locator + quote verification and disk hydration
         ledger, _ = self.matter_ingestor.verify_and_hydrate_ledger(matter_id, ledger)
+        if ledger.verified_facts:
+            self.merge_shared_facts(matter_id, ledger.verified_facts)
 
         # Hydrate any newly discovered canonical authorities and merge into section_plan
         hydrated_extra = []
@@ -588,6 +873,50 @@ class AuditPipelineRunner:
     # Stage 4: 3-Point Section Auditor, Tension Audit & Editorial Stitcher
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _enforce_self_reported_floor(
+        draft: SectionOutput,
+        result: SectionAuditResult,
+    ) -> SectionAuditResult:
+        """Prevents claims backed solely by `self_reported` evidence from being marked `verified`."""
+        downgraded_claims: List[int] = []
+        for grp in draft.supports:
+            ev_tiers: List[str] = []
+            for item in grp.items:
+                if item.type == "evidence" and item.locator is not None:
+                    ev_tiers.append(item.locator.reliability_tier or "primary_record")
+                for sub in item.sub_supports:
+                    if sub.type == "evidence" and sub.locator is not None:
+                        ev_tiers.append(sub.locator.reliability_tier or "primary_record")
+            if not ev_tiers:
+                continue
+            if all(t == "self_reported" for t in ev_tiers):
+                existing = result.node_verdicts.get(grp.n) or grp.audit
+                if existing is None or existing.status == "verified":
+                    prev_score = existing.score if existing is not None else 0.72
+                    result.node_verdicts[grp.n] = NodeAudit(
+                        status="assumption",
+                        score=min(float(prev_score), 0.74),
+                        evaluator_type="deterministic",
+                        evaluator_note=(
+                            "Downgraded from verified to assumption: claim rests solely on "
+                            "self_reported input(s) without primary_record or secondary_analysis corroboration."
+                        ),
+                    )
+                    downgraded_claims.append(grp.n)
+
+        if downgraded_claims:
+            note = (
+                f"Source-reliability gate downgraded claim(s) {downgraded_claims} to `assumption` "
+                "pending primary_record or secondary_analysis corroboration."
+            )
+            result.audit_rationale = (
+                f"{result.audit_rationale} {note}".strip()
+                if result.audit_rationale
+                else note
+            )
+        return result
+
     def run_stage4_section_auditor(
         self,
         matter_id: str,
@@ -616,6 +945,8 @@ class AuditPipelineRunner:
             "(b) check_b_congruence: surrounding source context strictly entails each factual claim "
             "without cherry-picking, distorting numbers/entities, or dropping disqualifying exceptions; "
             "(c) check_c_intent: the section answers its stated_intention using the available closed-world inputs. "
+            "RELIABILITY TIER RULE: Claims backed solely by `self_reported` materials (without `primary_record` "
+            "or `secondary_analysis` corroboration) must NOT be marked `verified`; classify them as `assumption`. "
             "CLOSED-WORLD HONESTY RULE: Under the Closed-World Evidence Constraint, the drafter CANNOT "
             "invent missing facts or unindexed legal authorities. If source records `(a)` or Canonical "
             "Authorities `(b)` omit required details (e.g., LLC member domiciles, missing party attribution, "
@@ -737,7 +1068,7 @@ class AuditPipelineRunner:
                     )
 
             if check_a and check_b and check_c and all_claims_entailed:
-                return SectionAuditResult(
+                res_pass = SectionAuditResult(
                     section_id=draft.section_id,
                     check_a_relevance=True,
                     check_b_congruence=True,
@@ -750,6 +1081,7 @@ class AuditPipelineRunner:
                     node_verdicts=node_verdicts,
                     decision_probabilities=probs,
                 )
+                return self._enforce_self_reported_floor(draft, res_pass)
 
             rejection_prompt = (
                 f"{prompt}\n\n"
@@ -770,7 +1102,7 @@ class AuditPipelineRunner:
             result.decision_probabilities = probs
             if not result.node_verdicts and node_verdicts:
                 result.node_verdicts = node_verdicts
-            return result
+            return self._enforce_self_reported_floor(draft, result)
 
         result = self.llm.generate_structured(
             prompt=prompt,
@@ -778,7 +1110,7 @@ class AuditPipelineRunner:
             response_model=SectionAuditResult,
         )
         result.section_id = draft.section_id
-        return result
+        return self._enforce_self_reported_floor(draft, result)
 
     def _draft_and_audit_section(
         self,
@@ -840,11 +1172,58 @@ class AuditPipelineRunner:
         assert draft is not None and audit_res is not None
         return draft, audit_res
 
+    def _collect_prior_bundle_claims(
+        self,
+        matter_id: Optional[str],
+        current_bundle_id: Optional[str] = None,
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+        """Collects compact claim summaries from previously saved bundles in `matter_id`."""
+        if not matter_id:
+            return [], {}
+        _, _, _, bundles_dir = self.matter_ingestor._matter_dirs(matter_id)
+        if not bundles_dir.exists():
+            return [], {}
+
+        prior_claims: List[Dict[str, Any]] = []
+        bundle_titles: Dict[str, str] = {}
+        for b_path in sorted(bundles_dir.glob("*.json")):
+            try:
+                loaded = CompiledBundle.model_validate_json(b_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            bid = loaded.bundle_id or b_path.stem
+            if current_bundle_id and bid == current_bundle_id:
+                continue
+            b_title = loaded.artifact.title or bid
+            bundle_titles[bid] = b_title
+            nodes = loaded.nodes
+            for nid, node in list(nodes.items()):
+                if node.type != "claim":
+                    continue
+                prior_claims.append(
+                    {
+                        "bundle_id": bid,
+                        "bundle_title": b_title,
+                        "claim_id": nid,
+                        "title": node.title,
+                        "text": node.clause_text or node.quote or "",
+                    }
+                )
+                if len(prior_claims) >= 35:
+                    return prior_claims, bundle_titles
+        return prior_claims, bundle_titles
+
     def run_stage4_cross_section_tensions(
-        self, sections: List[SectionOutput]
+        self,
+        sections: List[SectionOutput],
+        matter_id: Optional[str] = None,
+        current_bundle_id: Optional[str] = None,
     ) -> List[TensionObject]:
-        """Detects logical or quantitative contradictions across compiled sections."""
-        if len(sections) < 2:
+        """Detects contradictions across compiled sections AND against prior matter bundles."""
+        prior_bundle_claims, bundle_titles = self._collect_prior_bundle_claims(
+            matter_id, current_bundle_id=current_bundle_id
+        )
+        if len(sections) < 2 and not prior_bundle_claims:
             return []
 
         claim_summaries = []
@@ -879,21 +1258,43 @@ class AuditPipelineRunner:
                     }
                 )
 
+        prior_section = (
+            f"\n\nPrior Compiled Bundles in Matter '{matter_id}':\n{json.dumps(prior_bundle_claims, indent=2)}"
+            if prior_bundle_claims
+            else ""
+        )
         system_instruction = (
-            "You are a Cross-Section Consistency Auditor. Inspect all claims, full section context, "
-            "and underlying L1 support values/formulas across sections. Flag only genuine numerical "
-            "discrepancies, scope conflicts, or logical tensions. Use exact `claim_id` strings in "
-            "`involved_claim_ids`."
+            "You are a Cross-Section & Cross-Bundle Consistency Auditor. Inspect all claims, full section context, "
+            "and underlying L1 support values/formulas across sections—as well as any Prior Compiled Bundles in the same matter. "
+            "Flag only genuine numerical discrepancies, scope conflicts, or logical tensions. Use exact `claim_id` strings in "
+            "`involved_claim_ids`. If a contradiction involves a claim from a Prior Compiled Bundle, set "
+            "`tension_scope='cross_bundle'` and populate `conflicting_bundle_id` and `conflicting_bundle_title`; "
+            "otherwise use `tension_scope='intra_document'`."
         )
         prompt = (
             f"Sections context:\n{json.dumps(sections_context, indent=2)}\n\n"
             f"Claims across sections:\n{json.dumps(claim_summaries, indent=2)}"
+            f"{prior_section}"
         )
         res = self.llm.generate_structured(
             prompt=prompt,
             system_instruction=system_instruction,
             response_model=CrossSectionAuditOutput,
         )
+        prior_claim_to_bundle = {c["claim_id"]: (c["bundle_id"], c["bundle_title"]) for c in prior_bundle_claims}
+        for t in res.tensions:
+            if t.conflicting_bundle_id or t.tension_scope == "cross_bundle":
+                t.tension_scope = "cross_bundle"
+                if t.conflicting_bundle_id and not t.conflicting_bundle_title:
+                    t.conflicting_bundle_title = bundle_titles.get(t.conflicting_bundle_id)
+            else:
+                for cid in t.involved_claim_ids:
+                    if cid in prior_claim_to_bundle:
+                        bid, btitle = prior_claim_to_bundle[cid]
+                        t.tension_scope = "cross_bundle"
+                        t.conflicting_bundle_id = bid
+                        t.conflicting_bundle_title = btitle
+                        break
         return res.tensions
 
     def run_stage4_stitcher(
@@ -1066,27 +1467,64 @@ class AuditPipelineRunner:
         try:
             run.status = "running"
             run.error = None
+            blueprint: Optional[DocumentBlueprint] = None
+            if run.blueprint_id and run.blueprint_mode != "none":
+                blueprint = self.blueprint_store.get_blueprint(run.blueprint_id)
+                if blueprint is None:
+                    raise FileNotFoundError(f"Document blueprint '{run.blueprint_id}' not found.")
+
+            effective_req_domains = run.canonical_domains
+            if (
+                effective_req_domains is None
+                and blueprint is not None
+                and blueprint.default_domains
+            ):
+                avail = {d["domain"] for d in self.canonical_router.list_domains()}
+                matching = [d for d in blueprint.default_domains if d in avail]
+                if matching:
+                    effective_req_domains = matching
+
             selected_domains = run.selected_domains or self.resolve_canonical_domains(
-                run.question, run.canonical_domains
+                run.question, effective_req_domains
             )
             run.selected_domains = selected_domains
             self.save_run(run)
 
-            # Stage 1: Question decomposition & canonical mapping
+            # Stage 1: Question decomposition & canonical mapping (or strict Blueprint (d))
             if run.outline_plan is None:
                 domain_label = ", ".join(selected_domains) if selected_domains else "none (evidence-only)"
-                record_progress(
-                    "stage_1",
-                    f"Decomposing question and mapping canonical authorities (domains: {domain_label})...",
-                )
-                plan = self.run_stage1_outline(
-                    run.matter_id,
-                    run.question,
-                    progress_callback=record_progress,
-                    canonical_domains=selected_domains,
-                )
-                run.outline_plan = plan
-                record_progress("stage_1", f"Planned {len(plan.sections)} sections.")
+                if blueprint is not None and run.blueprint_mode == "strict":
+                    rendered_title = (
+                        blueprint.document_title_template
+                        .replace("{matter_id}", run.matter_id)
+                        .replace("{question}", run.question[:80])
+                    )
+                    plan = OutlinePlan(
+                        document_title=rendered_title,
+                        executive_summary_intent=blueprint.executive_summary_intent,
+                        sections=[s.model_copy(deep=True) for s in blueprint.sections],
+                    )
+                    self._hydrate_outline_authorities(plan)
+                    run.outline_plan = plan
+                    record_progress(
+                        "stage_1",
+                        f"Loaded strict Document Blueprint '{blueprint.title}' with "
+                        f"{len(plan.sections)} locked section(s) (domains: {domain_label}).",
+                    )
+                else:
+                    record_progress(
+                        "stage_1",
+                        f"Decomposing question and mapping canonical authorities (domains: {domain_label})...",
+                    )
+                    plan = self.run_stage1_outline(
+                        run.matter_id,
+                        run.question,
+                        progress_callback=record_progress,
+                        canonical_domains=selected_domains,
+                        blueprint=blueprint if run.blueprint_mode == "guided" else None,
+                    )
+                    run.outline_plan = plan
+                    record_progress("stage_1", f"Planned {len(plan.sections)} sections.")
                 if run.checkpoint_mode:
                     run.status = "awaiting_stage1_approval"
                     record_progress(
@@ -1167,7 +1605,11 @@ class AuditPipelineRunner:
                 "stage_4_global",
                 "Checking cross-section tensions and compiling DAG...",
             )
-            tensions = self.run_stage4_cross_section_tensions(ordered_sections)
+            tensions = self.run_stage4_cross_section_tensions(
+                ordered_sections,
+                matter_id=run.matter_id,
+                current_bundle_id=run.bundle_id,
+            )
             smoothed_map: Optional[Dict[str, str]] = None
             if run.smooth_transitions:
                 record_progress(
@@ -1568,7 +2010,11 @@ class AuditPipelineRunner:
         ordered_sections = [
             sections_map[s.section_id] for s in plan.sections if s.section_id in sections_map
         ]
-        tensions = self.run_stage4_cross_section_tensions(ordered_sections)
+        tensions = self.run_stage4_cross_section_tensions(
+            ordered_sections,
+            matter_id=bundle.matter_id,
+            current_bundle_id=bundle.bundle_id,
+        )
         smoothed_map = (
             self.run_stage4_stitcher(ordered_sections) if smooth_transitions else None
         )

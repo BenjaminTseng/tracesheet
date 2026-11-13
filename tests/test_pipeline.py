@@ -1582,3 +1582,406 @@ def test_canonical_domain_selection_explicit_and_auto_decision_routing(tmp_path:
     dec_calls = [c for c in mock_llm.call_log if c.get("method") == "evaluate_decisions"]
     assert len(dec_calls) >= 1
     assert set(dec_calls[0]["questions"].keys()) == {"domain_legal", "domain_medical"}
+
+
+def test_stage4_enforces_self_reported_assumption_floor(tmp_path: Path) -> None:
+    """Claims backed solely by `self_reported` files must be downgraded from `verified` to `assumption`."""
+    from app.models import SectionOutput
+
+    canonical_dir = tmp_path / "canonical"
+    canonical_dir.mkdir(parents=True)
+    (canonical_dir / "INDEX.md").write_text("# Empty\n", encoding="utf-8")
+    router = CanonicalRouter(canonical_dir)
+
+    ingestor = MatterIngestor(tmp_path / "matters")
+    ingestor.create_matter("m_rel")
+    _, m_raw, _, _ = ingestor._matter_dirs("m_rel")
+    (m_raw / "Owner_Survey.md").write_text("# Owner Survey\n\nAnnual revenue is $2.4M.\n", encoding="utf-8")
+    (m_raw / "Bank_Stmt.md").write_text("# Bank Statement\n\nCash on hand is $180,000.\n", encoding="utf-8")
+    ingestor.set_file_metadata("m_rel", "Owner_Survey.md", "self_reported", "Client questionnaire")
+    ingestor.set_file_metadata("m_rel", "Bank_Stmt.md", "primary_record", "Chase monthly statement")
+    ingestor.ingest_matter("m_rel")
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+                "node_verdicts": {
+                    1: {"status": "verified", "score": 0.95, "evaluator_type": "llm_auditor", "evaluator_note": "Quoted cleanly."},
+                    2: {"status": "verified", "score": 0.98, "evaluator_type": "llm_auditor", "evaluator_note": "Primary bank match."},
+                },
+            }
+        }
+    )
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    sec_plan = SectionPlan(
+        section_id="sec_01",
+        section_title="Financials",
+        stated_intention="Verify revenue and cash.",
+        required_fact_queries=["Revenue", "Cash"],
+    )
+    draft = SectionOutput.model_validate(
+        {
+            "section_id": "sec_01",
+            "section_title": "Financials",
+            "text": "Revenue is <ref n='1'>$2.4M</ref> and cash is <ref n='2'>$180,000</ref>.",
+            "supports": [
+                {
+                    "n": 1,
+                    "reasoning": "From owner survey.",
+                    "items": [
+                        {
+                            "ref_id": "f1",
+                            "type": "evidence",
+                            "title": "Owner Survey",
+                            "quote": "Annual revenue is $2.4M.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Owner_Survey.md",
+                                "locator_key": "OWNER_SURVEY-SEC-2",
+                                "reliability_tier": "self_reported",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "n": 2,
+                    "reasoning": "From bank statement.",
+                    "items": [
+                        {
+                            "ref_id": "f2",
+                            "type": "evidence",
+                            "title": "Bank Statement",
+                            "quote": "Cash on hand is $180,000.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Bank_Stmt.md",
+                                "locator_key": "BANK_STMT-SEC-2",
+                                "reliability_tier": "primary_record",
+                            },
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    audit = runner.run_stage4_section_auditor("m_rel", sec_plan, draft)
+    assert audit.passed is True
+    assert audit.node_verdicts[1].status == "assumption"
+    assert audit.node_verdicts[1].evaluator_type == "deterministic"
+    assert audit.node_verdicts[2].status == "verified"
+
+
+def test_shared_matter_fact_pool_and_cross_bundle_tension_detection(tmp_path: Path) -> None:
+    """Verifies `shared_facts.json` reuse/invalidation and cross-bundle contradiction detection."""
+    canonical_dir = tmp_path / "canonical"
+    canonical_dir.mkdir(parents=True)
+    (canonical_dir / "INDEX.md").write_text("# Empty\n", encoding="utf-8")
+    router = CanonicalRouter(canonical_dir)
+
+    ingestor = MatterIngestor(tmp_path / "matters")
+    ingestor.create_matter("m_shared")
+    _, m_raw, _, _ = ingestor._matter_dirs("m_shared")
+    (m_raw / "Bank.md").write_text("# Bank\n\nOperating cash equals $50,000.\n", encoding="utf-8")
+    (m_raw / "Temp.md").write_text("# Temp\n\nTemporary lease expires June 1.\n", encoding="utf-8")
+    ingestor.ingest_matter("m_shared")
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": [
+                {
+                    "document_title": "First Day Cash Motion",
+                    "executive_summary_intent": "Verify opening cash.",
+                    "sections": [
+                        {
+                            "section_id": "sec_01",
+                            "section_title": "Opening Cash",
+                            "stated_intention": "State opening cash.",
+                            "required_fact_queries": ["Operating cash"],
+                        }
+                    ],
+                },
+                {
+                    "document_title": "Reorganization Plan",
+                    "executive_summary_intent": "Analyze plan cash.",
+                    "sections": [
+                        {
+                            "section_id": "sec_01",
+                            "section_title": "Plan Liquidity",
+                            "stated_intention": "Assess liquidity against prior filings.",
+                            "required_fact_queries": ["Operating cash"],
+                        }
+                    ],
+                },
+            ],
+            "VerifiedFactLedger": [
+                {
+                    "section_id": "sec_01",
+                    "verified_facts": [
+                        {
+                            "fact_id": "f_cash",
+                            "query_addressed": "Operating cash",
+                            "title": "Operating Cash",
+                            "quote": "Operating cash equals $50,000.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Bank.md",
+                                "locator_key": "BANK-SEC-2",
+                            },
+                        },
+                        {
+                            "fact_id": "f_temp",
+                            "query_addressed": "Lease",
+                            "title": "Lease Expiry",
+                            "quote": "Temporary lease expires June 1.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Temp.md",
+                                "locator_key": "TEMP-SEC-2",
+                            },
+                        },
+                    ],
+                },
+                {
+                    "section_id": "sec_01",
+                    "verified_facts": [
+                        {
+                            "fact_id": "f_cash2",
+                            "query_addressed": "Operating cash",
+                            "title": "Operating Cash",
+                            "quote": "Operating cash equals $50,000.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Bank.md",
+                                "locator_key": "BANK-SEC-2",
+                            },
+                        }
+                    ],
+                },
+            ],
+            "SectionOutput": [
+                {
+                    "section_id": "sec_01",
+                    "section_title": "Opening Cash",
+                    "text": "Cash on hand is <ref n='1'>$50,000</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "reasoning": "From bank statement.",
+                            "items": [
+                                {
+                                    "ref_id": "f_cash",
+                                    "type": "evidence",
+                                    "title": "Bank",
+                                    "quote": "Operating cash equals $50,000.",
+                                    "locator": {"source_type": "markdown", "file_name": "Bank.md", "locator_key": "BANK-SEC-2"},
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "section_id": "sec_01",
+                    "section_title": "Plan Liquidity",
+                    "text": "Projected cash available is <ref n='1'>$120,000</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "reasoning": "Projected figure.",
+                            "items": [
+                                {
+                                    "ref_id": "f_cash2",
+                                    "type": "evidence",
+                                    "title": "Bank",
+                                    "quote": "Operating cash equals $50,000.",
+                                    "locator": {"source_type": "markdown", "file_name": "Bank.md", "locator_key": "BANK-SEC-2"},
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+            "CrossSectionAuditOutput": {
+                "tensions": [
+                    {
+                        "tension_id": "t_cross_1",
+                        "involved_claim_ids": ["claim_sec_01_1"],
+                        "severity": "blocker",
+                        "description": "Plan Liquidity asserts $120,000 cash while First Day Cash Motion stated $50,000.",
+                        "tension_scope": "cross_bundle",
+                        "conflicting_bundle_id": "cash_motion",
+                    }
+                ]
+            },
+        }
+    )
+
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    b1 = runner.run_full_pipeline("m_shared", "State opening cash", bundle_id="cash_motion", smooth_transitions=False)
+    assert b1.bundle_id == "cash_motion"
+
+    # Both Bank.md and Temp.md facts persisted in shared_facts.json
+    shared = runner.load_shared_facts("m_shared")
+    assert {f["locator"]["file_name"] for f in shared} == {"Bank.md", "Temp.md"}
+
+    # Deleting Temp.md invalidates its entry in shared_facts.json automatically
+    ingestor.delete_matter_file("m_shared", "Temp.md")
+    pruned_shared = runner.load_shared_facts("m_shared")
+    assert {f["locator"]["file_name"] for f in pruned_shared} == {"Bank.md"}
+
+    # Bundle 2 sees shared_facts in Stage 2 prompt AND flags cross-bundle tension against cash_motion
+    b2 = runner.run_full_pipeline("m_shared", "Assess reorganization liquidity", bundle_id="reorg_plan", smooth_transitions=False)
+    stage2_calls = [c for c in mock_llm.call_log if c.get("model") == "VerifiedFactLedger"]
+    assert "Verified Facts From Prior Filings in This Matter" in stage2_calls[-1]["prompt"]
+    assert len(b2.audit_summary.cross_section_tensions) == 1
+    assert b2.audit_summary.cross_section_tensions[0].tension_scope == "cross_bundle"
+    assert b2.audit_summary.cross_section_tensions[0].conflicting_bundle_id == "cash_motion"
+    assert b2.audit_summary.cross_section_tensions[0].conflicting_bundle_title == "First Day Cash Motion"
+
+
+def test_document_blueprint_strict_and_guided_execution(tmp_path: Path) -> None:
+    """Verifies starter blueprints, `strict` Stage-1 bypass, and `guided` Stage-1 prompt seeding."""
+    canonical_dir = tmp_path / "canonical"
+    (canonical_dir / "legal").mkdir(parents=True)
+    (canonical_dir / "legal" / "rules.md").write_text(
+        "## [AUTH:R1] Rule 1\n- **Title:** Rule 1\n- **Verbatim Holding:** Must document payroll.\n",
+        encoding="utf-8",
+    )
+    (canonical_dir / "INDEX.md").write_text("- **`[legal]`**: `legal/rules.md` (`AUTH:R1`)\n", encoding="utf-8")
+    router = CanonicalRouter(canonical_dir)
+
+    ingestor = MatterIngestor(tmp_path / "matters")
+    ingestor.create_matter("m_bp")
+    _, m_raw, _, _ = ingestor._matter_dirs("m_bp")
+    (m_raw / "Pay.md").write_text("# Pay\n\nTotal payroll is $9,000.\n", encoding="utf-8")
+    ingestor.ingest_matter("m_bp")
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Guided Outline",
+                "executive_summary_intent": "Guided test.",
+                "sections": [
+                    {
+                        "section_id": "sec_01",
+                        "section_title": "Payroll Check",
+                        "stated_intention": "Check payroll.",
+                        "required_fact_queries": ["Total payroll"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Total payroll",
+                        "title": "Payroll Total",
+                        "quote": "Total payroll is $9,000.",
+                        "locator": {"source_type": "markdown", "file_name": "Pay.md", "locator_key": "PAY-SEC-2"},
+                    }
+                ],
+            },
+            "SectionOutput": {
+                "section_id": "sec_01",
+                "section_title": "Payroll Check",
+                "text": "Total payroll is <ref n='1'>$9,000</ref>.",
+                "supports": [
+                    {
+                        "n": 1,
+                        "reasoning": "From Pay.md.",
+                        "items": [
+                            {
+                                "ref_id": "f1",
+                                "type": "evidence",
+                                "title": "Pay.md",
+                                "quote": "Total payroll is $9,000.",
+                                "locator": {"source_type": "markdown", "file_name": "Pay.md", "locator_key": "PAY-SEC-2"},
+                            }
+                        ],
+                    }
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+            "CrossSectionAuditOutput": {"tensions": []},
+        }
+    )
+
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    starters = runner.blueprint_store.list_blueprints()
+    assert {bp.blueprint_id for bp in starters} >= {"ch11_wage_motion", "clinical_intervention_synthesis"}
+
+    from app.models import CanonicalAuthorityRef, DocumentBlueprint
+
+    custom_bp = runner.blueprint_store.save_blueprint(
+        DocumentBlueprint(
+            blueprint_id="custom_pay_bp",
+            title="Custom Payroll Template",
+            domain="legal",
+            default_domains=["legal"],
+            document_title_template="Custom Memo — {matter_id}",
+            executive_summary_intent="Check payroll strictly.",
+            sections=[
+                SectionPlan(
+                    section_id="sec_01",
+                    section_title="Locked Payroll Section",
+                    stated_intention="Verify payroll total.",
+                    governing_authorities=[
+                        CanonicalAuthorityRef(auth_id="AUTH:R1", title="Rule 1", verbatim_quote="placeholder")
+                    ],
+                    required_fact_queries=["Total payroll"],
+                )
+            ],
+        )
+    )
+    assert custom_bp.blueprint_id == "custom_pay_bp"
+
+    # Strict mode skips Stage 1 LLM completely and hydrates AUTH:R1 from router
+    strict_run = PipelineRunRecord(
+        run_id="run_strict_bp",
+        matter_id="m_bp",
+        question="Analyze payroll",
+        bundle_id="strict_bundle",
+        smooth_transitions=False,
+        blueprint_id="custom_pay_bp",
+        blueprint_mode="strict",
+    )
+    completed_strict, b_strict = runner.execute_run(strict_run)
+    assert b_strict is not None
+    assert not any(c.get("model") == "OutlinePlan" for c in mock_llm.call_log)
+    assert completed_strict.outline_plan is not None
+    assert completed_strict.outline_plan.sections[0].governing_authorities[0].verbatim_quote == "Must document payroll."
+
+    # Guided mode passes blueprint structure into Stage 1 LLM prompt
+    guided_run = PipelineRunRecord(
+        run_id="run_guided_bp",
+        matter_id="m_bp",
+        question="Analyze payroll",
+        bundle_id="guided_bundle",
+        smooth_transitions=False,
+        blueprint_id="custom_pay_bp",
+        blueprint_mode="guided",
+    )
+    _, b_guided = runner.execute_run(guided_run)
+    assert b_guided is not None
+    stage1_calls = [c for c in mock_llm.call_log if c.get("model") == "OutlinePlan"]
+    assert len(stage1_calls) == 1
+    assert "Suggested Document Blueprint (d): Custom Payroll Template" in stage1_calls[0]["prompt"]

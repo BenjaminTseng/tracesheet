@@ -7,9 +7,9 @@ This module implements:
    (or un-anchored files under `canonical/<domain>/`) into deterministic `[AUTH:...]`
    anchored Markdown files and auto-generates `canonical/INDEX.md`.
 3. `MatterIngestor`: Deterministically converts raw project files under
-   `matters/<matter_id>/inputs/raw/` (`.pdf`, `.xlsx`, `.csv`, `.md`, `.txt`) into
-   coordinate-stamped Markdown (`*.indexed.md`) and spreadsheet indices
-   (`sheets_index.jsonl`), and exposes deterministic read-only search tools so
+   `matters/<matter_id>/inputs/raw/` (`.pdf`, `.docx`, `.xlsx`, `.xlsm`, `.csv`,
+   `.md`, `.txt`) into coordinate-stamped Markdown (`*.indexed.md`) and table/spreadsheet
+   indices (`sheets_index.jsonl`), and exposes deterministic read-only search tools so
    Stage 2 LLM agents copy pre-computed `SourceLocator` objects instead of guessing
    page numbers, bounding boxes, or cell coordinates.
 """
@@ -35,8 +35,11 @@ from app.models import (
     CanonicalAuthorityRef,
     CanonicalDocumentCard,
     CanonicalDocumentSynopsisDraft,
+    MatterFileMetadata,
     SectionOutput,
     SourceLocator,
+    SourceReliabilityTier,
+    SourceType,
     UnresolvedGapItem,
     VerifiedFactLedger,
 )
@@ -130,27 +133,135 @@ class CanonicalRouter:
         """
         self.canonical_dir = canonical_dir
 
-    def get_index_markdown(self) -> str:
-        """Reads `canonical/INDEX.md` for direct injection into Stage 1 planning.
+    @staticmethod
+    def _domain_of(rel_path: Optional[str]) -> str:
+        """Extracts top-level canonical domain folder name from a relative path."""
+        if not rel_path:
+            return "general"
+        parts = Path(rel_path).parts
+        return parts[0] if len(parts) > 1 else "general"
+
+    def list_domains(self) -> List[Dict[str, Any]]:
+        """Summarizes all canonical domains present in `catalog.json` or authority files."""
+        by_domain: Dict[str, Dict[str, Any]] = {}
+        catalog_path = self.canonical_dir / "catalog.json"
+        if catalog_path.exists():
+            try:
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                for doc in catalog.get("documents", []):
+                    dom = str(doc.get("domain") or "general").strip()
+                    bucket = by_domain.setdefault(
+                        dom,
+                        {
+                            "domain": dom,
+                            "document_count": 0,
+                            "authority_count": 0,
+                            "titles": [],
+                            "synopsis_preview": "",
+                        },
+                    )
+                    bucket["document_count"] += 1
+                    bucket["authority_count"] += int(doc.get("authority_count") or 0)
+                    if doc.get("title"):
+                        bucket["titles"].append(doc["title"])
+                    if doc.get("scope_synopsis") and not bucket["synopsis_preview"]:
+                        bucket["synopsis_preview"] = str(doc["scope_synopsis"])[:220]
+            except json.JSONDecodeError:
+                pass
+
+        for auth in self.list_authorities().values():
+            dom = self._domain_of(auth.source_file)
+            if dom not in by_domain:
+                by_domain[dom] = {
+                    "domain": dom,
+                    "document_count": 1,
+                    "authority_count": 0,
+                    "titles": [],
+                    "synopsis_preview": auth.title,
+                }
+            if not catalog_path.exists():
+                by_domain[dom]["authority_count"] += 1
+                if auth.title not in by_domain[dom]["titles"]:
+                    by_domain[dom]["titles"].append(auth.title)
+
+        return sorted(by_domain.values(), key=lambda d: d["domain"])
+
+    def get_index_markdown(self, domains: Optional[List[str]] = None) -> str:
+        """Reads `canonical/INDEX.md`, optionally filtered to selected canonical domains.
+
+        Args:
+            domains: Optional allowlist of canonical domain folder names. When omitted,
+                returns the complete `canonical/INDEX.md`.
 
         Returns:
-            Full contents of `INDEX.md`, or a fallback note if none exists yet.
+            Full or domain-filtered catalog Markdown for Stage 1 planning.
         """
-        index_path = self.canonical_dir / "INDEX.md"
-        if not index_path.exists():
-            return "# Canonical Index\nNo canonical INDEX.md found."
-        return index_path.read_text(encoding="utf-8")
+        if domains is None:
+            index_path = self.canonical_dir / "INDEX.md"
+            if not index_path.exists():
+                return "# Canonical Index\nNo canonical INDEX.md found."
+            return index_path.read_text(encoding="utf-8")
 
-    def list_authorities(self) -> Dict[str, CanonicalAuthorityRef]:
-        """Scans all Markdown files under `canonical/` for `[AUTH:...]` blocks.
+        allowed = {d.strip().lower() for d in domains if d and d.strip()}
+        if not allowed:
+            return "# Canonical Index (Filtered)\nNo canonical domains selected for this run."
+
+        catalog_path = self.canonical_dir / "catalog.json"
+        if catalog_path.exists():
+            try:
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                cards = [
+                    doc
+                    for doc in catalog.get("documents", [])
+                    if str(doc.get("domain") or "general").strip().lower() in allowed
+                ]
+                if not cards:
+                    return f"# Canonical Index (Domains: {', '.join(sorted(allowed))})\nNo matching canonical documents."
+                lines = [
+                    f"# Canonical Knowledge Catalog `(b)` — Scoped ({', '.join(sorted(allowed))})",
+                    "",
+                    "| Domain | Document ID | Tier | Scope | Sections | TOC File | Scope Synopsis |",
+                    "| :--- | :--- | :--- | :--- | ---: | :--- | :--- |",
+                ]
+                for card in cards:
+                    syn = str(card.get("scope_synopsis", "")).replace("\n", " ").replace("|", "/").strip()
+                    scope = str(card.get("jurisdiction_scope", "")).replace("|", "/").strip()
+                    lines.append(
+                        f"| `{card.get('domain')}` | `{card.get('doc_id')}` | `{card.get('authority_tier')}` | "
+                        f"{scope} | {card.get('authority_count', 0)} | `{card.get('toc_file')}` | {syn} |"
+                    )
+                return "\n".join(lines)
+            except json.JSONDecodeError:
+                pass
+
+        scoped_auths = self.list_authorities(domains=list(allowed))
+        if not scoped_auths:
+            return f"# Canonical Index (Domains: {', '.join(sorted(allowed))})\nNo matching canonical authorities."
+        lines = [f"# Canonical Index (Domains: {', '.join(sorted(allowed))})"]
+        for auth in scoped_auths.values():
+            lines.append(f"- `[{auth.auth_id}]` ({auth.source_file}): {auth.title}")
+        return "\n".join(lines)
+
+    def list_authorities(
+        self, domains: Optional[List[str]] = None
+    ) -> Dict[str, CanonicalAuthorityRef]:
+        """Scans Markdown files under `canonical/` for `[AUTH:...]` blocks.
+
+        Args:
+            domains: Optional allowlist of canonical domain folder names.
 
         Returns:
-            Dictionary mapping `auth_id` (e.g., `'AUTH:HERTZ-2010-NERVE-CENTER'`)
-            to `CanonicalAuthorityRef`.
+            Dictionary mapping `auth_id` to `CanonicalAuthorityRef`.
         """
         authorities: Dict[str, CanonicalAuthorityRef] = {}
         if not self.canonical_dir.exists():
             return authorities
+
+        allowed = (
+            {d.strip().lower() for d in domains if d and d.strip()}
+            if domains is not None
+            else None
+        )
 
         for md_path in sorted(self.canonical_dir.rglob("*.md")):
             rel_parts = md_path.relative_to(self.canonical_dir).parts
@@ -161,6 +272,8 @@ class CanonicalRouter:
             ):
                 continue
             rel_path = str(md_path.relative_to(self.canonical_dir))
+            if allowed is not None and self._domain_of(rel_path).lower() not in allowed:
+                continue
             content = md_path.read_text(encoding="utf-8")
             for auth in _parse_auth_blocks_from_text(content, rel_path):
                 authorities[auth.auth_id] = auth
@@ -202,13 +315,25 @@ class CanonicalRouter:
             )
         return "\n".join(chunks)
 
-    def build_stage1_tools(self) -> List[ToolDefinition]:
+    def build_stage1_tools(
+        self, domains: Optional[List[str]] = None
+    ) -> List[ToolDefinition]:
         """Constructs deterministic hierarchical discovery tools over canonical corpus `(b)`.
 
         Allows Stage 1 and Stage 2 agents to inspect per-document TOCs, search
         authorities filtered by domain/document, and fetch exact verbatim `[AUTH:...]`
         entries without stuffing an entire corpus into the prompt context.
         """
+        allowed_domains = (
+            {d.strip().lower() for d in domains if d and d.strip()}
+            if domains is not None
+            else None
+        )
+
+        def _is_rel_allowed(rel_path: Optional[str]) -> bool:
+            if allowed_domains is None:
+                return True
+            return self._domain_of(rel_path).lower() in allowed_domains
 
         def _toc_path_for(doc_id: str) -> Optional[Path]:
             normalized = doc_id.strip().lstrip("/")
@@ -224,7 +349,9 @@ class CanonicalRouter:
                 candidates.append(self.canonical_dir / f"{normalized}.toc.md")
             for cand in candidates:
                 if cand.exists():
-                    return cand
+                    rel = str(cand.relative_to(self.canonical_dir))
+                    if _is_rel_allowed(rel):
+                        return cand
             return None
 
         def browse_canonical_toc(doc_id: str) -> Dict[str, Any]:
@@ -245,7 +372,7 @@ class CanonicalRouter:
                     "source_file": a.source_file,
                     "preview": a.verbatim_quote[:140],
                 }
-                for a in self.list_authorities().values()
+                for a in self.list_authorities(domains=domains).values()
                 if a.source_file and normalized in a.source_file
             ]
             if not matches:
@@ -262,7 +389,7 @@ class CanonicalRouter:
             tokens = [t for t in re.findall(r"[a-z0-9§]+", q_lower) if len(t) >= 3]
             scored: List[Tuple[int, CanonicalAuthorityRef]] = []
 
-            for auth in self.list_authorities().values():
+            for auth in self.list_authorities(domains=domains).values():
                 src = (auth.source_file or "").lower()
                 if domain and not src.startswith(f"{domain.strip().lower()}/"):
                     continue
@@ -299,7 +426,7 @@ class CanonicalRouter:
 
         def read_canonical_authority(auth_id: str) -> Dict[str, Any]:
             auth = self.get_authority(auth_id)
-            if auth is None:
+            if auth is None or not _is_rel_allowed(auth.source_file):
                 return {"error": f"No canonical authority found with auth_id='{auth_id}'."}
             return auth.model_dump()
 
@@ -1298,29 +1425,247 @@ class MatterIngestor:
             )
         return results
 
-    def ingest_pdf(self, raw_path: Path, indexed_dir: Path) -> Tuple[Path, int]:
-        """Extracts coordinate-stamped paragraph blocks from a PDF using `pdfplumber`.
+    def _metadata_path(self, matter_id: str) -> Path:
+        """Returns path to per-matter file origin and reliability metadata JSON."""
+        matter_dir, _, _, _ = self._matter_dirs(matter_id)
+        return matter_dir / "inputs" / "file_metadata.json"
 
-        Groups extracted words into line-level blocks separated by vertical gaps,
-        computing integer `[x1, y1, x2, y2]` bounding boxes and embedding a
-        `<!-- LOCATOR: {...} -->` header above each block.
+    def load_file_metadata(self, matter_id: str) -> Dict[str, MatterFileMetadata]:
+        """Loads per-file origin & reliability metadata for a matter."""
+        path = self._metadata_path(matter_id)
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        result: Dict[str, MatterFileMetadata] = {}
+        for fn, item in raw.items():
+            if not isinstance(item, dict):
+                continue
+            try:
+                result[str(fn)] = MatterFileMetadata.model_validate(
+                    {"filename": str(fn), **item}
+                )
+            except Exception:
+                continue
+        return result
+
+    def set_file_metadata(
+        self,
+        matter_id: str,
+        filename: str,
+        reliability_tier: SourceReliabilityTier = "primary_record",
+        origin_description: Optional[str] = None,
+    ) -> MatterFileMetadata:
+        """Persists reliability tier and origin description for a matter input file."""
+        safe_name = Path(filename).name
+        if not safe_name or safe_name != filename or ".." in filename:
+            raise ValueError(f"Invalid filename: {filename}")
+        cleaned_origin = (origin_description or "").strip() or None
+        existing = self.load_file_metadata(matter_id)
+        entry = MatterFileMetadata(
+            filename=safe_name,
+            reliability_tier=reliability_tier,
+            origin_description=cleaned_origin,
+        )
+        existing[safe_name] = entry
+        path = self._metadata_path(matter_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {fn: meta.model_dump(exclude_none=True) for fn, meta in sorted(existing.items())}
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return entry
+
+    def delete_file_metadata(self, matter_id: str, filename: str) -> None:
+        """Removes saved metadata for a deleted matter input file, if present."""
+        existing = self.load_file_metadata(matter_id)
+        if filename not in existing:
+            return
+        existing.pop(filename, None)
+        path = self._metadata_path(matter_id)
+        payload = {fn: meta.model_dump(exclude_none=True) for fn, meta in sorted(existing.items())}
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _loc_meta_kwargs(meta: Optional[MatterFileMetadata]) -> Dict[str, Any]:
+        """Returns standard reliability metadata fields for constructing a `SourceLocator`."""
+        return {
+            "reliability_tier": meta.reliability_tier if meta else "primary_record",
+            "origin_description": meta.origin_description if meta else None,
+        }
+
+    @staticmethod
+    def _parse_cell_primitive(cleaned: str) -> Any:
+        """Parses plain numeric strings (including `$` / `,` formatted cells) when exact."""
+        candidate = cleaned.strip()
+        if not candidate:
+            return cleaned
+        numeric_str = candidate.replace(",", "")
+        if numeric_str.startswith("$"):
+            numeric_str = numeric_str[1:].strip()
+        try:
+            return float(numeric_str) if "." in numeric_str else int(numeric_str)
+        except ValueError:
+            return cleaned
+
+    def _table_rows_to_markdown_and_cells(
+        self,
+        raw_path: Path,
+        file_hash: str,
+        source_type: SourceType,
+        sheet_name: str,
+        rows: List[List[str]],
+        meta: Optional[MatterFileMetadata] = None,
+        page: Optional[int] = None,
+        bounding_box: Optional[List[int]] = None,
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Formats extracted table rows as pipe-delimited Markdown and cell index entries."""
+        max_cols = max((len(r) for r in rows), default=0)
+        if max_cols == 0:
+            return "", []
+
+        padded_rows = [r + [""] * (max_cols - len(r)) for r in rows]
+        esc = lambda val: val.replace("|", "\\|").strip()
+        header = "| " + " | ".join(esc(c) or f"Col {i + 1}" for i, c in enumerate(padded_rows[0])) + " |"
+        sep = "| " + " | ".join("---" for _ in range(max_cols)) + " |"
+        body_lines = [
+            "| " + " | ".join(esc(c) for c in row) + " |"
+            for row in padded_rows[1:]
+        ]
+        md_table = "\n".join([header, sep, *body_lines])
+
+        loc_meta = self._loc_meta_kwargs(meta)
+        cell_entries: List[Dict[str, Any]] = []
+        for r_idx, row in enumerate(padded_rows, start=1):
+            row_label = row[0].strip() if row else ""
+            for c_idx, val in enumerate(row, start=1):
+                cleaned = val.strip()
+                if not cleaned:
+                    continue
+                col_letter = openpyxl.utils.get_column_letter(c_idx)
+                coord = f"{col_letter}{r_idx}"
+                parsed_val = self._parse_cell_primitive(cleaned)
+                loc = SourceLocator(
+                    source_type=source_type,
+                    file_name=raw_path.name,
+                    page=page,
+                    sheet=sheet_name,
+                    cell_range=coord,
+                    bounding_box=bounding_box,
+                    raw_value=parsed_val,
+                    payload_hash=file_hash,
+                    **loc_meta,
+                )
+                cell_entries.append(
+                    {
+                        "file_name": raw_path.name,
+                        "sheet": sheet_name,
+                        "cell_range": coord,
+                        "line_item": row_label or coord,
+                        "display": cleaned,
+                        "raw_value": parsed_val,
+                        "formula": None,
+                        "locator": loc.model_dump(exclude_none=True),
+                    }
+                )
+        return md_table, cell_entries
+
+    def ingest_pdf(
+        self,
+        raw_path: Path,
+        indexed_dir: Path,
+        meta: Optional[MatterFileMetadata] = None,
+    ) -> Tuple[Path, int, List[Dict[str, Any]]]:
+        """Extracts coordinate-stamped tables and prose blocks from a PDF using `pdfplumber`.
+
+        Detects tables first via `page.find_tables()` (`<STEM>-P#-TBL#`), emits pipe-delimited
+        Markdown plus structured cell coordinates for `sheets_index.jsonl`, and excludes
+        in-table words before grouping prose lines (`<STEM>-P#-B#`).
 
         Args:
             raw_path: Path to the source `.pdf` file.
             indexed_dir: Target directory for `<filename>.indexed.md`.
+            meta: Optional persisted origin/reliability metadata for `raw_path`.
 
         Returns:
-            Tuple of `(output_markdown_path, block_count)`.
+            Tuple of `(output_markdown_path, block_count, table_cell_rows)`.
         """
         file_hash = _sha256_short(raw_path.read_bytes())
         stem = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_path.stem).upper()
+        loc_meta = self._loc_meta_kwargs(meta)
         md_blocks: List[str] = [f"# Indexed Document: {raw_path.name}\n"]
+        table_cell_rows: List[Dict[str, Any]] = []
         block_count = 0
 
         with pdfplumber.open(raw_path) as pdf:
             for page_idx, page in enumerate(pdf.pages, start=1):
-                words = page.extract_words() or []
-                if not words:
+                table_bboxes: List[Tuple[float, float, float, float]] = []
+                tables = page.find_tables() or []
+                for t_idx, table in enumerate(tables, start=1):
+                    extracted = table.extract() or []
+                    rows = [
+                        [re.sub(r"\s+", " ", (cell or "")).strip() for cell in row]
+                        for row in extracted
+                        if any((cell or "").strip() for cell in row)
+                    ]
+                    if not rows:
+                        continue
+                    bbox = getattr(table, "bbox", None) or (
+                        0.0,
+                        0.0,
+                        float(page.width),
+                        float(page.height),
+                    )
+                    bx0, btop, bx1, bbottom = (
+                        float(bbox[0]),
+                        float(bbox[1]),
+                        float(bbox[2]),
+                        float(bbox[3]),
+                    )
+                    table_bboxes.append((bx0 - 1.0, btop - 1.0, bx1 + 1.0, bbottom + 1.0))
+                    int_bbox = [int(bx0), int(btop), int(bx1), int(bbottom)]
+                    md_table, cell_rows = self._table_rows_to_markdown_and_cells(
+                        raw_path=raw_path,
+                        file_hash=file_hash,
+                        source_type="pdf",
+                        sheet_name=f"PDF_P{page_idx}_TBL{t_idx}",
+                        rows=rows,
+                        meta=meta,
+                        page=page_idx,
+                        bounding_box=int_bbox,
+                    )
+                    table_cell_rows.extend(cell_rows)
+                    block_count += 1
+                    loc = SourceLocator(
+                        source_type="pdf",
+                        file_name=raw_path.name,
+                        page=page_idx,
+                        bounding_box=int_bbox,
+                        locator_key=f"{stem}-P{page_idx}-TBL{t_idx}",
+                        payload_hash=file_hash,
+                        **loc_meta,
+                    )
+                    md_blocks.append(
+                        f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{md_table}\n"
+                    )
+
+                raw_words = page.extract_words() or []
+                if table_bboxes:
+                    words = [
+                        w
+                        for w in raw_words
+                        if not any(
+                            bx0 <= (float(w["x0"]) + float(w["x1"])) / 2.0 <= bx1
+                            and btop <= (float(w["top"]) + float(w["bottom"])) / 2.0 <= bbottom
+                            for bx0, btop, bx1, bbottom in table_bboxes
+                        )
+                    ]
+                else:
+                    words = raw_words
+
+                if not raw_words and not table_bboxes:
                     plain_text = (page.extract_text() or "").strip()
                     if plain_text:
                         block_count += 1
@@ -1331,11 +1676,14 @@ class MatterIngestor:
                             bounding_box=[0, 0, int(page.width), int(page.height)],
                             locator_key=f"{stem}-P{page_idx}-B1",
                             payload_hash=file_hash,
+                            **loc_meta,
                         )
                         md_blocks.append(
                             f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n"
                             f"{plain_text}\n"
                         )
+                    continue
+                if not words:
                     continue
 
                 # Group words into visual lines (tolerance 4pt) and then paragraphs
@@ -1379,6 +1727,7 @@ class MatterIngestor:
                         bounding_box=[x1, y1, x2, y2],
                         locator_key=f"{stem}-P{page_idx}-B{b_idx}",
                         payload_hash=file_hash,
+                        **loc_meta,
                     )
                     md_blocks.append(
                         f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{text}\n"
@@ -1386,13 +1735,120 @@ class MatterIngestor:
 
         out_path = indexed_dir / f"{raw_path.name}.indexed.md"
         out_path.write_text("\n".join(md_blocks), encoding="utf-8")
-        return out_path, block_count
+        return out_path, block_count, table_cell_rows
 
-    def ingest_markdown(self, raw_path: Path, indexed_dir: Path) -> Tuple[Path, int]:
+    def ingest_docx(
+        self,
+        raw_path: Path,
+        indexed_dir: Path,
+        meta: Optional[MatterFileMetadata] = None,
+    ) -> Tuple[Path, int, List[Dict[str, Any]]]:
+        """Extracts paragraph blocks (`SEC-#`) and Word tables (`TBL-#` + cell coords) from `.docx`."""
+        raw_bytes = raw_path.read_bytes()
+        file_hash = _sha256_short(raw_bytes)
+        stem = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_path.stem).upper()
+        loc_meta = self._loc_meta_kwargs(meta)
+        md_blocks: List[str] = [f"# Indexed Document: {raw_path.name}\n"]
+        table_cell_rows: List[Dict[str, Any]] = []
+        block_count = 0
+
+        w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+        with zipfile.ZipFile(raw_path) as zf:
+            if "word/document.xml" not in zf.namelist():
+                out_path = indexed_dir / f"{raw_path.name}.indexed.md"
+                out_path.write_text("\n".join(md_blocks), encoding="utf-8")
+                return out_path, 0, []
+            root = ET.fromstring(zf.read("word/document.xml"))
+
+        body = root.find(f"{w_ns}body")
+        if body is None:
+            out_path = indexed_dir / f"{raw_path.name}.indexed.md"
+            out_path.write_text("\n".join(md_blocks), encoding="utf-8")
+            return out_path, 0, []
+
+        sec_idx = 0
+        tbl_idx = 0
+        for child in list(body):
+            if child.tag == f"{w_ns}p":
+                text = "".join(t.text or "" for t in child.iter(f"{w_ns}t")).strip()
+                if not text:
+                    continue
+                p_style = child.find(f"{w_ns}pPr/{w_ns}pStyle")
+                style_val = p_style.attrib.get(f"{w_ns}val", "") if p_style is not None else ""
+                if style_val.lower().startswith("heading"):
+                    level_digits = "".join(ch for ch in style_val if ch.isdigit())
+                    level = min(4, max(1, int(level_digits))) if level_digits else 2
+                    rendered = f"{'#' * level} {text}"
+                else:
+                    rendered = text
+                sec_idx += 1
+                block_count += 1
+                loc = SourceLocator(
+                    source_type="docx",
+                    file_name=raw_path.name,
+                    locator_key=f"{stem}-SEC-{sec_idx}",
+                    payload_hash=file_hash,
+                    **loc_meta,
+                )
+                md_blocks.append(
+                    f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{rendered}\n"
+                )
+            elif child.tag == f"{w_ns}tbl":
+                rows: List[List[str]] = []
+                for tr in child.findall(f"{w_ns}tr"):
+                    row_vals: List[str] = []
+                    for tc in tr.findall(f"{w_ns}tc"):
+                        cell_paras = [
+                            "".join(t.text or "" for t in p.iter(f"{w_ns}t")).strip()
+                            for p in tc.findall(f"{w_ns}p")
+                        ]
+                        cell_text = re.sub(
+                            r"\s+",
+                            " ",
+                            " ".join(cp for cp in cell_paras if cp),
+                        ).strip()
+                        row_vals.append(cell_text)
+                    if any(v for v in row_vals):
+                        rows.append(row_vals)
+                if not rows:
+                    continue
+                tbl_idx += 1
+                md_table, cell_rows = self._table_rows_to_markdown_and_cells(
+                    raw_path=raw_path,
+                    file_hash=file_hash,
+                    source_type="docx",
+                    sheet_name=f"DOCX_TBL_{tbl_idx}",
+                    rows=rows,
+                    meta=meta,
+                )
+                table_cell_rows.extend(cell_rows)
+                block_count += 1
+                loc = SourceLocator(
+                    source_type="docx",
+                    file_name=raw_path.name,
+                    locator_key=f"{stem}-TBL-{tbl_idx}",
+                    payload_hash=file_hash,
+                    **loc_meta,
+                )
+                md_blocks.append(
+                    f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{md_table}\n"
+                )
+
+        out_path = indexed_dir / f"{raw_path.name}.indexed.md"
+        out_path.write_text("\n".join(md_blocks), encoding="utf-8")
+        return out_path, block_count, table_cell_rows
+
+    def ingest_markdown(
+        self,
+        raw_path: Path,
+        indexed_dir: Path,
+        meta: Optional[MatterFileMetadata] = None,
+    ) -> Tuple[Path, int]:
         """Splits a Markdown/text file into paragraph blocks stamped with locators."""
         content = raw_path.read_text(encoding="utf-8")
         file_hash = _sha256_short(content.encode("utf-8"))
         stem = re.sub(r"[^A-Za-z0-9_-]+", "_", raw_path.stem).upper()
+        loc_meta = self._loc_meta_kwargs(meta)
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", content) if p.strip()]
         md_blocks: List[str] = [f"# Indexed Document: {raw_path.name}\n"]
 
@@ -1402,6 +1858,7 @@ class MatterIngestor:
                 file_name=raw_path.name,
                 locator_key=f"{stem}-SEC-{idx}",
                 payload_hash=file_hash,
+                **loc_meta,
             )
             md_blocks.append(
                 f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{para}\n"
@@ -1411,7 +1868,11 @@ class MatterIngestor:
         out_path.write_text("\n".join(md_blocks), encoding="utf-8")
         return out_path, len(paragraphs)
 
-    def ingest_spreadsheet(self, raw_path: Path) -> List[Dict[str, Any]]:
+    def ingest_spreadsheet(
+        self,
+        raw_path: Path,
+        meta: Optional[MatterFileMetadata] = None,
+    ) -> List[Dict[str, Any]]:
         """Extracts cell coordinates, row line-item labels, formulas, and evaluated values.
 
         Performs a dual pass on `.xlsx` workbooks (`data_only=False` for formula strings
@@ -1419,11 +1880,13 @@ class MatterIngestor:
 
         Args:
             raw_path: Path to `.xlsx`, `.xlsm`, or `.csv` file.
+            meta: Optional persisted origin/reliability metadata for `raw_path`.
 
         Returns:
             List of cell index records ready for `sheets_index.jsonl`.
         """
         file_hash = _sha256_short(raw_path.read_bytes())
+        loc_meta = self._loc_meta_kwargs(meta)
         entries: List[Dict[str, Any]] = []
 
         if raw_path.suffix.lower() == ".csv":
@@ -1437,11 +1900,7 @@ class MatterIngestor:
                             continue
                         col_letter = openpyxl.utils.get_column_letter(c_idx)
                         coord = f"{col_letter}{r_idx}"
-                        parsed_val: Any = cleaned
-                        try:
-                            parsed_val = float(cleaned) if "." in cleaned else int(cleaned)
-                        except ValueError:
-                            pass
+                        parsed_val = self._parse_cell_primitive(cleaned)
                         loc = SourceLocator(
                             source_type="spreadsheet",
                             file_name=raw_path.name,
@@ -1449,6 +1908,7 @@ class MatterIngestor:
                             cell_range=coord,
                             raw_value=parsed_val,
                             payload_hash=file_hash,
+                            **loc_meta,
                         )
                         entries.append(
                             {
@@ -1498,6 +1958,7 @@ class MatterIngestor:
                         cell_range=coord,
                         raw_value=primitive,
                         payload_hash=file_hash,
+                        **loc_meta,
                     )
                     entries.append(
                         {
@@ -1537,32 +1998,69 @@ class MatterIngestor:
         for old_file in indexed_dir.glob("*.indexed.md"):
             old_file.unlink()
 
+        meta_map = self.load_file_metadata(matter_id)
         sheet_entries: List[Dict[str, Any]] = []
         indexed_files: List[Dict[str, Any]] = []
 
         raw_candidates = [p for p in sorted(raw_dir.iterdir()) if p.is_file()]
         for idx, raw_path in enumerate(raw_candidates, start=1):
             suffix = raw_path.suffix.lower()
+            meta = meta_map.get(raw_path.name)
+            rel_tier = meta.reliability_tier if meta else "primary_record"
+            origin_desc = meta.origin_description if meta else None
             if progress_callback:
                 progress_callback(
                     "ingest_file",
                     f"[{idx}/{len(raw_candidates)}] Indexing {raw_path.name}...",
                 )
             if suffix == ".pdf":
-                out_path, count = self.ingest_pdf(raw_path, indexed_dir)
+                out_path, count, table_cells = self.ingest_pdf(raw_path, indexed_dir, meta=meta)
+                sheet_entries.extend(table_cells)
                 indexed_files.append(
-                    {"raw": raw_path.name, "indexed": out_path.name, "blocks": count}
+                    {
+                        "raw": raw_path.name,
+                        "indexed": out_path.name,
+                        "blocks": count,
+                        "cells": len(table_cells),
+                        "reliability_tier": rel_tier,
+                        "origin_description": origin_desc,
+                    }
+                )
+            elif suffix == ".docx":
+                out_path, count, table_cells = self.ingest_docx(raw_path, indexed_dir, meta=meta)
+                sheet_entries.extend(table_cells)
+                indexed_files.append(
+                    {
+                        "raw": raw_path.name,
+                        "indexed": out_path.name,
+                        "blocks": count,
+                        "cells": len(table_cells),
+                        "reliability_tier": rel_tier,
+                        "origin_description": origin_desc,
+                    }
                 )
             elif suffix in (".xlsx", ".xlsm", ".csv"):
-                rows = self.ingest_spreadsheet(raw_path)
+                rows = self.ingest_spreadsheet(raw_path, meta=meta)
                 sheet_entries.extend(rows)
                 indexed_files.append(
-                    {"raw": raw_path.name, "indexed": "sheets_index.jsonl", "cells": len(rows)}
+                    {
+                        "raw": raw_path.name,
+                        "indexed": "sheets_index.jsonl",
+                        "cells": len(rows),
+                        "reliability_tier": rel_tier,
+                        "origin_description": origin_desc,
+                    }
                 )
             elif suffix in (".md", ".txt"):
-                out_path, count = self.ingest_markdown(raw_path, indexed_dir)
+                out_path, count = self.ingest_markdown(raw_path, indexed_dir, meta=meta)
                 indexed_files.append(
-                    {"raw": raw_path.name, "indexed": out_path.name, "blocks": count}
+                    {
+                        "raw": raw_path.name,
+                        "indexed": out_path.name,
+                        "blocks": count,
+                        "reliability_tier": rel_tier,
+                        "origin_description": origin_desc,
+                    }
                 )
             else:
                 logger.info("Skipping unsupported file type during ingest: %s", raw_path.name)
@@ -1587,7 +2085,7 @@ class MatterIngestor:
         if progress_callback:
             progress_callback(
                 "completed",
-                f"Indexed {len(indexed_files)} file(s) and {len(sheet_entries)} spreadsheet cells.",
+                f"Indexed {len(indexed_files)} file(s) and {len(sheet_entries)} table/spreadsheet cells.",
             )
         logger.info(
             "Ingested matter=%s files=%d sheet_cells=%d",
@@ -1598,7 +2096,7 @@ class MatterIngestor:
         return manifest
 
     def list_matter_files(self, matter_id: str) -> Dict[str, Any]:
-        """Returns detailed file metadata (`size_bytes`, indexed block/cell counts) for a matter."""
+        """Returns detailed file metadata (`size_bytes`, reliability tier, origin, indexed counts) for a matter."""
         _, raw_dir, indexed_dir, _ = self._matter_dirs(matter_id)
         manifest_path = indexed_dir / "manifest.json"
         manifest = (
@@ -1607,21 +2105,35 @@ class MatterIngestor:
             else {"files": [], "spreadsheet_cells_indexed": 0}
         )
         manifest_by_raw = {f.get("raw"): f for f in manifest.get("files", [])}
+        meta_map = self.load_file_metadata(matter_id)
         files: List[Dict[str, Any]] = []
         if raw_dir.exists():
             for raw_path in sorted(raw_dir.iterdir()):
                 if not raw_path.is_file():
                     continue
                 stat = raw_path.stat()
-                meta = manifest_by_raw.get(raw_path.name, {})
+                m_entry = manifest_by_raw.get(raw_path.name, {})
+                f_meta = meta_map.get(raw_path.name)
+                rel_tier = (
+                    f_meta.reliability_tier
+                    if f_meta is not None
+                    else m_entry.get("reliability_tier", "primary_record")
+                )
+                origin_desc = (
+                    f_meta.origin_description
+                    if f_meta is not None
+                    else m_entry.get("origin_description")
+                )
                 files.append(
                     {
                         "filename": raw_path.name,
                         "suffix": raw_path.suffix.lower(),
                         "size_bytes": stat.st_size,
-                        "indexed_artifact": meta.get("indexed"),
-                        "blocks": meta.get("blocks"),
-                        "cells": meta.get("cells"),
+                        "indexed_artifact": m_entry.get("indexed"),
+                        "blocks": m_entry.get("blocks"),
+                        "cells": m_entry.get("cells"),
+                        "reliability_tier": rel_tier,
+                        "origin_description": origin_desc,
                     }
                 )
         return {
@@ -1646,6 +2158,7 @@ class MatterIngestor:
         if not target.exists() or not target.is_file():
             raise FileNotFoundError(f"Matter file '{safe_name}' not found in '{matter_id}'.")
         target.unlink()
+        self.delete_file_metadata(matter_id, safe_name)
         if progress_callback:
             progress_callback("delete", f"Removed {safe_name}; refreshing matter coordinates...")
         manifest = self.ingest_matter(matter_id, progress_callback=progress_callback)
@@ -1746,20 +2259,34 @@ class MatterIngestor:
         _, raw_dir, indexed_dir, _ = self._matter_dirs(matter_id)
 
         def list_matter_files() -> Dict[str, Any]:
+            meta_map = self.load_file_metadata(matter_id)
             manifest_path = indexed_dir / "manifest.json"
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                return {
-                    "matter_id": matter_id,
-                    "files": [
-                        {"raw_file": f["raw"], **f} for f in manifest.get("files", [])
-                    ],
-                }
-            raw_files = (
-                [{"raw_file": p.name} for p in sorted(raw_dir.iterdir()) if p.is_file()]
-                if raw_dir.exists()
-                else []
-            )
+                enriched = []
+                for f in manifest.get("files", []):
+                    fn = f.get("raw")
+                    f_meta = meta_map.get(fn) if fn else None
+                    entry = {"raw_file": fn, **f}
+                    if f_meta is not None:
+                        entry["reliability_tier"] = f_meta.reliability_tier
+                        entry["origin_description"] = f_meta.origin_description
+                    else:
+                        entry.setdefault("reliability_tier", "primary_record")
+                    enriched.append(entry)
+                return {"matter_id": matter_id, "files": enriched}
+            raw_files = []
+            if raw_dir.exists():
+                for p in sorted(raw_dir.iterdir()):
+                    if p.is_file():
+                        f_meta = meta_map.get(p.name)
+                        raw_files.append(
+                            {
+                                "raw_file": p.name,
+                                "reliability_tier": f_meta.reliability_tier if f_meta else "primary_record",
+                                "origin_description": f_meta.origin_description if f_meta else None,
+                            }
+                        )
             return {"matter_id": matter_id, "files": raw_files}
 
         def grep_indexed_inputs(pattern: str, max_results: int = 10) -> Dict[str, Any]:
@@ -1955,6 +2482,7 @@ class MatterIngestor:
         if not block_by_key and not sheet_rows:
             return ledger, []
 
+        meta_map = self.load_file_metadata(matter_id)
         kept_facts = []
         warnings: List[str] = []
 
@@ -1994,11 +2522,24 @@ class MatterIngestor:
                     )
                     continue
                 # Hydrate canonical disk metadata onto locator
+                fn = disk_loc.get("file_name") or loc.file_name
+                f_meta = meta_map.get(fn) if fn else None
                 hydrated_loc = loc.model_copy(
                     update={
-                        "file_name": disk_loc.get("file_name") or loc.file_name,
+                        "file_name": fn,
                         "page": disk_loc.get("page") if disk_loc.get("page") is not None else loc.page,
+                        "bounding_box": disk_loc.get("bounding_box") or loc.bounding_box,
                         "payload_hash": disk_loc.get("payload_hash") or loc.payload_hash,
+                        "reliability_tier": (
+                            f_meta.reliability_tier
+                            if f_meta is not None
+                            else disk_loc.get("reliability_tier") or loc.reliability_tier or "primary_record"
+                        ),
+                        "origin_description": (
+                            f_meta.origin_description
+                            if f_meta is not None
+                            else disk_loc.get("origin_description") or loc.origin_description
+                        ),
                     }
                 )
                 kept_facts.append(fact.model_copy(update={"locator": hydrated_loc}))
@@ -2039,12 +2580,26 @@ class MatterIngestor:
                     )
                     continue
                 disk_loc = row.get("locator", {})
+                fn = disk_loc.get("file_name") or loc.file_name
+                f_meta = meta_map.get(fn) if fn else None
                 hydrated_loc = loc.model_copy(
                     update={
-                        "file_name": disk_loc.get("file_name") or loc.file_name,
+                        "file_name": fn,
                         "sheet": disk_loc.get("sheet") or loc.sheet,
+                        "page": disk_loc.get("page") if disk_loc.get("page") is not None else loc.page,
+                        "bounding_box": disk_loc.get("bounding_box") or loc.bounding_box,
                         "raw_value": disk_loc.get("raw_value") if disk_loc.get("raw_value") is not None else loc.raw_value,
                         "payload_hash": disk_loc.get("payload_hash") or loc.payload_hash,
+                        "reliability_tier": (
+                            f_meta.reliability_tier
+                            if f_meta is not None
+                            else disk_loc.get("reliability_tier") or loc.reliability_tier or "primary_record"
+                        ),
+                        "origin_description": (
+                            f_meta.origin_description
+                            if f_meta is not None
+                            else disk_loc.get("origin_description") or loc.origin_description
+                        ),
                     }
                 )
                 kept_facts.append(fact.model_copy(update={"locator": hydrated_loc}))

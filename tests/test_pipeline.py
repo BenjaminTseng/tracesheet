@@ -1429,3 +1429,156 @@ def test_persisted_run_with_stage1_and_stage2_checkpoints_and_granular_progress(
     assert completed_run.result_bundle_id == "ckpt_bundle"
     assert len(runner.list_runs("m_test")) == 1
     assert any("attempt 1/3" in msg for _, msg in seen_events)
+
+
+def test_canonical_domain_selection_explicit_and_auto_decision_routing(tmp_path: Path) -> None:
+    """Verifies explicit `canonical_domains` and auto-select Decisions API domain routing."""
+    canonical_dir = tmp_path / "canonical"
+    (canonical_dir / "legal").mkdir(parents=True)
+    (canonical_dir / "medical").mkdir(parents=True)
+    (canonical_dir / "legal" / "bankruptcy.md").write_text(
+        "## [AUTH:11USC-507] Wage Priority\n"
+        "- **Title:** Wage Priority\n"
+        "- **Verbatim Holding:** Pre-petition wages qualify for fourth-priority status.\n",
+        encoding="utf-8",
+    )
+    (canonical_dir / "medical" / "sepsis.md").write_text(
+        "## [AUTH:SSC-2021] Sepsis Care\n"
+        "- **Title:** Sepsis Care\n"
+        "- **Verbatim Holding:** Early fluid resuscitation improves sepsis survival.\n",
+        encoding="utf-8",
+    )
+    (canonical_dir / "INDEX.md").write_text(
+        "# Canonical Index\n"
+        "- **`[legal]`**: `legal/bankruptcy.md` (`AUTH:11USC-507`)\n"
+        "- **`[medical]`**: `medical/sepsis.md` (`AUTH:SSC-2021`)\n",
+        encoding="utf-8",
+    )
+    router = CanonicalRouter(canonical_dir)
+    ingestor = MatterIngestor(tmp_path / "matters")
+    ingestor.create_matter("m_dom")
+    _, m_raw, _, _ = ingestor._matter_dirs("m_dom")
+    (m_raw / "Payroll.md").write_text("# Payroll\n\nAccrued employee wages equal $12,000.\n", encoding="utf-8")
+    ingestor.ingest_matter("m_dom")
+
+    mock_llm = MockLLMProvider(
+        decision_responses={
+            "answers": {
+                "domain_legal": {
+                    "question_id": "domain_legal",
+                    "question_type": "choice",
+                    "choice": "include",
+                    "confidence": 0.96,
+                    "reasoning": "Bankruptcy wage motion directly requires legal domain.",
+                },
+                "domain_medical": {
+                    "question_id": "domain_medical",
+                    "question_type": "choice",
+                    "choice": "exclude",
+                    "confidence": 0.94,
+                    "reasoning": "Clinical sepsis rules are unrelated to payroll motion.",
+                },
+            }
+        },
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Pre-Petition Wage Priority Analysis",
+                "executive_summary_intent": "Assess wage priority obligations.",
+                "sections": [
+                    {
+                        "section_id": "sec_01",
+                        "section_title": "Wage Priority",
+                        "stated_intention": "Assess statutory priority for accrued wages.",
+                        "routing_rationale": "Uses 11 U.S.C. § 507.",
+                        "governing_authorities": [
+                            {
+                                "auth_id": "AUTH:11USC-507",
+                                "title": "Wage Priority",
+                                "verbatim_quote": "Pre-petition wages qualify for fourth-priority status.",
+                            }
+                        ],
+                        "required_fact_queries": ["Accrued wages"],
+                    }
+                ],
+            },
+            "VerifiedFactLedger": {
+                "section_id": "sec_01",
+                "verified_facts": [
+                    {
+                        "fact_id": "f1",
+                        "query_addressed": "Accrued wages",
+                        "title": "Accrued Employee Wages",
+                        "quote": "Accrued employee wages equal $12,000.",
+                        "locator": {
+                            "source_type": "markdown",
+                            "file_name": "Payroll.md",
+                            "locator_key": "PAYROLL-SEC-2",
+                        },
+                    }
+                ],
+            },
+            "SectionOutput": {
+                "section_id": "sec_01",
+                "section_title": "Wage Priority",
+                "text": "Debtor owes <ref n='1'>$12,000 in wages</ref>.",
+                "supports": [
+                    {
+                        "n": 1,
+                        "reasoning": "Direct payroll ledger entry.",
+                        "items": [
+                            {
+                                "ref_id": "f1",
+                                "type": "evidence",
+                                "title": "Payroll.md",
+                                "quote": "Accrued employee wages equal $12,000.",
+                                "locator": {
+                                    "source_type": "markdown",
+                                    "file_name": "Payroll.md",
+                                    "locator_key": "PAYROLL-SEC-2",
+                                },
+                            },
+                            {
+                                "ref_id": "AUTH:11USC-507",
+                                "type": "authority",
+                                "title": "Wage Priority",
+                            },
+                        ],
+                    }
+                ],
+            },
+            "SectionAuditResult": {
+                "section_id": "sec_01",
+                "check_a_relevance": True,
+                "check_b_congruence": True,
+                "check_c_intent": True,
+                "passed": True,
+            },
+            "StitchedDocumentOutput": StitchedDocumentOutput(
+                sections=[{"section_id": "sec_01", "smoothed_text": "Debtor owes <ref n='sec_01:1'>$12,000 in wages</ref>."}]
+            ),
+        },
+    )
+
+    runner = AuditPipelineRunner(mock_llm, router, ingestor)
+    # 1. Explicit selection
+    assert runner.resolve_canonical_domains("Analyze wages", ["medical"]) == ["medical"]
+    # 2. Auto-selection via evaluate_decisions
+    run = PipelineRunRecord(
+        run_id="run_dom_auto",
+        matter_id="m_dom",
+        question="Analyze pre-petition payroll obligations",
+        bundle_id="dom_bundle",
+        canonical_domains=None,
+    )
+    completed, bundle = runner.execute_run(run)
+    assert bundle is not None
+    assert completed.selected_domains == ["legal"]
+    # Stage 1 prompt should contain legal index and NOT medical index
+    stage1_calls = [c for c in mock_llm.call_log if c.get("model") == "OutlinePlan"]
+    assert stage1_calls
+    assert "AUTH:11USC-507" in stage1_calls[0]["prompt"]
+    assert "AUTH:SSC-2021" not in stage1_calls[0]["prompt"]
+    # Decisions API call explicitly evaluated both domain_legal and domain_medical
+    dec_calls = [c for c in mock_llm.call_log if c.get("method") == "evaluate_decisions"]
+    assert len(dec_calls) >= 1
+    assert set(dec_calls[0]["questions"].keys()) == {"domain_legal", "domain_medical"}

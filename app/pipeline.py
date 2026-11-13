@@ -158,32 +158,121 @@ class AuditPipelineRunner:
         return wrapped
 
     # ------------------------------------------------------------------
-    # Stage 1: Question Decomposition & Canonical Rule Mapping
+    # Stage 0/1: Canonical Domain Routing & Question Decomposition
     # ------------------------------------------------------------------
+
+    def resolve_canonical_domains(
+        self,
+        question: str,
+        requested_domains: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Resolves which canonical corpus `(b)` domains apply to `question`.
+
+        Honors explicit user domain selections when provided; otherwise runs a
+        lightweight `evaluate_decisions` domain router when multiple canonical
+        domains exist (safely falling back to all domains under unconfigured mocks).
+        """
+        available_info = self.canonical_router.list_domains()
+        available_names = [d["domain"] for d in available_info]
+
+        if requested_domains is not None and requested_domains != ["auto"]:
+            req_clean = [d.strip() for d in requested_domains if d and d.strip()]
+            req_lower = {d.lower() for d in req_clean}
+            if not available_names:
+                return req_clean
+            return [d for d in available_names if d.lower() in req_lower]
+
+        if len(available_names) <= 1:
+            return available_names
+
+        # Guard against unconfigured MockLLMProvider or Stage-4 FIFO decision mocks
+        mock_dr = getattr(self.llm, "decision_responses", "__not_mock__")
+        if mock_dr is None:
+            return available_names
+        if isinstance(mock_dr, list):
+            if not mock_dr:
+                return available_names
+            first = mock_dr[0]
+            first_keys = (
+                first.answers.keys()
+                if hasattr(first, "answers")
+                else (
+                    first.get("answers", first).keys()
+                    if isinstance(first, dict)
+                    else []
+                )
+            )
+            if not any(str(k).startswith("domain_") for k in first_keys):
+                return available_names
+        elif isinstance(mock_dr, dict):
+            top_keys = mock_dr.get("answers", mock_dr).keys()
+            if not any(str(k).startswith("domain_") for k in top_keys):
+                return available_names
+
+        questions: Dict[str, Dict[str, Any]] = {}
+        domain_lines: List[str] = []
+        for d_info in available_info:
+            dom = d_info["domain"]
+            titles = ", ".join(d_info.get("titles", [])[:6]) or "(no titles)"
+            domain_lines.append(
+                f"- {dom} ({d_info.get('document_count', 0)} docs, {d_info.get('authority_count', 0)} rules): {titles}"
+            )
+            questions[f"domain_{dom}"] = {
+                "type": "choice",
+                "instructions": (
+                    f"Should canonical domain '{dom}' be included for answering the user request?"
+                ),
+                "criteria": {
+                    "include": f"Potentially relevant to the request (domain titles: {titles}).",
+                    "exclude": "Clearly unrelated domain that can be safely omitted from Stage 1 planning.",
+                },
+            }
+
+        decision_model = os.environ.get("JD_SCREEN_DECISION_MODEL", "models/gemini-decision-1")
+        batch = self.llm.evaluate_decisions(
+            input_text=(
+                f"User Request (c):\n{question}\n\n"
+                "Available Canonical Domains:\n" + "\n".join(domain_lines)
+            ),
+            questions=questions,
+            decision_model=decision_model,
+        )
+        if not batch.answers:
+            return available_names
+
+        selected = [
+            dom
+            for dom in available_names
+            if (ans := batch.answers.get(f"domain_{dom}")) is None or ans.choice != "exclude"
+        ]
+        return selected if selected else available_names
 
     def run_stage1_outline(
         self,
         matter_id: str,
         question: str,
         progress_callback: Optional[Callable[[str, str], None]] = None,
+        canonical_domains: Optional[List[str]] = None,
     ) -> OutlinePlan:
         """Decomposes user request `(c)` into sections routed over catalog `(b)`.
 
-        Reads ONLY the compact Tier 1 `canonical/INDEX.md` catalog and gives Stage 1
-        canonical browse/search/read tools so large corpora stay token-efficient.
-        Hydrates exact `verbatim_quote` and `url` fields from `CanonicalRouter`.
+        Reads ONLY the compact Tier 1 `canonical/INDEX.md` catalog (optionally
+        scoped to `canonical_domains`) and gives Stage 1 canonical browse/search/read
+        tools so large corpora stay token-efficient. Hydrates exact `verbatim_quote`
+        and `url` fields from `CanonicalRouter`.
 
         Args:
             matter_id: Target project/matter identifier.
             question: User analytical or legal question `(c)`.
             progress_callback: Optional `(stage, message)` progress callback.
+            canonical_domains: Optional domain whitelist (e.g. `["legal"]`).
 
         Returns:
             Validated `OutlinePlan` with hydrated canonical authorities.
         """
-        index_md = self.canonical_router.get_index_markdown()
+        index_md = self.canonical_router.get_index_markdown(domains=canonical_domains)
         stage1_tools = self._wrap_tools_with_progress(
-            self.canonical_router.build_stage1_tools(),
+            self.canonical_router.build_stage1_tools(domains=canonical_domains),
             progress_callback,
             "stage_1",
         )
@@ -237,6 +326,7 @@ class AuditPipelineRunner:
         section_plan: SectionPlan,
         extra_queries: Optional[List[str]] = None,
         progress_callback: Optional[Callable[[str, str], None]] = None,
+        canonical_domains: Optional[List[str]] = None,
     ) -> VerifiedFactLedger:
         """Runs a tool-assisted fact & authority verification loop over `(a)` and `(b)`.
 
@@ -257,7 +347,7 @@ class AuditPipelineRunner:
 
         raw_tools = (
             self.matter_ingestor.build_stage2_tools(matter_id)
-            + self.canonical_router.build_stage1_tools()
+            + self.canonical_router.build_stage1_tools(domains=canonical_domains)
         )
         tools = self._wrap_tools_with_progress(raw_tools, progress_callback, "stage_2")
         queries = list(section_plan.required_fact_queries)
@@ -976,13 +1066,24 @@ class AuditPipelineRunner:
         try:
             run.status = "running"
             run.error = None
+            selected_domains = run.selected_domains or self.resolve_canonical_domains(
+                run.question, run.canonical_domains
+            )
+            run.selected_domains = selected_domains
             self.save_run(run)
 
             # Stage 1: Question decomposition & canonical mapping
             if run.outline_plan is None:
-                record_progress("stage_1", "Decomposing question and mapping canonical authorities...")
+                domain_label = ", ".join(selected_domains) if selected_domains else "none (evidence-only)"
+                record_progress(
+                    "stage_1",
+                    f"Decomposing question and mapping canonical authorities (domains: {domain_label})...",
+                )
                 plan = self.run_stage1_outline(
-                    run.matter_id, run.question, progress_callback=record_progress
+                    run.matter_id,
+                    run.question,
+                    progress_callback=record_progress,
+                    canonical_domains=selected_domains,
                 )
                 run.outline_plan = plan
                 record_progress("stage_1", f"Planned {len(plan.sections)} sections.")
@@ -1020,6 +1121,7 @@ class AuditPipelineRunner:
                         run.matter_id,
                         sec_plan,
                         progress_callback=record_progress,
+                        canonical_domains=selected_domains,
                     )
                     run.ledgers[sec_plan.section_id] = ledger
                     record_progress(

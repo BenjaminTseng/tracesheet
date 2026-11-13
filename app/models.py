@@ -45,6 +45,13 @@ SourceType = Literal[
     "api",
     "internal_db",
     "markdown",
+    "docx",
+]
+
+SourceReliabilityTier = Literal[
+    "primary_record",
+    "secondary_analysis",
+    "self_reported",
 ]
 
 AuditStatus = Literal[
@@ -85,6 +92,8 @@ class SourceLocator(BaseModel):
         table: Table or view name queried.
         query: Read-only SQL query executed to retrieve the record.
         row_id: Primary key of the matched database record.
+        reliability_tier: Epistemic reliability classification of the backing file `(a)`.
+        origin_description: User-supplied description of file origin/context.
     """
 
     source_type: SourceType
@@ -106,6 +115,19 @@ class SourceLocator(BaseModel):
     table: Optional[str] = None
     query: Optional[str] = None
     row_id: Optional[Any] = None
+    reliability_tier: Optional[SourceReliabilityTier] = None
+    origin_description: Optional[str] = None
+
+
+class MatterFileMetadata(BaseModel):
+    """Origin description and reliability classification attached to a matter input file `(a)`."""
+
+    filename: str
+    reliability_tier: SourceReliabilityTier = "primary_record"
+    origin_description: Optional[str] = None
+    updated_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
 
 
 class NodeAudit(BaseModel):
@@ -723,6 +745,8 @@ class PipelineRunRecord(BaseModel):
     bundle_id: Optional[str] = None
     checkpoint_mode: bool = False
     smooth_transitions: bool = True
+    canonical_domains: Optional[List[str]] = None
+    selected_domains: List[str] = Field(default_factory=list)
     status: PipelineRunStatus = "running"
     current_stage: str = "init"
     created_at: str = Field(

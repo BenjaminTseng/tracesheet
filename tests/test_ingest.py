@@ -554,3 +554,225 @@ def test_canonical_synopsis_cache_and_file_management(tmp_path: Path) -> None:
 
     after_del = m_ingestor.delete_matter_file("case_x", "notes.md")
     assert after_del["files"] == []
+
+
+def _create_docx_with_table(
+    path: Path, heading: str, body: str, rows: List[List[str]]
+) -> None:
+    """Creates a valid `.docx` containing a heading, paragraph, and `<w:tbl>` table."""
+    tr_xml = "".join(
+        "<w:tr>"
+        + "".join(f"<w:tc><w:p><w:r><w:t>{cell}</w:t></w:r></w:p></w:tc>" for cell in row)
+        + "</w:tr>"
+        for row in rows
+    )
+    doc_xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        "<w:body>"
+        f'<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>{heading}</w:t></w:r></w:p>'
+        f"<w:p><w:r><w:t>{body}</w:t></w:r></w:p>"
+        f"<w:tbl>{tr_xml}</w:tbl>"
+        "</w:body></w:document>"
+    )
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("word/document.xml", doc_xml)
+
+
+def _create_pdf_with_bordered_table(path: Path) -> None:
+    """Creates a minimal single-page PDF with an explicit ruled 2x2 table plus external prose."""
+    # Table grid box: x in [72, 312], PDF y in [650, 700] (top-down y in [92, 142])
+    ops = [
+        "0.5 w",
+        "72 650 240 50 re S",
+        "72 675 m 312 675 l S",
+        "192 650 m 192 700 l S",
+        "BT /F1 10 Tf 78 682 Td (Line Item) Tj ET",
+        "BT /F1 10 Tf 200 682 Td (Balance) Tj ET",
+        "BT /F1 10 Tf 78 658 Td (Cash On Hand) Tj ET",
+        "BT /F1 10 Tf 200 658 Td ($5,200) Tj ET",
+        "BT /F1 11 Tf 72 560 Td (Cash verified against bank statement.) Tj ET",
+    ]
+    stream_bytes = "\n".join(ops).encode("latin-1")
+    objects = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+        f"4 0 obj\n<< /Length {len(stream_bytes)} >>\nstream\n".encode("latin-1")
+        + stream_bytes
+        + b"\nendstream\nendobj\n",
+        b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    ]
+    pdf_chunks = [b"%PDF-1.4\n"]
+    offsets = [0]
+    for obj in objects:
+        offsets.append(sum(len(c) for c in pdf_chunks))
+        pdf_chunks.append(obj)
+    xref_offset = sum(len(c) for c in pdf_chunks)
+    xref_lines = [f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("latin-1")]
+    for off in offsets[1:]:
+        xref_lines.append(f"{off:010d} 00000 n \n".encode("latin-1"))
+    trailer = (
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref_offset}\n%%EOF\n"
+    ).encode("latin-1")
+    path.write_bytes(b"".join(pdf_chunks + xref_lines + [trailer]))
+
+
+def test_matter_ingestor_docx_tables_and_reliability_metadata(tmp_path: Path) -> None:
+    """Verifies `.docx` paragraph/table indexing, cell search, and reliability hydration."""
+    matters_root = tmp_path / "matters"
+    ingestor = MatterIngestor(matters_root)
+    ingestor.create_matter("m_docx")
+    _, raw_dir, indexed_dir, _ = ingestor._matter_dirs("m_docx")
+
+    _create_docx_with_table(
+        raw_dir / "Schedule_B.docx",
+        heading="Pre-Petition Claims",
+        body="Debtor schedules list critical supplier balances as of filing.",
+        rows=[
+            ["Creditor", "Amount", "Priority"],
+            ["Acme Logistics", "$14,250.50", "Unsecured"],
+            ["Payroll Tax", "8500", "Priority"],
+        ],
+    )
+    ingestor.set_file_metadata(
+        "m_docx",
+        "Schedule_B.docx",
+        reliability_tier="self_reported",
+        origin_description="Debtor owner-signed questionnaire schedule",
+    )
+
+    manifest = ingestor.ingest_matter("m_docx")
+    assert manifest["files_processed"] == 1
+    assert manifest["spreadsheet_cells_indexed"] == 9
+
+    indexed_md = (indexed_dir / "Schedule_B.docx.indexed.md").read_text(encoding="utf-8")
+    assert "SCHEDULE_B-SEC-1" in indexed_md
+    assert "SCHEDULE_B-TBL-1" in indexed_md
+    assert '"source_type":"docx"' in indexed_md
+    assert '"reliability_tier":"self_reported"' in indexed_md
+    assert "| Acme Logistics | $14,250.50 | Unsecured |" in indexed_md
+
+    tools = {t.name: t for t in ingestor.build_stage2_tools("m_docx")}
+    listing = tools["list_matter_files"].handler()
+    assert listing["files"][0]["reliability_tier"] == "self_reported"
+    assert "questionnaire" in listing["files"][0]["origin_description"]
+
+    cells_res = tools["search_spreadsheet_cells"].handler(query="Acme Logistics")
+    b2 = next(c for c in cells_res["cells"] if c["cell_range"] == "B2")
+    assert b2["sheet"] == "DOCX_TBL_1"
+    assert b2["raw_value"] == 14250.5
+    assert b2["locator"]["source_type"] == "docx"
+
+    ledger = VerifiedFactLedger.model_validate(
+        {
+            "section_id": "sec_1",
+            "verified_facts": [
+                {
+                    "fact_id": "f_cell",
+                    "query_addressed": "Acme creditor balance",
+                    "title": "Acme Logistics Balance",
+                    "quote": "14250.5",
+                    "locator": {
+                        "source_type": "docx",
+                        "file_name": "Schedule_B.docx",
+                        "sheet": "DOCX_TBL_1",
+                        "cell_range": "B2",
+                    },
+                },
+                {
+                    "fact_id": "f_blk",
+                    "query_addressed": "Pre-petition claims context",
+                    "title": "Debtor Schedule Summary",
+                    "quote": "Debtor schedules list critical supplier balances",
+                    "locator": {
+                        "source_type": "docx",
+                        "file_name": "Schedule_B.docx",
+                        "locator_key": "SCHEDULE_B-SEC-2",
+                    },
+                },
+            ],
+        }
+    )
+    hydrated, warnings = ingestor.verify_and_hydrate_ledger("m_docx", ledger)
+    assert warnings == []
+    assert len(hydrated.verified_facts) == 2
+    assert all(f.locator.reliability_tier == "self_reported" for f in hydrated.verified_facts)
+    assert hydrated.verified_facts[0].locator.origin_description == "Debtor owner-signed questionnaire schedule"
+
+
+def test_matter_ingestor_pdf_table_extraction_and_prose_dedup(tmp_path: Path) -> None:
+    """Verifies PDF `find_tables()` emits `P#-TBL#` + cell coords and excludes table text from prose."""
+    matters_root = tmp_path / "matters"
+    ingestor = MatterIngestor(matters_root)
+    ingestor.create_matter("m_pdf_tbl")
+    _, raw_dir, indexed_dir, _ = ingestor._matter_dirs("m_pdf_tbl")
+
+    _create_pdf_with_bordered_table(raw_dir / "Bank_Summary.pdf")
+    manifest = ingestor.ingest_matter("m_pdf_tbl")
+    assert manifest["files_processed"] == 1
+    assert manifest["spreadsheet_cells_indexed"] >= 4
+
+    indexed_md = (indexed_dir / "Bank_Summary.pdf.indexed.md").read_text(encoding="utf-8")
+    assert "BANK_SUMMARY-P1-TBL1" in indexed_md
+    assert "| Cash On Hand | $5,200 |" in indexed_md
+    assert "BANK_SUMMARY-P1-B1" in indexed_md
+    assert "Cash verified against bank statement." in indexed_md
+
+    # Ensure table words were excluded from the prose block
+    prose_part = indexed_md.split("BANK_SUMMARY-P1-B1", 1)[1]
+    assert "Cash On Hand" not in prose_part
+
+    sheets_rows = [
+        json.loads(line)
+        for line in (indexed_dir / "sheets_index.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(
+        r["sheet"] == "PDF_P1_TBL1" and r["cell_range"] == "B2" and r["raw_value"] == 5200
+        for r in sheets_rows
+    )
+
+
+def test_canonical_router_domain_filtering(tmp_path: Path) -> None:
+    """Verifies `CanonicalRouter` filters INDEX.md, TOCs, searches, and reads by requested domains."""
+    canonical_dir = tmp_path / "canonical"
+    (canonical_dir / "legal").mkdir(parents=True)
+    (canonical_dir / "medical").mkdir(parents=True)
+    (canonical_dir / "INDEX.md").write_text(
+        "# Canonical Index\n"
+        "- **`[legal]`**: `legal/bankruptcy.md` (`AUTH:11USC-507`)\n"
+        "- **`[medical]`**: `medical/sepsis.md` (`AUTH:SSC-2021`)\n",
+        encoding="utf-8",
+    )
+    (canonical_dir / "legal" / "bankruptcy.md").write_text(
+        "## [AUTH:11USC-507] 11 U.S.C. § 507 Wage Priority\n"
+        "- **Title:** 11 U.S.C. § 507 Wage Priority\n"
+        "- **Verbatim Holding:** Pre-petition wages earned within 180 days receive priority up to statutory cap.\n",
+        encoding="utf-8",
+    )
+    (canonical_dir / "medical" / "sepsis.md").write_text(
+        "## [AUTH:SSC-2021] Surviving Sepsis Campaign 2021\n"
+        "- **Title:** Surviving Sepsis Campaign 2021\n"
+        "- **Verbatim Holding:** Administer antimicrobials within 1 hour of sepsis recognition.\n",
+        encoding="utf-8",
+    )
+
+    router = CanonicalRouter(canonical_dir)
+    domains = {d["domain"]: d for d in router.list_domains()}
+    assert set(domains.keys()) == {"legal", "medical"}
+    assert domains["legal"]["authority_count"] == 1
+    assert domains["medical"]["authority_count"] == 1
+
+    legal_index = router.get_index_markdown(domains=["legal"])
+    assert "AUTH:11USC-507" in legal_index
+    assert "AUTH:SSC-2021" not in legal_index
+
+    tools = {t.name: t for t in router.build_stage1_tools(domains=["legal"])}
+    search_med = tools["search_canonical_authorities"].handler(query="antimicrobials")
+    assert search_med["match_count"] == 0
+    read_med = tools["read_canonical_authority"].handler(auth_id="AUTH:SSC-2021")
+    assert "error" in read_med
+    read_leg = tools["read_canonical_authority"].handler(auth_id="AUTH:11USC-507")
+    assert read_leg["auth_id"] == "AUTH:11USC-507"

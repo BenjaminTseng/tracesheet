@@ -27,6 +27,9 @@ def test_sample_bundles_deserialize_cleanly() -> None:
     assert legal.audit_summary.total_claims == 7
     assert legal.audit_summary.verified_count == 5
     assert len(legal.audit_summary.cross_section_tensions) == 1
+    assert legal.stage_artifacts.get("outline_plan") is not None
+    assert legal.stage_artifacts.get("audits") is not None
+    assert bundles["candidate_exec_screen"].stage_artifacts.get("sections") is not None
 
     # Verify all direct_child_ids resolve to existing nodes in the DAG
     for node_id, node in legal.nodes.items():

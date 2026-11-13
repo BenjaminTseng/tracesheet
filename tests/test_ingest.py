@@ -487,3 +487,70 @@ def test_verify_and_hydrate_ledger_and_section_citations(tmp_path: Path) -> None
         good_commonsense_section, verified_ledger, []
     )
     assert clean_errors == []
+
+
+def test_canonical_synopsis_cache_and_file_management(tmp_path: Path) -> None:
+    """Verifies SHA-256 synopsis caching, document inspection, and canonical/matter deletion."""
+    from app.llm import MockLLMProvider
+    from app.models import CanonicalDocumentSynopsisDraft
+
+    canonical_dir = tmp_path / "canonical"
+    raw_dir = canonical_dir / "raw" / "tax"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "irc_rules.md").write_text(
+        "# Section 162\nBusiness expenses must be ordinary and necessary.\n",
+        encoding="utf-8",
+    )
+
+    call_count = 0
+
+    class CountingLLM(MockLLMProvider):
+        def generate_structured(self, prompt, response_model, **kwargs):
+            nonlocal call_count
+            if response_model is CanonicalDocumentSynopsisDraft:
+                call_count += 1
+                return CanonicalDocumentSynopsisDraft(
+                    title="IRC Section 162 Rules",
+                    authority_tier="statute_regulation",
+                    jurisdiction_scope="Federal",
+                    scope_synopsis="Governs ordinary and necessary trade or business deductions.",
+                )
+            return super().generate_structured(prompt, response_model, **kwargs)
+
+    c_ingestor = CanonicalIngestor(canonical_dir)
+    llm = CountingLLM()
+    events = []
+    c_ingestor.ingest_corpus(llm=llm, progress_callback=lambda s, m: events.append((s, m)))
+    assert call_count == 1
+    assert any(stage == "encoding" for stage, _ in events)
+
+    # Rebuilding without changing content should hit the SHA-256 cache and make 0 new LLM calls
+    events.clear()
+    c_ingestor.rebuild_index_markdown(llm=llm, progress_callback=lambda s, m: events.append((s, m)))
+    assert call_count == 1
+    assert any(stage == "synopsis_cached" for stage, _ in events)
+
+    # Document detail inspection
+    detail = c_ingestor.get_document_detail("tax/irc_rules.md")
+    assert detail["card"] is not None
+    assert detail["card"]["title"] == "IRC Section 162 Rules"
+    assert len(detail["authorities"]) == 1
+    assert "Table of Contents" in detail["toc_markdown"]
+
+    # Deleting canonical file removes raw + encoded + TOC and updates INDEX.md
+    deleted_status = c_ingestor.delete_canonical_file("tax", "irc_rules.md", llm=llm)
+    assert deleted_status["total_authorities"] == 0
+    assert deleted_status["raw_files"] == []
+
+    # Matter file listing & deletion
+    m_ingestor = MatterIngestor(tmp_path / "matters")
+    m_ingestor.create_matter("case_x")
+    _, m_raw, _, _ = m_ingestor._matter_dirs("case_x")
+    (m_raw / "notes.md").write_text("# Notes\nSigned on March 3.\n", encoding="utf-8")
+    m_ingestor.ingest_matter("case_x")
+    listing = m_ingestor.list_matter_files("case_x")
+    assert len(listing["files"]) == 1
+    assert listing["files"][0]["filename"] == "notes.md"
+
+    after_del = m_ingestor.delete_matter_file("case_x", "notes.md")
+    assert after_del["files"] == []

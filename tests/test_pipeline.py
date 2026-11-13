@@ -247,6 +247,12 @@ def test_full_4stage_pipeline_compiles_and_persists_bundle(tmp_path: Path) -> No
     plan_auth = bundle.stage_artifacts["outline_plan"]["sections"][0]["governing_authorities"][0]
     assert plan_auth["verbatim_quote"] == "Principal place of business is the nerve center."
 
+    # Check Stage 4 cross-section tension prompt deduplicates section prose
+    tension_calls = [c for c in mock_llm.call_log if c.get("model") == "CrossSectionAuditOutput"]
+    assert len(tension_calls) == 1
+    assert "Sections context:" in tension_calls[0]["prompt"]
+    assert '"full_section_text"' not in tension_calls[0]["prompt"]
+
     saved_path = tmp_path / "matters" / "m_test" / "bundles" / "test_memo.json"
     assert saved_path.exists()
     persisted = json.loads(saved_path.read_text(encoding="utf-8"))

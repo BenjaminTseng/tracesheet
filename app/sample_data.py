@@ -16,6 +16,7 @@ from app.models import CompiledBundle
 RAW_BUNDLES: Dict[str, dict] = {
     "legal_motion_1332": {
         "bundle_id": "legal_motion_1332",
+        "matter_id": "legal_motion_1332",
         "artifact": {
             "title": "Motion to Dismiss for Lack of Subject-Matter Jurisdiction & Financial Review",
             "version": "1.2.0",
@@ -497,10 +498,91 @@ RAW_BUNDLES: Dict[str, dict] = {
                     "evaluator_note": "Unverified multi-year baseline assumption."
                 }
             }
+        },
+        "stage_artifacts": {
+            "outline_plan": {
+                "document_title": "Motion to Dismiss for Lack of Subject-Matter Jurisdiction & Financial Review",
+                "executive_summary_intent": "Establish lack of complete diversity and insufficient amount in controversy under 28 U.S.C. § 1332.",
+                "sections": [
+                    {
+                        "section_id": "sec_01_procedural_standing",
+                        "section_title": "I. Procedural Standing & Jurisdictional Deficiencies",
+                        "stated_intention": "Determine whether complete diversity exists and whether verified unpaid balances meet $75,000.",
+                        "routing_rationale": "Grounded in federal diversity jurisdiction rules [AUTH:28USC-1332-A1] and [AUTH:28USC-1332-C1], applied to Delaware corporate filings and ERP invoice balances.",
+                        "governing_authorities": [],
+                        "required_fact_queries": [
+                            "Where are Plaintiff and Defendant domiciled / headquartered?",
+                            "What is the total verified unpaid invoice balance?"
+                        ]
+                    },
+                    {
+                        "section_id": "sec_02_unit_economics",
+                        "section_title": "II. Counter-Analysis of Unit Economics & Tort Valuation",
+                        "stated_intention": "Audit Plaintiff's alternative $128,000 LTV tort damages calculation and unit-economic assumptions.",
+                        "routing_rationale": "Evaluated spreadsheet formulas and telemetry cohorts alongside arithmetic LTV logic to isolate baseline assumptions from verified revenue.",
+                        "governing_authorities": [],
+                        "required_fact_queries": [
+                            "What are verified Q3 cloud gross margins and EMEA churn rates?",
+                            "What churn assumptions underpin the $128,000 LTV projection?"
+                        ]
+                    }
+                ]
+            },
+            "ledgers": {
+                "sec_01_procedural_standing": {
+                    "section_id": "sec_01_procedural_standing",
+                    "harvest_summary": "Verified Delaware principal place of business from corporate registry Exhibit B and confirmed $42,150.00 net unpaid invoice balance across ERP billing records.",
+                    "verified_facts": [],
+                    "unresolved_gaps": [],
+                    "additional_authorities": []
+                },
+                "sec_02_unit_economics": {
+                    "section_id": "sec_02_unit_economics",
+                    "harvest_summary": "Verified 71.4% cloud gross margin and 3.2% EMEA churn cohort telemetry; flagged unseasoned 36-month linear churn extrapolation in Plaintiff's LTV model.",
+                    "verified_facts": [],
+                    "unresolved_gaps": [],
+                    "additional_authorities": []
+                }
+            },
+            "sections": [
+                {
+                    "section_id": "sec_01_procedural_standing",
+                    "section_title": "I. Procedural Standing & Jurisdictional Deficiencies",
+                    "drafting_notes": "Paired Delaware incorporation/HQ registry excerpts directly with 28 U.S.C. § 1332(c)(1) and net billing totals ($42,150 < $75,000 threshold).",
+                    "text": "",
+                    "supports": []
+                },
+                {
+                    "section_id": "sec_02_unit_economics",
+                    "section_title": "II. Counter-Analysis of Unit Economics & Tort Valuation",
+                    "drafting_notes": "Distinguished empirical Q3 financials (71.4% gross margin, 3.2% churn) from Plaintiff's speculative $128,000 LTV model, tagging unseasoned churn curves as extrapolation/assumption.",
+                    "text": "",
+                    "supports": []
+                }
+            ],
+            "audits": {
+                "sec_01_procedural_standing": {
+                    "section_id": "sec_01_procedural_standing",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                    "audit_rationale": "Both diversity and amount-in-controversy claims match primary filings, ERP billing figures, and § 1332 rules verbatim."
+                },
+                "sec_02_unit_economics": {
+                    "section_id": "sec_02_unit_economics",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                    "audit_rationale": "Financial telemetry is verified; speculative LTV assumptions are explicitly flagged as extrapolation/assumption and surfaced in cross-section tension check."
+                }
+            }
         }
     },
     "candidate_exec_screen": {
         "bundle_id": "candidate_exec_screen",
+        "matter_id": "candidate_exec_screen",
         "artifact": {
             "title": "VP of Infrastructure Engineering — Candidate Technical & Reference Audit",
             "version": "1.0.0",
@@ -734,6 +816,85 @@ RAW_BUNDLES: Dict[str, dict] = {
                     "score": 0.97,
                     "evaluator_type": "deterministic",
                     "evaluator_note": "Directly verified in calibration workbook cell D11."
+                }
+            }
+        },
+        "stage_artifacts": {
+            "outline_plan": {
+                "document_title": "VP of Infrastructure Engineering — Candidate Technical & Reference Audit",
+                "executive_summary_intent": "Verify technical cost-optimization metrics and reconcile executive org headcount claims against HRIS calibration records.",
+                "sections": [
+                    {
+                        "section_id": "sec_01_scale_verification",
+                        "section_title": "I. Infrastructure Scale & Cost Optimization Track Record",
+                        "stated_intention": "Audit candidate's claimed AWS unit-cost reduction and multi-region availability metrics.",
+                        "routing_rationale": "Evaluated cloud billing workbook and observability telemetry against JD technical scale benchmarks.",
+                        "governing_authorities": [],
+                        "required_fact_queries": [
+                            "What compute cost reduction and AWS spend footprint were verified?",
+                            "What multi-region SLA availability was recorded during peak traffic?"
+                        ]
+                    },
+                    {
+                        "section_id": "sec_02_org_leadership",
+                        "section_title": "II. Organizational Scope & Executive Reference Audit",
+                        "stated_intention": "Reconcile resume team-size claims with direct FTE vs. contractor verification records.",
+                        "routing_rationale": "Compared resume narrative against backchannel reference and HRIS calibration records using JD minimum direct-report rubric.",
+                        "governing_authorities": [],
+                        "required_fact_queries": [
+                            "How many direct FTEs vs. contractors did the candidate manage?"
+                        ]
+                    }
+                ]
+            },
+            "ledgers": {
+                "sec_01_scale_verification": {
+                    "section_id": "sec_01_scale_verification",
+                    "harvest_summary": "Confirmed 34% unit-cost reduction across $28M AWS spend and 99.994% multi-region uptime in Q3 telemetry.",
+                    "verified_facts": [],
+                    "unresolved_gaps": [],
+                    "additional_authorities": []
+                },
+                "sec_02_org_leadership": {
+                    "section_id": "sec_02_org_leadership",
+                    "harvest_summary": "Confirmed discrepancy between 95-person resume claim and verified calibration sheet showing 38 direct FTEs + 57 offshore contractors.",
+                    "verified_facts": [],
+                    "unresolved_gaps": [],
+                    "additional_authorities": []
+                }
+            },
+            "sections": [
+                {
+                    "section_id": "sec_01_scale_verification",
+                    "section_title": "I. Infrastructure Scale & Cost Optimization Track Record",
+                    "drafting_notes": "Grounded cost and uptime metrics directly in audited AWS workbook cells and Grafana SLO telemetry.",
+                    "text": "",
+                    "supports": []
+                },
+                {
+                    "section_id": "sec_02_org_leadership",
+                    "section_title": "II. Organizational Scope & Executive Reference Audit",
+                    "drafting_notes": "Preserved exact headcount breakdown (38 FTEs vs. 57 contractors) and surfaced JD calibration tension explicitly.",
+                    "text": "",
+                    "supports": []
+                }
+            ],
+            "audits": {
+                "sec_01_scale_verification": {
+                    "section_id": "sec_01_scale_verification",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                    "audit_rationale": "All technical scale claims entail directly from verified spreadsheet and telemetry records."
+                },
+                "sec_02_org_leadership": {
+                    "section_id": "sec_02_org_leadership",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                    "audit_rationale": "Headcount discrepancy accurately flagged as extrapolation pending calibration against 60+ direct FTE JD requirement."
                 }
             }
         }

@@ -544,6 +544,7 @@ class CanonicalDocumentCard(BaseModel):
     authority_file: str
     toc_file: str
     authority_count: int
+    content_hash: Optional[str] = None
 
 
 class SectionPlan(BaseModel):
@@ -691,6 +692,52 @@ class SectionAuditResult(BaseModel):
                 if match:
                     coerced[int(match.group(1))] = val
         return coerced
+
+
+PipelineRunStatus = Literal[
+    "running",
+    "awaiting_stage1_approval",
+    "awaiting_stage2_approval",
+    "completed",
+    "failed",
+]
+
+
+class PipelineProgressEvent(BaseModel):
+    """Granular progress event recorded on a persisted pipeline run."""
+
+    timestamp: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    stage: str
+    substage: Optional[str] = None
+    message: str
+
+
+class PipelineRunRecord(BaseModel):
+    """Disk-persisted state of a 4-stage pipeline execution (`matters/<id>/runs/<run_id>.json`)."""
+
+    run_id: str
+    matter_id: str
+    question: str
+    bundle_id: Optional[str] = None
+    checkpoint_mode: bool = False
+    smooth_transitions: bool = True
+    status: PipelineRunStatus = "running"
+    current_stage: str = "init"
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    updated_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+    error: Optional[str] = None
+    events: List[PipelineProgressEvent] = Field(default_factory=list)
+    outline_plan: Optional[OutlinePlan] = None
+    ledgers: Dict[str, VerifiedFactLedger] = Field(default_factory=dict)
+    sections: List[SectionOutput] = Field(default_factory=list)
+    audits: Dict[str, SectionAuditResult] = Field(default_factory=dict)
+    result_bundle_id: Optional[str] = None
 
 
 # =====================================================================

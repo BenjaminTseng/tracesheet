@@ -25,7 +25,7 @@ import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import openpyxl
 import pdfplumber
@@ -755,16 +755,75 @@ class CanonicalIngestor:
             self._write_toc_file(rel_out, domain, auth_refs)
         return out_path, len(records)
 
+    @staticmethod
+    def _compute_authority_hash(auth_list: List[CanonicalAuthorityRef]) -> str:
+        """Computes a deterministic SHA-256 digest of a canonical document's authority rules."""
+        payload = json.dumps(
+            [
+                {
+                    "auth_id": a.auth_id,
+                    "title": a.title,
+                    "url": a.url,
+                    "verbatim_quote": a.verbatim_quote,
+                }
+                for a in auth_list
+            ],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _load_synopsis_cache(self) -> Dict[str, Any]:
+        """Loads persisted SHA-256 -> `CanonicalDocumentCard` synopsis cache."""
+        cache_path = self.canonical_dir / ".synopsis_cache.json"
+        if not cache_path.exists():
+            return {}
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_synopsis_cache(self, cache: Dict[str, Any]) -> None:
+        """Persists the canonical document synopsis cache to `canonical/.synopsis_cache.json`."""
+        cache_path = self.canonical_dir / ".synopsis_cache.json"
+        cache_path.write_text(json.dumps(cache, indent=2), encoding="utf-8")
+
     def _synthesize_document_card(
         self,
         source_file: str,
         domain: str,
         auth_list: List[CanonicalAuthorityRef],
         llm: Optional[LLMProvider] = None,
+        cache: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
     ) -> CanonicalDocumentCard:
-        """Builds a Tier 1 `CanonicalDocumentCard` using LLM synthesis when available, with deterministic fallback."""
+        """Builds a Tier 1 `CanonicalDocumentCard` with SHA-256 cache reuse when unchanged."""
         toc_path = self._toc_path_for_source(source_file)
         toc_rel = str(toc_path.relative_to(self.canonical_dir))
+        content_hash = self._compute_authority_hash(auth_list)
+
+        if cache is not None and source_file in cache:
+            entry = cache[source_file]
+            if (
+                isinstance(entry, dict)
+                and entry.get("content_hash") == content_hash
+                and (llm is None or entry.get("llm_generated") is True)
+            ):
+                try:
+                    cached_card = CanonicalDocumentCard.model_validate(entry["card"])
+                    cached_card.toc_file = toc_rel
+                    cached_card.authority_count = len(auth_list)
+                    cached_card.content_hash = content_hash
+                    if progress_callback:
+                        progress_callback(
+                            "synopsis_cached",
+                            f"Reused cached synopsis for {source_file} (unchanged SHA-256).",
+                        )
+                    return cached_card
+                except Exception:
+                    pass
+
         doc_title = (
             Path(source_file).stem.removesuffix(".authorities").replace("_", " ").replace("-", " ").title()
         )
@@ -785,8 +844,14 @@ class CanonicalIngestor:
         if total > 6:
             fallback_headings += f" (+{total - 6} more sections)"
         synopsis = f"Covers {fallback_headings}."
+        llm_generated = False
 
         if llm is not None and auth_list:
+            if progress_callback:
+                progress_callback(
+                    "synopsis_llm",
+                    f"Synthesizing catalog synopsis for {source_file} ({total} rules)...",
+                )
             headings_block = "\n".join(
                 f"- [{a.auth_id}] {a.title}: {a.verbatim_quote[:140].replace(chr(10), ' ')}"
                 for a in sampled
@@ -815,10 +880,11 @@ class CanonicalIngestor:
                     jurisdiction_scope = draft.jurisdiction_scope.strip()
                 if draft.scope_synopsis.strip():
                     synopsis = draft.scope_synopsis.strip()
+                llm_generated = True
             except Exception as exc:
                 logger.warning("LLM card synopsis failed for %s (%s); using deterministic fallback.", source_file, exc)
 
-        return CanonicalDocumentCard(
+        card = CanonicalDocumentCard(
             doc_id=source_file,
             domain=domain,
             title=doc_title,
@@ -828,9 +894,21 @@ class CanonicalIngestor:
             authority_file=source_file,
             toc_file=toc_rel,
             authority_count=total,
+            content_hash=content_hash,
         )
+        if cache is not None:
+            cache[source_file] = {
+                "content_hash": content_hash,
+                "llm_generated": llm_generated,
+                "card": card.model_dump(),
+            }
+        return card
 
-    def rebuild_index_markdown(self, llm: Optional[LLMProvider] = None) -> Path:
+    def rebuild_index_markdown(
+        self,
+        llm: Optional[LLMProvider] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> Path:
         """Generates compact Tier 1 `canonical/INDEX.md`, `canonical/catalog.json`, and Tier 2 `.toc.md` files."""
         self.canonical_dir.mkdir(parents=True, exist_ok=True)
         router = CanonicalRouter(self.canonical_dir)
@@ -841,13 +919,31 @@ class CanonicalIngestor:
             key = auth.source_file or "general/uncategorized.md"
             by_source.setdefault(key, []).append(auth)
 
+        cache = self._load_synopsis_cache()
         cards: List[CanonicalDocumentCard] = []
-        for source_file, auth_list in sorted(by_source.items()):
+        source_items = sorted(by_source.items())
+        for idx, (source_file, auth_list) in enumerate(source_items, start=1):
             domain_label = Path(source_file).parts[0] if len(Path(source_file).parts) > 1 else "general"
+            if progress_callback:
+                progress_callback(
+                    "toc",
+                    f"[{idx}/{len(source_items)}] Writing TOC & checking synopsis for {source_file}...",
+                )
             self._write_toc_file(source_file, domain_label, auth_list)
             cards.append(
-                self._synthesize_document_card(source_file, domain_label, auth_list, llm=llm)
+                self._synthesize_document_card(
+                    source_file,
+                    domain_label,
+                    auth_list,
+                    llm=llm,
+                    cache=cache,
+                    progress_callback=progress_callback,
+                )
             )
+        # Prune stale deleted entries from cache and persist
+        active_keys = {sf for sf, _ in source_items}
+        cache = {k: v for k, v in cache.items() if k in active_keys}
+        self._save_synopsis_cache(cache)
 
         catalog_payload = {
             "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -892,7 +988,10 @@ class CanonicalIngestor:
         return index_path
 
     def ingest_corpus(
-        self, purge_encoded: bool = False, llm: Optional[LLMProvider] = None
+        self,
+        purge_encoded: bool = False,
+        llm: Optional[LLMProvider] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
     ) -> Dict[str, Any]:
         """Encodes raw canonical corpus files into 3-tier Markdown/JSON artifacts and rebuilds `INDEX.md`.
 
@@ -908,6 +1007,7 @@ class CanonicalIngestor:
             llm: Optional `LLMProvider` to synthesize full-document `scope_synopsis`
                 entries in Tier 1 `INDEX.md` and `catalog.json`. Falls back to
                 evenly sampled section headings when `None`.
+            progress_callback: Optional `(stage, message)` progress callback.
 
         Returns:
             Summary dictionary with processed files, generated paths, and authority counts.
@@ -917,7 +1017,9 @@ class CanonicalIngestor:
 
         purged_files: List[str] = []
         if purge_encoded:
-            for root_artifact in ("INDEX.md", "catalog.json"):
+            if progress_callback:
+                progress_callback("purge", "Purging stale encoded canonical files...")
+            for root_artifact in ("INDEX.md", "catalog.json", ".synopsis_cache.json"):
                 art_path = self.canonical_dir / root_artifact
                 if art_path.exists():
                     art_path.unlink()
@@ -940,12 +1042,20 @@ class CanonicalIngestor:
         processed_files: List[Dict[str, Any]] = []
 
         # 1. Process canonical/raw/<domain>/<file>
-        for raw_path in sorted(self.raw_dir.rglob("*")):
-            if not raw_path.is_file() or raw_path.suffix.lower() not in SUPPORTED_CANONICAL_EXTENSIONS:
-                continue
+        raw_candidates = [
+            p
+            for p in sorted(self.raw_dir.rglob("*"))
+            if p.is_file() and p.suffix.lower() in SUPPORTED_CANONICAL_EXTENSIONS
+        ]
+        for idx, raw_path in enumerate(raw_candidates, start=1):
             rel_to_raw = raw_path.relative_to(self.raw_dir)
             domain = self._slugify(rel_to_raw.parts[0] if len(rel_to_raw.parts) > 1 else "general")
             rel_source = str(raw_path.relative_to(self.canonical_dir))
+            if progress_callback:
+                progress_callback(
+                    "encoding",
+                    f"[{idx}/{len(raw_candidates)}] Encoding {rel_source} into [AUTH:...] rules...",
+                )
             out_path, count = self._encode_single_file(raw_path, domain, rel_source)
             if count > 0:
                 processed_files.append(
@@ -973,6 +1083,8 @@ class CanonicalIngestor:
                     continue
             domain = self._slugify(rel_parts[0] if len(rel_parts) > 1 else "general")
             rel_source = str(direct_path.relative_to(self.canonical_dir))
+            if progress_callback:
+                progress_callback("encoding", f"Encoding un-anchored {rel_source}...")
             out_path, count = self._encode_single_file(direct_path, domain, rel_source)
             if count > 0:
                 processed_files.append(
@@ -985,7 +1097,9 @@ class CanonicalIngestor:
                     }
                 )
 
-        index_path = self.rebuild_index_markdown(llm=llm)
+        if progress_callback:
+            progress_callback("index", "Rebuilding INDEX.md and Tier-2 Table of Contents...")
+        index_path = self.rebuild_index_markdown(llm=llm, progress_callback=progress_callback)
         total_authorities = len(CanonicalRouter(self.canonical_dir).list_authorities())
         summary = {
             "ingested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -1016,19 +1130,108 @@ class CanonicalIngestor:
             except json.JSONDecodeError:
                 catalog = {}
         raw_domains: Dict[str, List[str]] = {}
+        raw_files: List[Dict[str, Any]] = []
         if self.raw_dir.exists():
             for raw_path in sorted(self.raw_dir.rglob("*")):
                 if raw_path.is_file():
                     rel_parts = raw_path.relative_to(self.raw_dir).parts
                     dom = rel_parts[0] if len(rel_parts) > 1 else "general"
                     raw_domains.setdefault(dom, []).append(raw_path.name)
+                    raw_files.append(
+                        {
+                            "domain": dom,
+                            "filename": raw_path.name,
+                            "rel_path": str(raw_path.relative_to(self.canonical_dir)),
+                            "size_bytes": raw_path.stat().st_size,
+                        }
+                    )
         return {
             "index_markdown": router.get_index_markdown(),
             "catalog": catalog,
             "total_authorities": len(authorities),
             "authorities": authorities,
             "raw_domains": raw_domains,
+            "raw_files": raw_files,
         }
+
+    def get_document_detail(self, doc_id: str) -> Dict[str, Any]:
+        """Returns catalog metadata, Tier-2 TOC markdown, and `[AUTH:...]` rules for one document."""
+        clean_id = doc_id.strip().lstrip("/")
+        if ".." in Path(clean_id).parts:
+            raise ValueError(f"Invalid canonical doc_id: {doc_id}")
+        router = CanonicalRouter(self.canonical_dir)
+        authorities = [
+            a.model_dump()
+            for a in router.list_authorities().values()
+            if (a.source_file or "") == clean_id
+        ]
+        toc_path = self._toc_path_for_source(clean_id)
+        toc_markdown = toc_path.read_text(encoding="utf-8") if toc_path.exists() else ""
+
+        card: Optional[Dict[str, Any]] = None
+        catalog_path = self.canonical_dir / "catalog.json"
+        if catalog_path.exists():
+            try:
+                catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+                for doc in catalog.get("documents", []):
+                    if doc.get("doc_id") == clean_id:
+                        card = doc
+                        break
+            except json.JSONDecodeError:
+                card = None
+
+        return {
+            "doc_id": clean_id,
+            "card": card,
+            "toc_markdown": toc_markdown,
+            "authorities": authorities,
+        }
+
+    def delete_canonical_file(
+        self,
+        domain: str,
+        filename: str,
+        llm: Optional[LLMProvider] = None,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Deletes a raw or un-anchored canonical source file, cleans its encoded outputs, and refreshes `INDEX.md`."""
+        dom_slug = self._slugify(domain, fallback="general")
+        safe_name = Path(filename).name
+        if not safe_name or safe_name != filename or ".." in filename:
+            raise ValueError(f"Invalid filename: {filename}")
+
+        deleted_paths: List[str] = []
+        raw_target = self.raw_dir / dom_slug / safe_name
+        direct_target = self.canonical_dir / dom_slug / safe_name
+        for candidate in (raw_target, direct_target):
+            if candidate.exists() and candidate.is_file():
+                candidate.unlink()
+                deleted_paths.append(str(candidate.relative_to(self.canonical_dir)))
+
+        stem_slug = self._slugify(Path(safe_name).stem, fallback="authority")
+        domain_dir = self.canonical_dir / dom_slug
+        for encoded_candidate in (
+            domain_dir / f"{stem_slug}.md",
+            domain_dir / f"{stem_slug}.authorities.md",
+        ):
+            if encoded_candidate.exists() and encoded_candidate.is_file():
+                rel_encoded = str(encoded_candidate.relative_to(self.canonical_dir))
+                encoded_candidate.unlink()
+                deleted_paths.append(rel_encoded)
+                toc_path = self._toc_path_for_source(rel_encoded)
+                if toc_path.exists() and toc_path.is_file():
+                    toc_path.unlink()
+                    deleted_paths.append(str(toc_path.relative_to(self.canonical_dir)))
+
+        if not deleted_paths:
+            raise FileNotFoundError(f"Canonical file '{dom_slug}/{safe_name}' not found.")
+
+        if progress_callback:
+            progress_callback("rebuild", f"Rebuilding catalog index after removing {safe_name}...")
+        self.rebuild_index_markdown(llm=llm, progress_callback=progress_callback)
+        status = self.get_corpus_status()
+        status["deleted_files"] = deleted_paths
+        return status
 
 
 class MatterIngestor:
@@ -1311,11 +1514,16 @@ class MatterIngestor:
 
         return entries
 
-    def ingest_matter(self, matter_id: str) -> Dict[str, Any]:
+    def ingest_matter(
+        self,
+        matter_id: str,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> Dict[str, Any]:
         """Deterministically ingests all raw files for a matter into `inputs/indexed/`.
 
         Args:
             matter_id: Project/matter slug under `matters/`.
+            progress_callback: Optional `(stage, message)` progress callback.
 
         Returns:
             Summary manifest dictionary written to `inputs/indexed/manifest.json`.
@@ -1332,10 +1540,14 @@ class MatterIngestor:
         sheet_entries: List[Dict[str, Any]] = []
         indexed_files: List[Dict[str, Any]] = []
 
-        for raw_path in sorted(raw_dir.iterdir()):
-            if not raw_path.is_file():
-                continue
+        raw_candidates = [p for p in sorted(raw_dir.iterdir()) if p.is_file()]
+        for idx, raw_path in enumerate(raw_candidates, start=1):
             suffix = raw_path.suffix.lower()
+            if progress_callback:
+                progress_callback(
+                    "ingest_file",
+                    f"[{idx}/{len(raw_candidates)}] Indexing {raw_path.name}...",
+                )
             if suffix == ".pdf":
                 out_path, count = self.ingest_pdf(raw_path, indexed_dir)
                 indexed_files.append(
@@ -1372,6 +1584,11 @@ class MatterIngestor:
         (indexed_dir / "manifest.json").write_text(
             json.dumps(manifest, indent=2), encoding="utf-8"
         )
+        if progress_callback:
+            progress_callback(
+                "completed",
+                f"Indexed {len(indexed_files)} file(s) and {len(sheet_entries)} spreadsheet cells.",
+            )
         logger.info(
             "Ingested matter=%s files=%d sheet_cells=%d",
             matter_id,
@@ -1379,6 +1596,62 @@ class MatterIngestor:
             len(sheet_entries),
         )
         return manifest
+
+    def list_matter_files(self, matter_id: str) -> Dict[str, Any]:
+        """Returns detailed file metadata (`size_bytes`, indexed block/cell counts) for a matter."""
+        _, raw_dir, indexed_dir, _ = self._matter_dirs(matter_id)
+        manifest_path = indexed_dir / "manifest.json"
+        manifest = (
+            json.loads(manifest_path.read_text(encoding="utf-8"))
+            if manifest_path.exists()
+            else {"files": [], "spreadsheet_cells_indexed": 0}
+        )
+        manifest_by_raw = {f.get("raw"): f for f in manifest.get("files", [])}
+        files: List[Dict[str, Any]] = []
+        if raw_dir.exists():
+            for raw_path in sorted(raw_dir.iterdir()):
+                if not raw_path.is_file():
+                    continue
+                stat = raw_path.stat()
+                meta = manifest_by_raw.get(raw_path.name, {})
+                files.append(
+                    {
+                        "filename": raw_path.name,
+                        "suffix": raw_path.suffix.lower(),
+                        "size_bytes": stat.st_size,
+                        "indexed_artifact": meta.get("indexed"),
+                        "blocks": meta.get("blocks"),
+                        "cells": meta.get("cells"),
+                    }
+                )
+        return {
+            "matter_id": matter_id,
+            "indexed": manifest_path.exists(),
+            "manifest": manifest,
+            "files": files,
+        }
+
+    def delete_matter_file(
+        self,
+        matter_id: str,
+        filename: str,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> Dict[str, Any]:
+        """Deletes a raw matter input file and deterministically rebuilds the matter index."""
+        safe_name = Path(filename).name
+        if not safe_name or safe_name != filename or ".." in filename:
+            raise ValueError(f"Invalid filename: {filename}")
+        _, raw_dir, _, _ = self._matter_dirs(matter_id)
+        target = raw_dir / safe_name
+        if not target.exists() or not target.is_file():
+            raise FileNotFoundError(f"Matter file '{safe_name}' not found in '{matter_id}'.")
+        target.unlink()
+        if progress_callback:
+            progress_callback("delete", f"Removed {safe_name}; refreshing matter coordinates...")
+        manifest = self.ingest_matter(matter_id, progress_callback=progress_callback)
+        listing = self.list_matter_files(matter_id)
+        listing["manifest"] = manifest
+        return listing
 
     def _load_indexed_blocks(self, matter_id: str) -> List[Dict[str, Any]]:
         """Parses all `*.indexed.md` files for a matter into structured block dictionaries."""

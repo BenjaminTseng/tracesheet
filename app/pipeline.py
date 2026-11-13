@@ -683,8 +683,13 @@ class AuditPipelineRunner:
             return []
 
         claim_summaries = []
+        sections_context: Dict[str, Dict[str, Optional[str]]] = {}
         tag_re = re.compile(r"<ref\s+n=['\"](\d+)['\"]>(.*?)</ref>", re.DOTALL)
         for sec in sections:
+            sections_context[sec.section_id] = {
+                "section_title": sec.section_title,
+                "text": sec.text,
+            }
             supports_by_n = {grp.n: grp for grp in sec.supports}
             for n_str, clause in tag_re.findall(sec.text):
                 grp = supports_by_n.get(int(n_str))
@@ -704,8 +709,6 @@ class AuditPipelineRunner:
                     {
                         "claim_id": f"claim_{sec.section_id}_{n_str}",
                         "section_id": sec.section_id,
-                        "section_title": sec.section_title,
-                        "full_section_text": sec.text,
                         "clause": clause.strip(),
                         "l1_supports": l1_supports,
                     }
@@ -717,7 +720,10 @@ class AuditPipelineRunner:
             "discrepancies, scope conflicts, or logical tensions. Use exact `claim_id` strings in "
             "`involved_claim_ids`."
         )
-        prompt = f"Claims across sections:\n{json.dumps(claim_summaries, indent=2)}"
+        prompt = (
+            f"Sections context:\n{json.dumps(sections_context, indent=2)}\n\n"
+            f"Claims across sections:\n{json.dumps(claim_summaries, indent=2)}"
+        )
         res = self.llm.generate_structured(
             prompt=prompt,
             system_instruction=system_instruction,
@@ -873,7 +879,12 @@ class AuditPipelineRunner:
     ) -> Tuple[OutlinePlan, Dict[str, VerifiedFactLedger], Dict[str, SectionOutput]]:
         """Loads `stage_artifacts` or reconstructs fallback Tier-1 structures from a bundle."""
         artifacts = bundle.stage_artifacts or {}
-        if "outline_plan" in artifacts and "ledgers" in artifacts and "sections" in artifacts:
+        if (
+            "outline_plan" in artifacts
+            and "ledgers" in artifacts
+            and artifacts.get("sections")
+            and all(isinstance(s, dict) and s.get("text") for s in artifacts["sections"])
+        ):
             plan = OutlinePlan.model_validate(artifacts["outline_plan"])
             ledgers = {
                 k: VerifiedFactLedger.model_validate(v)

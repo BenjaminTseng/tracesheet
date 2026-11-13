@@ -37,6 +37,7 @@ from app.models import (
     CanonicalDocumentSynopsisDraft,
     SectionOutput,
     SourceLocator,
+    UnresolvedGapItem,
     VerifiedFactLedger,
 )
 
@@ -1694,7 +1695,13 @@ class MatterIngestor:
                         f"'{loc.locator_key}' does not exist in indexed matter files."
                     )
                     warnings.append(msg)
-                    ledger.unresolved_gaps.append(msg)
+                    ledger.unresolved_gaps.append(
+                        UnresolvedGapItem(
+                            query=fact.fact_id,
+                            recommended_handling="assumption",
+                            rationale=msg,
+                        )
+                    )
                     continue
                 disk_loc = blk["locator"]
                 norm_block = _normalize_for_match(blk.get("text"))
@@ -1705,7 +1712,13 @@ class MatterIngestor:
                         f"locator_key '{loc.locator_key}'."
                     )
                     warnings.append(msg)
-                    ledger.unresolved_gaps.append(msg)
+                    ledger.unresolved_gaps.append(
+                        UnresolvedGapItem(
+                            query=fact.fact_id,
+                            recommended_handling="assumption",
+                            rationale=msg,
+                        )
+                    )
                     continue
                 # Hydrate canonical disk metadata onto locator
                 hydrated_loc = loc.model_copy(
@@ -1730,7 +1743,13 @@ class MatterIngestor:
                         f"'{loc.file_name}:{loc.sheet or ''}!{loc.cell_range}' not found in sheets_index.jsonl."
                     )
                     warnings.append(msg)
-                    ledger.unresolved_gaps.append(msg)
+                    ledger.unresolved_gaps.append(
+                        UnresolvedGapItem(
+                            query=fact.fact_id,
+                            recommended_handling="assumption",
+                            rationale=msg,
+                        )
+                    )
                     continue
                 if not self._values_match(fact.quote, row):
                     msg = (
@@ -1738,7 +1757,13 @@ class MatterIngestor:
                         f"indexed cell value '{row.get('display')}'."
                     )
                     warnings.append(msg)
-                    ledger.unresolved_gaps.append(msg)
+                    ledger.unresolved_gaps.append(
+                        UnresolvedGapItem(
+                            query=fact.fact_id,
+                            recommended_handling="assumption",
+                            rationale=msg,
+                        )
+                    )
                     continue
                 disk_loc = row.get("locator", {})
                 hydrated_loc = loc.model_copy(
@@ -1755,7 +1780,13 @@ class MatterIngestor:
             # Fact has neither locator_key nor cell_range when indexed corpus exists
             msg = f"Dropped unverified fact '{fact.fact_id}': missing locator_key and cell_range."
             warnings.append(msg)
-            ledger.unresolved_gaps.append(msg)
+            ledger.unresolved_gaps.append(
+                UnresolvedGapItem(
+                    query=fact.fact_id,
+                    recommended_handling="assumption",
+                    rationale=msg,
+                )
+            )
 
         if warnings:
             logger.warning("MatterIngestor ledger verification flagged %d issues for %s", len(warnings), matter_id)
@@ -1776,50 +1807,88 @@ class MatterIngestor:
         """
         errors: List[str] = []
 
-        # 1. Index verified L1 facts from ledger (if ledger contains verified_facts)
-        facts_by_key: Dict[str, Any] = {}
-        facts_by_cell: Dict[Tuple[str, str], Any] = {}
+        # 1. Index verified L1 facts from ledger (allow multiple facts per locator_key/cell)
+        facts_by_key: Dict[str, List[Any]] = {}
+        facts_by_cell: Dict[Tuple[str, str], List[Any]] = {}
         for fact in ledger.verified_facts:
             if fact.locator.locator_key:
-                facts_by_key[fact.locator.locator_key] = fact
+                facts_by_key.setdefault(fact.locator.locator_key, []).append(fact)
             if fact.locator.cell_range:
-                facts_by_cell[(fact.locator.file_name, fact.locator.cell_range)] = fact
+                facts_by_cell.setdefault((fact.locator.file_name, fact.locator.cell_range), []).append(fact)
+
+        available_hints = [
+            f"{f.locator.model_dump(exclude_none=True)} -> '{(f.quote or '')[:60]}'"
+            for f in ledger.verified_facts[:8]
+        ]
 
         # 2. Index hydrated L2 governing authorities (merged with ledger.additional_authorities)
         auth_map: Dict[str, CanonicalAuthorityRef] = {}
         for auth in list(governing_authorities) + list(ledger.additional_authorities):
             auth_map[auth.auth_id] = auth
 
+        def _check_evidence_node(node: Any, label: str) -> None:
+            loc = node.locator
+            if loc is None:
+                nq = _normalize_for_match(node.quote)
+                suggested_fact = None
+                if nq:
+                    for f in ledger.verified_facts:
+                        nf = _normalize_for_match(f.quote)
+                        if nf and (nq in nf or nf in nq):
+                            suggested_fact = f
+                            break
+                hint = (
+                    f" Set `fact_id`: \"{suggested_fact.fact_id}\" and copy `locator`: "
+                    f"{json.dumps(suggested_fact.locator.model_dump(exclude_none=True))}"
+                    if suggested_fact is not None
+                    else f" Valid ledger facts/locators: {'; '.join(available_hints)}"
+                )
+                errors.append(
+                    f"{label} '{node.title}' is type='evidence' without a locator."
+                    f"{hint} (Or change type to 'assumption'/'reasoning' if stating an evidentiary gap.)"
+                )
+            elif loc.locator_key:
+                matched_facts = facts_by_key.get(loc.locator_key)
+                if not matched_facts:
+                    errors.append(
+                        f"{label} cites locator_key '{loc.locator_key}' "
+                        "which is not present in the VerifiedFactLedger."
+                        f" Valid ledger locators: {'; '.join(available_hints)}"
+                    )
+                else:
+                    nq = _normalize_for_match(node.quote)
+                    quote_ok = not nq or any(
+                        (nf := _normalize_for_match(f.quote)) and (nq in nf or nf in nq)
+                        for f in matched_facts
+                    )
+                    if not quote_ok:
+                        alt_hint = ""
+                        for f in ledger.verified_facts:
+                            nf = _normalize_for_match(f.quote)
+                            if nf and (nq in nf or nf in nq):
+                                alt_hint = (
+                                    f" Your quote matches ledger locator "
+                                    f"{json.dumps(f.locator.model_dump(exclude_none=True))}; pair the matching locator and quote."
+                                )
+                                break
+                        errors.append(
+                            f"{label} quote at '{loc.locator_key}' does not match verified ledger text."
+                            f"{alt_hint}"
+                        )
+            elif loc.cell_range:
+                matched_cells = facts_by_cell.get((loc.file_name, loc.cell_range))
+                if not matched_cells:
+                    errors.append(
+                        f"{label} cites spreadsheet cell "
+                        f"'{loc.file_name}!{loc.cell_range}' which is not in VerifiedFactLedger."
+                        f" Valid ledger locators: {'; '.join(available_hints)}"
+                    )
+
         for group in draft.supports:
             for item in group.items:
                 # L1 verification when citing factual evidence against a non-empty ledger
                 if item.type == "evidence" and ledger.verified_facts:
-                    loc = item.locator
-                    if loc is None:
-                        errors.append(
-                            f"SupportGroup n={group.n} item '{item.title}' is type='evidence' without a locator."
-                        )
-                    elif loc.locator_key:
-                        matched_fact = facts_by_key.get(loc.locator_key)
-                        if matched_fact is None:
-                            errors.append(
-                                f"SupportGroup n={group.n} cites locator_key '{loc.locator_key}' "
-                                "which is not present in the VerifiedFactLedger."
-                            )
-                        else:
-                            nq = _normalize_for_match(item.quote)
-                            nf = _normalize_for_match(matched_fact.quote)
-                            if nq and nf and nq not in nf and nf not in nq:
-                                errors.append(
-                                    f"SupportGroup n={group.n} quote at '{loc.locator_key}' does not match verified ledger text."
-                                )
-                    elif loc.cell_range:
-                        matched_fact = facts_by_cell.get((loc.file_name, loc.cell_range))
-                        if matched_fact is None:
-                            errors.append(
-                                f"SupportGroup n={group.n} cites spreadsheet cell "
-                                f"'{loc.file_name}!{loc.cell_range}' which is not in VerifiedFactLedger."
-                            )
+                    _check_evidence_node(item, f"SupportGroup n={group.n} item")
 
                 # L2+ canonical authority verification
                 if item.type == "authority" and auth_map:
@@ -1841,6 +1910,8 @@ class MatterIngestor:
                             )
 
                 for sub in item.sub_supports:
+                    if sub.type == "evidence" and ledger.verified_facts:
+                        _check_evidence_node(sub, f"SupportGroup n={group.n} sub_support n={sub.n}")
                     if sub.type == "authority":
                         if not auth_map:
                             errors.append(

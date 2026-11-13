@@ -14,7 +14,7 @@ from __future__ import annotations
 import datetime
 import re
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # =====================================================================
@@ -148,6 +148,7 @@ class SubSupportItem(BaseModel):
     n: int
     type: SupportNodeType
     title: str
+    fact_id: Optional[str] = None
     quote: Optional[str] = None
     body: Optional[str] = None
     formula: Optional[str] = None
@@ -176,6 +177,7 @@ class SupportItem(BaseModel):
 
     type: SupportNodeType
     title: str
+    fact_id: Optional[str] = None
     quote: Optional[str] = None
     body: Optional[str] = None
     formula: Optional[str] = None
@@ -219,6 +221,108 @@ class SectionOutput(BaseModel):
     drafting_notes: Optional[str] = None
     text: str
     supports: List[SupportGroup]
+
+
+class Stage3CompactLocator(BaseModel):
+    """Lightweight file/cell locator emitted by Stage 2 and Stage 3 before disk hydration."""
+
+    source_type: Literal["markdown", "pdf", "spreadsheet"]
+    file_name: str
+    locator_key: Optional[str] = None
+    sheet: Optional[str] = None
+    cell_range: Optional[str] = None
+
+
+class Stage2CanonicalRefDraft(BaseModel):
+    """Lightweight canonical authority citation emitted by Stage 2 before disk hydration."""
+
+    auth_id: str
+    title: str
+    verbatim_quote: str
+    source_file: str
+
+
+class Stage2ExtractedFactDraft(BaseModel):
+    """Lightweight Stage 2 fact entry paired with `Stage3CompactLocator`."""
+
+    fact_id: str
+    query_addressed: str
+    title: str
+    quote: str
+    formula: Optional[str] = None
+    locator: Stage3CompactLocator
+
+
+class Stage2VerifiedFactLedgerDraft(BaseModel):
+    """Compact wire schema for Stage 2 decoding into `VerifiedFactLedger`."""
+
+    section_id: str
+    harvest_summary: str
+    verified_facts: List[Stage2ExtractedFactDraft]
+    unresolved_gaps: List[UnresolvedGapItem]
+    additional_authorities: List[Stage2CanonicalRefDraft]
+
+
+class Stage3SubSupportItem(BaseModel):
+    """Non-recursive Level-2 support item for lightweight Stage 3 JSON decoding."""
+
+    n: int
+    type: SupportNodeType
+    title: str
+    fact_id: Optional[str] = None
+    quote: Optional[str] = None
+    body: Optional[str] = None
+    formula: Optional[str] = None
+    url: Optional[str] = None
+    locator: Optional[Stage3CompactLocator] = None
+
+
+class Stage3SupportItem(BaseModel):
+    """Lightweight Stage 3 support node without Stage-4 audit fields or 22-field locators."""
+
+    type: SupportNodeType
+    title: str
+    fact_id: Optional[str] = None
+    quote: Optional[str] = None
+    body: Optional[str] = None
+    formula: Optional[str] = None
+    locator: Optional[Stage3CompactLocator] = None
+    sub_supports: List[Stage3SubSupportItem] = Field(default_factory=list)
+
+
+class Stage3SupportGroup(BaseModel):
+    """Lightweight Stage 3 support cluster matching `<ref n='X'>`."""
+
+    n: int
+    title: Optional[str] = None
+    items: List[Stage3SupportItem] = Field(min_length=1)
+
+
+class Stage3SectionDraft(BaseModel):
+    """Compact non-recursive wire schema for Stage 3 decoding into `SectionOutput`."""
+
+    section_id: str
+    section_title: str
+    drafting_notes: str
+    text: str
+    supports: List[Stage3SupportGroup]
+
+
+def compact_json_schema(model_cls: type[BaseModel]) -> Dict[str, Any]:
+    """Returns a Pydantic JSON schema stripped of verbose string docstring descriptions."""
+
+    def _strip(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            return {
+                k: _strip(v)
+                for k, v in obj.items()
+                if not (k == "description" and isinstance(v, str))
+            }
+        if isinstance(obj, list):
+            return [_strip(item) for item in obj]
+        return obj
+
+    return _strip(model_cls.model_json_schema())
 
 
 # =====================================================================
@@ -564,6 +668,22 @@ class SectionAuditResult(BaseModel):
     critique_for_retry: Optional[str] = None
     node_verdicts: Dict[int, NodeAudit] = Field(default_factory=dict)
     decision_probabilities: Dict[str, float] = Field(default_factory=dict)
+
+    @field_validator("node_verdicts", mode="before")
+    @classmethod
+    def _coerce_node_verdict_keys(cls, v: Any) -> Any:
+        """Accepts `'ref-1'`, `'n=1'`, or `'1'` keys from structured LLM outputs."""
+        if not isinstance(v, dict):
+            return v
+        coerced: Dict[int, Any] = {}
+        for k, val in v.items():
+            if isinstance(k, int):
+                coerced[k] = val
+            else:
+                match = re.search(r"(\d+)", str(k))
+                if match:
+                    coerced[int(match.group(1))] = val
+        return coerced
 
 
 # =====================================================================

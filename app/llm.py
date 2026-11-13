@@ -19,7 +19,15 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar,
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
-from app.models import DecisionAnswerItem, DecisionBatchResult
+from app.models import (
+    DecisionAnswerItem,
+    DecisionBatchResult,
+    SectionOutput,
+    Stage2VerifiedFactLedgerDraft,
+    Stage3SectionDraft,
+    VerifiedFactLedger,
+    compact_json_schema,
+)
 
 logger = logging.getLogger("jd_screen.llm")
 
@@ -203,10 +211,16 @@ class GeminiInteractionsProvider:
         Returns:
             Validated instance of `response_model`.
         """
+        if response_model is SectionOutput:
+            schema_cls: Type[BaseModel] = Stage3SectionDraft
+        elif response_model is VerifiedFactLedger:
+            schema_cls = Stage2VerifiedFactLedgerDraft
+        else:
+            schema_cls = response_model
         response_format = {
             "type": "text",
             "mime_type": "application/json",
-            "schema": response_model.model_json_schema(),
+            "schema": compact_json_schema(schema_cls),
         }
         interaction = self.client.interactions.create(
             model=self.model,
@@ -283,10 +297,16 @@ class GeminiInteractionsProvider:
             }
             for t in tools
         ]
+        if response_model is SectionOutput:
+            schema_cls: Type[BaseModel] = Stage3SectionDraft
+        elif response_model is VerifiedFactLedger:
+            schema_cls = Stage2VerifiedFactLedgerDraft
+        else:
+            schema_cls = response_model
         response_format = {
             "type": "text",
             "mime_type": "application/json",
-            "schema": response_model.model_json_schema(),
+            "schema": compact_json_schema(schema_cls),
         }
 
         interaction = self.client.interactions.create(

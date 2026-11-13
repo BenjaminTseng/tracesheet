@@ -403,7 +403,7 @@ def test_verify_and_hydrate_ledger_and_section_citations(tmp_path: Path) -> None
     assert verified_ledger.verified_facts[0].fact_id == "f_real"
     assert verified_ledger.verified_facts[0].locator.payload_hash is not None
     assert len(warnings) == 1
-    assert "CONTRACT-SEC-999" in verified_ledger.unresolved_gaps[0]
+    assert "CONTRACT-SEC-999" in verified_ledger.unresolved_gaps[0].rationale
 
     auth = CanonicalAuthorityRef(
         auth_id="AUTH:NOTICE-01",

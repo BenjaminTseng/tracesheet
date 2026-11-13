@@ -5,13 +5,13 @@ An agentic question-answering and verification workspace that synthesizes ground
 ## Architecture Overview
 
 1. **Provider-Agnostic LLM Gateway (`app/llm.py`):**
-   - Defines `LLMProvider` (`generate_structured`, `generate_text`, `run_tool_loop`).
-   - Primary implementation: `GeminiInteractionsProvider` built on the Google Gemini Interactions API (`client.interactions.create` via `google-genai`), with `response_format` JSON Schema constrained decoding and stateful `previous_interaction_id` tool-calling turns.
+   - Defines `LLMProvider` (`generate_structured`, `generate_text`, `run_tool_loop`, `evaluate_decisions`).
+   - Primary implementation: `GeminiInteractionsProvider` built on the Google Gemini Interactions API (`client.interactions.create`) + Gemini Decisions API (`client.decisions.create`), with automatic `.env` loading via `python-dotenv`.
    - Includes drop-in adapters for `AnthropicProvider` and `OpenAIProvider`, plus `MockLLMProvider` for offline tests.
 
-2. **Deterministic Ingestion & Coordinate Stamping (`app/ingest.py`):**
-   - `CanonicalRouter`: Reads `canonical/INDEX.md` and parses `[AUTH:...]` anchored canonical Markdown files `(b)`.
-   - `MatterIngestor`: Indexes `matters/<matter_id>/inputs/raw/` into coordinate-stamped `*.indexed.md` blocks (`pdfplumber` `[x1, y1, x2, y2]` bounding boxes, Markdown block locators, SHA-256 digests) and `sheets_index.jsonl` (dual-pass `openpyxl` formulas + evaluated primitives, plus CSV), exposing deterministic Stage 2 search tools.
+2. **Deterministic Ingestion & 3-Tier Canonical Indexing (`app/ingest.py`):**
+   - `CanonicalIngestor` & `CanonicalRouter`: Converts raw documents under `canonical/raw/<domain>/` (`.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`, `.xlsm`, `.csv`) into Tier 3 `[AUTH:...]` Markdown blocks, Tier 2 per-document `.toc.md` tables, and Tier 1 `canonical/INDEX.md` + `canonical/catalog.json` cards.
+   - `MatterIngestor`: Indexes `matters/<matter_id>/inputs/raw/` into coordinate-stamped `*.indexed.md` blocks (`pdfplumber` `[x1, y1, x2, y2]` bounding boxes, Markdown block locators, SHA-256 digests) and `sheets_index.jsonl` (dual-pass `openpyxl` formulas + evaluated primitives, plus CSV), and verifies L1/L2 citations deterministically.
 
 3. **Four-Stage Agentic Pipeline & Smart Feedback Regenerator (`app/pipeline.py`):**
    - **Stage 1:** Question decomposition & canonical `[AUTH:...]` hydration (`OutlinePlan`).
@@ -25,15 +25,26 @@ An agentic question-answering and verification workspace that synthesizes ground
 
 ## WSL2 Execution & Testing Commands
 
-### 1. Run Unit & API Integration Test Suite
+### 0. Configure `.env` (Optional, for Live Gemini Calls)
+```bash
+cd ~/restructure/jd_screen
+cp .env.example .env
+# Edit .env with GEMINI_API_KEY and optional JD_SCREEN_MODEL (e.g., gemini-4-argon or gemini-4-hydrogen)
+```
+
+### 1. Run Offline Unit, Retry & API Integration Tests (and Opt-In Live Eval)
 ```bash
 cd ~/restructure/jd_screen
 uv run pytest tests/ -v
+
+# Opt-in live Gemini evaluation suite (requires GEMINI_API_KEY in .env or environment):
+RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py -v -s
 ```
 
-### 2. Ingest a Project Matter via CLI
+### 2. Ingest Canonical Corpus & Project Matter via CLI
 ```bash
 cd ~/restructure/jd_screen
+uv run python main.py --ingest-canonical --purge-canonical
 uv run python main.py --ingest-matter legal_motion_1332
 ```
 

@@ -9,7 +9,13 @@ from typing import Any, Dict
 
 from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.llm import MockLLMProvider
-from app.models import AuditStatus, NodeAudit, ReviewComment
+from app.models import (
+    AuditStatus,
+    NodeAudit,
+    ReviewComment,
+    SectionPlan,
+    VerifiedFactLedger,
+)
 from app.pipeline import (
     AuditPipelineRunner,
     CrossSectionAuditOutput,
@@ -872,3 +878,397 @@ def test_stage4_auditor_and_triage_use_decisions_api_zero_token_fast_path(
     assert "1209 North Orange St" in updated.artifact.sections[0].content
     assert not any(c.get("model") in ("SectionAuditResult", "FeedbackTriageDecision") for c in mock_llm.call_log)
     assert sum(1 for c in mock_llm.call_log if c.get("method") == "evaluate_decisions") == 3
+
+
+def test_stage3_retries_on_section_validator_failure_and_injects_errors_into_prompt(
+    tmp_path: Path,
+) -> None:
+    """Verifies Stage 3 retries when `SectionValidator` fails and injects errors into the retry prompt."""
+    router, ingestor = _setup_workspace(tmp_path)
+    section_plan = SectionPlan.model_validate(
+        {
+            "section_id": "sec_retry",
+            "section_title": "I. Headquarters",
+            "stated_intention": "Confirm Delaware headquarters.",
+            "routing_rationale": "Uses Exhibit_B with Hertz nerve center test.",
+            "governing_authorities": [router.get_authority("AUTH:HERTZ-2010").model_dump()],
+            "required_fact_queries": ["Where is HQ?"],
+        }
+    )
+    ledger = VerifiedFactLedger.model_validate(
+        {
+            "section_id": "sec_retry",
+            "harvest_summary": "Verified Exhibit_B registration.",
+            "verified_facts": [
+                {
+                    "fact_id": "f1",
+                    "query_addressed": "Where is HQ?",
+                    "title": "Exhibit B",
+                    "quote": "1209 North Orange St, Wilmington, DE.",
+                    "locator": {
+                        "source_type": "markdown",
+                        "file_name": "Exhibit_B.md",
+                        "locator_key": "EXHIBIT_B-SEC-1",
+                    },
+                }
+            ],
+            "unresolved_gaps": [],
+        }
+    )
+
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "SectionOutput": [
+                # Attempt 1: orphaned <ref n='2'> tag triggers SectionValidator failure
+                {
+                    "section_id": "sec_retry",
+                    "section_title": "I. Headquarters",
+                    "drafting_notes": "Attempt 1 with orphan ref.",
+                    "text": "Claim <ref n='1'>one</ref> and orphan <ref n='2'>two</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "HQ Fact",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Exhibit B",
+                                    "quote": "1209 North Orange St, Wilmington, DE.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Exhibit_B.md",
+                                        "locator_key": "EXHIBIT_B-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                # Attempt 2: clean parity passes validation
+                {
+                    "section_id": "sec_retry",
+                    "section_title": "I. Headquarters",
+                    "drafting_notes": "Removed orphaned tag and verified parity.",
+                    "text": "Claim <ref n='1'>one</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "HQ Fact",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Exhibit B",
+                                    "quote": "1209 North Orange St, Wilmington, DE.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Exhibit_B.md",
+                                        "locator_key": "EXHIBIT_B-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+
+    draft = AuditPipelineRunner(mock_llm, router, ingestor).run_stage3_section_drafter(
+        section_plan, ledger
+    )
+    assert draft.text == "Claim <ref n='1'>one</ref>."
+    assert len(mock_llm.call_log) == 2
+    assert "Structural & Citation Verification Errors to Fix" in mock_llm.call_log[1]["prompt"]
+    assert "Inline tags lack support definitions: [2]" in mock_llm.call_log[1]["prompt"]
+
+
+def test_stage4_decisions_rejection_triggers_critique_and_stage3_redraft(
+    tmp_path: Path,
+) -> None:
+    """Verifies a low Decisions API score triggers structured critique and Stage 3 corrective redraft."""
+    router, ingestor = _setup_workspace(tmp_path)
+    section_plan = SectionPlan.model_validate(
+        {
+            "section_id": "sec_damages",
+            "section_title": "II. Damages",
+            "stated_intention": "Verify unpaid invoice total.",
+            "routing_rationale": "Pure L1 ledger arithmetic.",
+            "governing_authorities": [],
+            "required_fact_queries": ["What is the unpaid invoice total?"],
+        }
+    )
+    ledger = VerifiedFactLedger.model_validate(
+        {
+            "section_id": "sec_damages",
+            "harvest_summary": "Verified $42,150.00 in Ledger.csv!B2.",
+            "verified_facts": [
+                {
+                    "fact_id": "f_inv",
+                    "query_addressed": "What is the unpaid invoice total?",
+                    "title": "Unpaid Invoices CSV",
+                    "quote": "$42,150.00",
+                    "locator": {
+                        "source_type": "spreadsheet",
+                        "file_name": "Ledger.csv",
+                        "sheet": "CSV",
+                        "cell_range": "B2",
+                        "raw_value": 42150.0,
+                    },
+                }
+            ],
+            "unresolved_gaps": [],
+        }
+    )
+
+    critique_msg = "Claim 1 states $90,000 but Ledger.csv shows $42,150."
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "SectionOutput": [
+                # Attempt 1: inaccurate dollar figure in L0 clause prose
+                {
+                    "section_id": "sec_damages",
+                    "section_title": "II. Damages",
+                    "drafting_notes": "Initial damages draft.",
+                    "text": "Unpaid invoices <ref n='1'>total $90,000</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "Invoice Balance",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Unpaid Invoices CSV",
+                                    "quote": "$42,150.00",
+                                    "locator": {
+                                        "source_type": "spreadsheet",
+                                        "file_name": "Ledger.csv",
+                                        "sheet": "CSV",
+                                        "cell_range": "B2",
+                                        "raw_value": 42150.0,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                # Attempt 2: corrected to match Ledger.csv
+                {
+                    "section_id": "sec_damages",
+                    "section_title": "II. Damages",
+                    "drafting_notes": "Corrected figure to $42,150 per Stage 4 critique.",
+                    "text": "Unpaid invoices <ref n='1'>total $42,150</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "title": "Invoice Balance",
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Unpaid Invoices CSV",
+                                    "quote": "$42,150.00",
+                                    "locator": {
+                                        "source_type": "spreadsheet",
+                                        "file_name": "Ledger.csv",
+                                        "sheet": "CSV",
+                                        "cell_range": "B2",
+                                        "raw_value": 42150.0,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "SectionAuditResult": {
+                "section_id": "sec_damages",
+                "check_a_relevance": True,
+                "check_b_congruence": False,
+                "check_c_intent": True,
+                "audit_rationale": "Drafted figure contradicts Ledger.csv!B2.",
+                "critique_for_retry": critique_msg,
+                "passed": False,
+            },
+        },
+        decision_responses=[
+            # Attempt 1 fails congruence gate (< 0.80)
+            {
+                "check_a_relevance": {"question_id": "check_a_relevance", "question_type": "noul", "noul": 0.92, "confidence": 0.92},
+                "check_b_congruence": {"question_id": "check_b_congruence", "question_type": "noul", "noul": 0.15, "confidence": 0.85},
+                "check_c_intent": {"question_id": "check_c_intent", "question_type": "noul", "noul": 0.90, "confidence": 0.90},
+                "claim_1_entailment": {"question_id": "claim_1_entailment", "question_type": "noul", "noul": 0.12, "confidence": 0.88},
+                "claim_1_status": {"question_id": "claim_1_status", "question_type": "choice", "choice": "disputed", "probabilities": {"disputed": 0.88}, "confidence": 0.88},
+            },
+            # Attempt 2 clears every gate
+            {
+                "check_a_relevance": {"question_id": "check_a_relevance", "question_type": "noul", "noul": 0.96, "confidence": 0.96},
+                "check_b_congruence": {"question_id": "check_b_congruence", "question_type": "noul", "noul": 0.95, "confidence": 0.95},
+                "check_c_intent": {"question_id": "check_c_intent", "question_type": "noul", "noul": 0.97, "confidence": 0.97},
+                "claim_1_entailment": {"question_id": "claim_1_entailment", "question_type": "noul", "noul": 0.94, "confidence": 0.94},
+                "claim_1_status": {"question_id": "claim_1_status", "question_type": "choice", "choice": "verified", "probabilities": {"verified": 0.94}, "confidence": 0.94},
+            },
+        ],
+    )
+
+    draft, audit_res = AuditPipelineRunner(mock_llm, router, ingestor)._draft_and_audit_section(
+        "m_test", section_plan, ledger
+    )
+    assert "$42,150" in draft.text
+    assert audit_res.passed is True
+    assert draft.supports[0].audit is not None
+    assert draft.supports[0].audit.status == "verified"
+
+    section_calls = [c for c in mock_llm.call_log if c.get("model") == "SectionOutput"]
+    assert len(section_calls) == 2
+    assert critique_msg in section_calls[1]["prompt"]
+
+
+def test_stage4_stitch_invariant_violation_falls_back_to_unsmoothed_sections(
+    tmp_path: Path,
+) -> None:
+    """Verifies StitchInvariantGate rejects broken stitch edits and falls back to raw sections."""
+    router, ingestor = _setup_workspace(tmp_path)
+    mock_llm = MockLLMProvider(
+        structured_responses={
+            "OutlinePlan": {
+                "document_title": "Stitch Guard Memo",
+                "executive_summary_intent": "Verify stitch fallback.",
+                "sections": [
+                    {
+                        "section_id": "sec_01",
+                        "section_title": "I. HQ",
+                        "stated_intention": "Check HQ.",
+                        "routing_rationale": "Uses Exhibit_B.",
+                        "governing_authorities": [],
+                        "required_fact_queries": ["Where is HQ?"],
+                    },
+                    {
+                        "section_id": "sec_02",
+                        "section_title": "II. Damages",
+                        "stated_intention": "Check invoice.",
+                        "routing_rationale": "Uses Ledger.csv.",
+                        "governing_authorities": [],
+                        "required_fact_queries": ["What is unpaid invoice balance?"],
+                    },
+                ],
+            },
+            "VerifiedFactLedger": [
+                {
+                    "section_id": "sec_01",
+                    "verified_facts": [
+                        {
+                            "fact_id": "f1",
+                            "query_addressed": "Where is HQ?",
+                            "title": "Exhibit B",
+                            "quote": "1209 North Orange St, Wilmington, DE.",
+                            "locator": {
+                                "source_type": "markdown",
+                                "file_name": "Exhibit_B.md",
+                                "locator_key": "EXHIBIT_B-SEC-1",
+                            },
+                        }
+                    ],
+                    "unresolved_gaps": [],
+                },
+                {
+                    "section_id": "sec_02",
+                    "verified_facts": [
+                        {
+                            "fact_id": "f2",
+                            "query_addressed": "What is unpaid invoice balance?",
+                            "title": "Ledger CSV",
+                            "quote": "42150.0",
+                            "locator": {
+                                "source_type": "spreadsheet",
+                                "file_name": "Ledger.csv",
+                                "sheet": "CSV",
+                                "cell_range": "B2",
+                                "raw_value": 42150.0,
+                            },
+                        }
+                    ],
+                    "unresolved_gaps": [],
+                },
+            ],
+            "SectionOutput": [
+                {
+                    "section_id": "sec_01",
+                    "section_title": "I. HQ",
+                    "text": "HQ is <ref n='1'>located in Wilmington</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Exhibit B",
+                                    "quote": "1209 North Orange St, Wilmington, DE.",
+                                    "locator": {
+                                        "source_type": "markdown",
+                                        "file_name": "Exhibit_B.md",
+                                        "locator_key": "EXHIBIT_B-SEC-1",
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "section_id": "sec_02",
+                    "section_title": "II. Damages",
+                    "text": "Invoices <ref n='1'>total $42,150</ref>.",
+                    "supports": [
+                        {
+                            "n": 1,
+                            "items": [
+                                {
+                                    "type": "evidence",
+                                    "title": "Ledger CSV",
+                                    "quote": "42150.0",
+                                    "locator": {
+                                        "source_type": "spreadsheet",
+                                        "file_name": "Ledger.csv",
+                                        "sheet": "CSV",
+                                        "cell_range": "B2",
+                                        "raw_value": 42150.0,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                },
+            ],
+            "SectionAuditResult": [
+                {
+                    "section_id": "sec_01",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                },
+                {
+                    "section_id": "sec_02",
+                    "check_a_relevance": True,
+                    "check_b_congruence": True,
+                    "check_c_intent": True,
+                    "passed": True,
+                },
+            ],
+            "CrossSectionAuditOutput": CrossSectionAuditOutput(tensions=[]),
+            # Corrupt StitchedDocumentOutput deliberately drops <ref n='sec_01:1'> tag!
+            "StitchedDocumentOutput": StitchedDocumentOutput(
+                sections=[
+                    {"section_id": "sec_01", "smoothed_text": "HQ is located in Wilmington without ref tag."},
+                    {"section_id": "sec_02", "smoothed_text": "Invoices <ref n='sec_02:1'>total $42,150</ref>."},
+                ]
+            ),
+        }
+    )
+
+    bundle = AuditPipelineRunner(mock_llm, router, ingestor).run_full_pipeline(
+        matter_id="m_test",
+        question="Verify diversity and damages",
+        bundle_id="stitch_fallback_test",
+        smooth_transitions=True,
+    )
+    assert "<ref id='claim_sec_01_1'>located in Wilmington</ref>" in bundle.artifact.sections[0].content
+    assert "<ref id='claim_sec_02_1'>total $42,150</ref>" in bundle.artifact.sections[1].content

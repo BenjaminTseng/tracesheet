@@ -208,8 +208,15 @@ class AuditPipelineRunner:
         system_instruction = (
             "You are a Forensic Fact Extractor. Use the project search and spreadsheet tools "
             "to gather exact evidence from the coordinate-indexed project inputs (a). You MUST "
-            "copy the exact `locator` dictionary and verbatim `quote` (or `raw_value` and `formula`) "
+            "copy the exact `locator` coordinates and verbatim `quote` (or `raw_value` and `formula`) "
             "returned by the tools—never invent page numbers, locator keys, or cell coordinates. "
+            "MANDATORY LOCATOR COORDINATES: "
+            "(1) For markdown/pdf sources, set `locator.source_type` to `'markdown'` or `'pdf'`, set "
+            "`locator.file_name`, and ALWAYS populate `locator.locator_key` (preferring substantive body "
+            "paragraph or table-row locators over bare `# Heading` locators). "
+            "(2) For spreadsheet/CSV sources, set `locator.source_type` to `'spreadsheet'`, set "
+            "`locator.file_name`, and ALWAYS populate BOTH `locator.sheet` (e.g. `'CSV'`) AND exact "
+            "`locator.cell_range` (e.g. `'C2'`). "
             "If evidence reveals an unanticipated issue governed by a canonical rule not listed "
             "under Governing Authorities, use the canonical browse/search/read tools to fetch it "
             "and list it in `additional_authorities`. Record unanswerable queries in `unresolved_gaps`, "
@@ -256,6 +263,68 @@ class AuditPipelineRunner:
     # Stage 3: Constrained Tier-1 Section Drafting (with validator retries)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _hydrate_node_locator(
+        node: Any,
+        by_fact_id: Dict[str, Any],
+        by_key: Dict[str, Any],
+        by_cell: Dict[Tuple[Optional[str], Optional[str]], Any],
+    ) -> None:
+        """Hydrates full disk `SourceLocator` metadata onto a support or sub-support node."""
+        matched_fact = by_fact_id.get(node.fact_id) if getattr(node, "fact_id", None) else None
+        if matched_fact is not None:
+            if node.locator is None:
+                node.locator = matched_fact.locator.model_copy()
+            else:
+                merged = matched_fact.locator.model_dump()
+                for k, v in node.locator.model_dump(exclude_none=True).items():
+                    merged[k] = v
+                node.locator = SourceLocator.model_validate(merged)
+            if not node.quote and matched_fact.quote:
+                node.quote = matched_fact.quote
+            return
+
+        if node.locator is not None:
+            if node.locator.locator_key and node.locator.locator_key in by_key:
+                disk_loc = by_key[node.locator.locator_key].locator.model_dump()
+                for k, v in node.locator.model_dump(exclude_none=True).items():
+                    disk_loc[k] = v
+                node.locator = SourceLocator.model_validate(disk_loc)
+            elif (
+                node.locator.file_name
+                and node.locator.cell_range
+                and (node.locator.file_name, node.locator.cell_range) in by_cell
+            ):
+                disk_loc = by_cell[
+                    (node.locator.file_name, node.locator.cell_range)
+                ].locator.model_dump()
+                for k, v in node.locator.model_dump(exclude_none=True).items():
+                    disk_loc[k] = v
+                node.locator = SourceLocator.model_validate(disk_loc)
+
+    @classmethod
+    def _hydrate_stage3_locators(
+        cls, draft: SectionOutput, ledger: VerifiedFactLedger
+    ) -> None:
+        """Deterministically hydrates full `SourceLocator` metadata across items and sub-supports."""
+        by_fact_id = {f.fact_id: f for f in ledger.verified_facts if f.fact_id}
+        by_key = {
+            f.locator.locator_key: f
+            for f in ledger.verified_facts
+            if f.locator.locator_key
+        }
+        by_cell: Dict[Tuple[Optional[str], Optional[str]], Any] = {
+            (f.locator.file_name, f.locator.cell_range): f
+            for f in ledger.verified_facts
+            if f.locator.cell_range
+        }
+
+        for grp in draft.supports:
+            for item in grp.items:
+                cls._hydrate_node_locator(item, by_fact_id, by_key, by_cell)
+                for sub in item.sub_supports:
+                    cls._hydrate_node_locator(sub, by_fact_id, by_key, by_cell)
+
     def run_stage3_section_drafter(
         self,
         section_plan: SectionPlan,
@@ -274,17 +343,26 @@ class AuditPipelineRunner:
         """
         system_instruction = (
             "You are an expert legal and analytical author. Follow the Closed-World Evidence "
-            "Constraint: cite ONLY verified facts, quotes, formulas, and `locator` objects from the "
-            "VerifiedFactLedger (for L1 evidence/calculations) and Governing Authorities (for L2+ "
-            "authorities inside reasoning `sub_supports`). Wrap every substantive empirical or "
-            "legal claim in `<ref n='1'>clause text</ref>` using sequential integers 1, 2, 3... "
+            "Constraint strictly: cite ONLY verified facts, quotes, formulas, and `locator` objects from the "
+            "VerifiedFactLedger (for L1 evidence/calculations) and Governing Canonical Authorities (for L2+ "
+            "authorities). Wrap every substantive empirical, legal, or gap-disclosure claim in "
+            "`<ref n='1'>clause text</ref>` using sequential integers 1, 2, 3... "
             "Every `<ref n='X'>` in `text` MUST have a matching SupportGroup `n=X` in `supports`. "
-            "Any `<ref n='10X'>` inside a reasoning/calculation `body` MUST have a matching "
-            "SubSupportItem `n=10X` in `sub_supports`. When a claim relies on L1 evidence plus "
-            "commonsense or arithmetic rather than a formal canonical rule, leave `sub_supports=[]` "
-            "and write a clear plain-English `body` explaining the logic. Every `reasoning`, "
-            "`calculation`, or `assumption` SupportItem MUST have a non-empty plain-English `body`. "
-            "Always populate `drafting_notes` explaining how you connected facts, authorities, or commonsense."
+            "CRITICAL CITATION RULES: "
+            "(1) EVERY SupportItem OR SubSupportItem with `type='evidence'` MUST cite a `VerifiedFact` from `VerifiedFactLedger`: "
+            "set `fact_id` to that fact's `fact_id` (e.g., `\"FACT-1\"`), copy its `quote`, and optionally include "
+            "its compact `locator` (`{\"source_type\": ..., \"file_name\": ..., \"locator_key\": ...}`). Never emit "
+            "`type='evidence'` (at L1 or in `sub_supports`) without a valid `fact_id` or `locator`, and never mix one fact's locator with another fact's quote. "
+            "(2) You MUST include a matching SupportGroup entry in `supports` for EVERY `<ref n='X'>` tag in `text` (never stop early). "
+            "(2) NEVER invent facts, party attributions, or external legal authorities not in `(a)` or `(b)`. When noting "
+            "missing records, absent party attribution, or unresolved gaps without a direct quote, set `type='assumption'` "
+            "or `type='reasoning'` (NOT `type='evidence'`) with a clear plain-English `body`. "
+            "(3) Any `<ref n='10X'>` inside a `body` MUST have a matching SubSupportItem `n=10X` in `sub_supports`. "
+            "When citing a Governing Authority (`type='authority'`), include its `AUTH:...` ID in `title` and copy "
+            "its `verbatim_quote`. When a claim relies on L1 evidence plus commonsense or arithmetic rather than a "
+            "canonical rule, leave `sub_supports=[]` and explain the logic in `body`. "
+            "(4) Every `reasoning`, `calculation`, or `assumption` SupportItem MUST have a non-empty plain-English `body`. "
+            "Always populate `drafting_notes` explaining how you connected facts, authorities, gaps, or commonsense."
         )
 
         feedback_block = ""
@@ -329,6 +407,7 @@ class AuditPipelineRunner:
             draft.section_id = section_plan.section_id
             if not draft.section_title:
                 draft.section_title = section_plan.section_title
+            self._hydrate_stage3_locators(draft, ledger)
 
             is_valid, struct_errors = SectionValidator.validate_section(draft)
             cit_errors = self.matter_ingestor.verify_section_citations(
@@ -383,14 +462,22 @@ class AuditPipelineRunner:
 
         system_instruction = (
             "You are an Independent Audit Gate. Verify three invariants: "
-            "(a) check_a_relevance: every support item (including pure commonsense or arithmetic reasoning) "
-            "logically backs its `<ref n>` clause; "
-            "(b) check_b_congruence: surrounding source context strictly entails each claim "
-            "without cherry-picking or dropping disqualifying exceptions; "
-            "(c) check_c_intent: the section answers its stated_intention. "
-            "Always populate `audit_rationale` explaining why Checks A/B/C passed or failed, "
-            "plus `node_verdicts` with clear `evaluator_note` explanations. "
-            "Return passed=False with `critique_for_retry` if any factual or logical distortion exists."
+            "(a) check_a_relevance: every support item (including pure commonsense, gap-disclosure, or "
+            "arithmetic reasoning) logically backs its `<ref n>` clause; "
+            "(b) check_b_congruence: surrounding source context strictly entails each factual claim "
+            "without cherry-picking, distorting numbers/entities, or dropping disqualifying exceptions; "
+            "(c) check_c_intent: the section answers its stated_intention using the available closed-world inputs. "
+            "CLOSED-WORLD HONESTY RULE: Under the Closed-World Evidence Constraint, the drafter CANNOT "
+            "invent missing facts or unindexed legal authorities. If source records `(a)` or Canonical "
+            "Authorities `(b)` omit required details (e.g., LLC member domiciles, missing party attribution, "
+            "or unindexed rules), honestly stating those exact evidentiary gaps via `assumption`/`reasoning` "
+            "nodes SATISFIES `check_c_intent` and should PASS (`passed=True`, tagging uncertain claims as "
+            "`assumption` or `extrapolation` in `node_verdicts`). NEVER reject with `passed=False` merely to "
+            "demand non-existent external records or outside case law. "
+            "Return passed=False with `critique_for_retry` ONLY if the draft misstates/distorts the provided "
+            "context, makes an unsupported attribution leap without disclosing it as an assumption/gap, drops "
+            "a disqualifying exception present in context, or fails to use available facts relevant to stated_intention. "
+            "Always populate `audit_rationale` and `node_verdicts` with clear `evaluator_note` explanations."
         )
         prompt = (
             f"Stated Intention: {section_plan.stated_intention}\n\n"
@@ -403,7 +490,7 @@ class AuditPipelineRunner:
             "check_a_relevance": {
                 "type": "noul",
                 "instructions": (
-                    "Does every support item (including commonsense/arithmetic reasoning) "
+                    "Does every support item (including commonsense/arithmetic reasoning or explicit gap disclosures) "
                     "directly back its paired <ref n> claim without irrelevant padding?"
                 ),
             },
@@ -411,20 +498,26 @@ class AuditPipelineRunner:
                 "type": "noul",
                 "instructions": (
                     "Do the verbatim source quotes and expanded source context strictly entail "
-                    "every number, entity, and claim without distortion or omitted disqualifiers?"
+                    "every factual claim, number, and entity attribution (or honestly flag unattributed/missing records "
+                    "as assumptions/gaps without overclaiming)?"
                 ),
             },
             "check_c_intent": {
                 "type": "noul",
-                "instructions": "Does the drafted section directly answer its stated_intention?",
+                "instructions": (
+                    "Does the drafted section address its stated_intention using only the available closed-world "
+                    "evidence and canonical authorities—either answering it directly OR honestly identifying exact "
+                    "record/authority gaps when the provided inputs are incomplete?"
+                ),
             },
         }
         for grp in draft.supports:
             questions[f"claim_{grp.n}_entailment"] = {
                 "type": "noul",
                 "instructions": (
-                    f"Is claim n={grp.n} ('{grp.title or grp.n}') strictly supported by its "
-                    "attached evidence, calculations, and canonical authority items?"
+                    f"Is claim n={grp.n} ('{grp.title or grp.n}') strictly supported by its attached evidence, "
+                    "calculations, and canonical authority items—OR, if framed as an explicit assumption or gap "
+                    "disclosure, does it accurately report what the closed-world context establishes vs. omits?"
                 ),
             }
             questions[f"claim_{grp.n}_status"] = {

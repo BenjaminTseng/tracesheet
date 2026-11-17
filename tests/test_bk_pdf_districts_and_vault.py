@@ -300,3 +300,107 @@ def test_cacb_and_caeb_matrix_rules_8mb_splitter_and_rule9011_vault(tmp_path: Pa
     )
     assert receipt.district == "CAEB"
     assert receipt.assigned_case_number
+
+
+def test_real_official_pdf_templates_and_canonical_corpus(tmp_path: Path) -> None:
+    """Verifies real downloaded official U.S. Courts/CACB/CAEB AcroForm templates, baking, and canonical rules."""
+    # 1. Confirm real canonical bankruptcy authorities exist with [AUTH:...] markers.
+    canon_dir = Path("canonical/bankruptcy")
+    expected_authorities = [
+        "ca_exemptions_and_title11_statutes.md",
+        "cacb_lbr_1001_1_through_1073_1.md",
+        "cacb_cmecf_procedures_5005_4.md",
+        "caeb_local_bankruptcy_rules_2026_04.md",
+        "uscourts_instructions_individuals_2025_04.md",
+    ]
+    for fname in expected_authorities:
+        fpath = canon_dir / fname
+        assert fpath.exists(), f"Missing ingested canonical file: {fpath}"
+        assert "[AUTH:" in fpath.read_text(encoding="utf-8")
+
+    # 2. Fill & bake real official templates from `canonical/tables/bankruptcy/templates/`.
+    matters_root = tmp_path / "matters_real"
+    tokenizer = PIITokenizer(matters_root)
+    ssn_token = tokenizer.register_raw_value("bk_real_1", "ssn", "555-44-3322")
+
+    graph = CanonicalCaseGraph(
+        matter_id="bk_real_1",
+        chapter="7",
+        district="CACB",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=[
+            PartyEntity(
+                party_id="d1",
+                role="debtor_1",
+                full_name=_ov("Elena Maria Navarro"),
+                ssn_token_or_ein=ssn_token,
+                street_address="420 S Spring St",
+                city="Los Angeles",
+                state="CA",
+                zip_code="90013",
+                county_of_residence="Los Angeles",
+                ca_domicile_days_continuous=_ov(2500),
+                household_size=_ov(1),
+            )
+        ],
+        assets=[
+            AssetItem(
+                asset_id="veh_1",
+                category="vehicle",
+                description="2020 Honda Civic",
+                current_value=_ov(Decimal("14000.00")),
+                owned_free_and_clear=True,
+            ),
+            AssetItem(
+                asset_id="bank_1",
+                category="bank_account",
+                description="Chase Checking (...4812)",
+                current_value=_ov(Decimal("3200.00")),
+            ),
+        ],
+        claims=[
+            ClaimItem(
+                claim_id="cl_1",
+                creditor_name="Capital One Bank",
+                priority_type="general_unsecured",
+                total_claim_amount=_ov(Decimal("4800.00")),
+            )
+        ],
+    )
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    calcs = compute_case_calculations(graph, reg)
+    state = BankruptcyCaseState(
+        case_graph=graph,
+        calculations=calcs,
+        readiness=FilingReadinessReport(status="READY"),
+    )
+
+    real_templates_dir = Path("canonical/tables/bankruptcy/templates")
+    packet_dir = tmp_path / "packet_real"
+    baker = AcroFormFillerAndBaker(templates_dir=real_templates_dir, tokenizer=tokenizer)
+    pdfs, _lineage_path, lineage = baker.compile_forms(state, packet_dir)
+
+    # All real templates must bake cleanly with 0 active widgets remaining.
+    for p in pdfs:
+        with pymupdf.open(str(p)) as doc:
+            for page in doc:
+                assert list(page.widgets() or []) == []
+
+    # Official B106Sum line 1c widget must have baked $17,200.00 and line ref in field_lineage.
+    assert any(
+        e.form_id == "B106Sum"
+        and e.pdf_field_name == "1c"
+        and e.form_line_ref == "Form 106Sum · Line 1c"
+        and e.rendered_value == "$17,200.00"
+        for e in lineage
+    )
+    # Restricted B121 unmasked SSN never appears on any public PDF lineage entry.
+    assert any(
+        e.form_id == "B121" and e.pdf_field_name == "Debtor1a.SSNum" and "555-44-3322" in e.rendered_value
+        for e in lineage
+    )
+    assert all(
+        "555-44-3322" not in e.rendered_value
+        for e in lineage
+        if e.form_id != "B121"
+    )

@@ -571,6 +571,7 @@ class FieldLineageEntry(BaseModel):
 
     form_id: str
     pdf_field_name: str
+    form_line_ref: Optional[str] = None
     rendered_value: str
     derivation_type: Literal["direct_provenance", "deterministic_calculation", "human_override", "system_constant"]
     case_graph_path: str

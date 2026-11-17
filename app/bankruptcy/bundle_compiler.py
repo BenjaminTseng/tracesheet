@@ -1,36 +1,74 @@
 """Compiles `BankruptcyCaseState` into a standard `CompiledBundle` (`L0 -> L1 -> L2+` DAG).
 
 Bridges the deterministic Bankruptcy Case Workbench to `jd_screen`'s SVG cubic
-Bezier traceability canvas so every dollar figure, asset, creditor claim, and
-statutory conclusion in `L0` expands on click into `L1` deterministic math /
-coordinate-stamped PDF evidence and `L2+` controlling statutory authorities.
+Bezier traceability canvas so every official schedule line item (`Form 101`,
+`Form 106Sum`, `Schedule A/B`, `Schedule C`, `Schedule D`, `Schedule E/F`,
+`Schedules I/J`, `Form 122A/C`, `Form 107`, and District Ch. 13 Plans) in `L0`
+mirrors the exact court PDF form layout and expands on click into `L1` math /
+coordinate-stamped client PDF evidence and `L2+` controlling statutes/local rules.
 """
 
 from __future__ import annotations
 
 import datetime
+from decimal import Decimal
 from typing import Dict, List, Optional
 
 from app.bankruptcy.models import (
     BankruptcyCaseState,
     ProvenanceField,
 )
+from app.bankruptcy.pdf_engine import FormPacketPlanner
 from app.core.tables import StatutoryTableRegistry
 from app.models import (
     ArtifactEnvelope,
-    AuditStatus,
     AuditSummary,
     CompiledBundle,
     GraphNode,
     NodeAudit,
     SectionObject,
-    SourceLocator,
     TensionObject,
 )
 
+ASSET_CATEGORY_LINE_MAP: Dict[str, tuple[str, str]] = {
+    "real_estate": ("106A/B Pt. 1 · 1.1", "Real Estate"),
+    "vehicle": ("106A/B Pt. 2 · 3.1", "Vehicle"),
+    "bank_account": ("106A/B Pt. 4 · 17", "Financial Account"),
+    "retirement": ("106A/B Pt. 4 · 21", "Retirement Plan"),
+    "other": ("106A/B Pt. 3/7", "Personal Property"),
+}
+
+CLAIM_PRIORITY_LINE_MAP: Dict[str, tuple[str, str]] = {
+    "secured": ("106D Pt. 1", "Secured"),
+    "priority_dso": ("106E/F Pt. 1 · 6a", "Priority (DSO)"),
+    "priority_tax": ("106E/F Pt. 1 · 6b", "Priority (Tax)"),
+    "general_unsecured": ("106E/F Pt. 2 · 6f", "General Unsecured"),
+}
+
+VERIFICATION_LABELS: Dict[str, str] = {
+    "verified": "Verified",
+    "human_overridden": "Counsel Override",
+    "contradicted": "Contradicted",
+    "unverified": "Needs Proof",
+}
+
+INTENTION_LABELS: Dict[str, str] = {
+    "retain_and_reaffirm": "Form 108: Retain & Reaffirm",
+    "retain_and_redeem": "Form 108: Retain & Redeem",
+    "surrender": "Form 108: Surrender",
+}
+
 
 def _audit_for_field(pf: ProvenanceField[object], label: str) -> NodeAudit:
-    """Maps a `ProvenanceField` verification status to `jd_screen`'s `NodeAudit`."""
+    """Maps a `ProvenanceField` verification status to `jd_screen`'s `NodeAudit`.
+
+    Args:
+        pf: Provenance-wrapped field value.
+        label: Human-readable field label for audit notes.
+
+    Returns:
+        Normalized `NodeAudit` status record.
+    """
     if pf.verification_status == "verified":
         return NodeAudit(
             status="verified",
@@ -64,7 +102,7 @@ def _audit_for_field(pf: ProvenanceField[object], label: str) -> NodeAudit:
 
 
 class BankruptcyBundleCompiler:
-    """Deterministically compiles `BankruptcyCaseState` into an `L0 -> L1 -> L2+` `CompiledBundle`."""
+    """Deterministically compiles `BankruptcyCaseState` into an official-form-aligned `CompiledBundle`."""
 
     def __init__(self, registry: Optional[StatutoryTableRegistry] = None) -> None:
         """Initializes the bundle compiler.
@@ -73,9 +111,10 @@ class BankruptcyBundleCompiler:
             registry: Optional table registry for enriching statutory `L2+` nodes.
         """
         self.registry = registry
+        self.planner = FormPacketPlanner()
 
     def compile(self, state: BankruptcyCaseState) -> CompiledBundle:
-        """Compiles `state` into a normalized `CompiledBundle` DAG.
+        """Compiles `state` into a normalized `CompiledBundle` DAG aligned to Official Bankruptcy Forms.
 
         Args:
             state: Current `BankruptcyCaseState` with calculations, questions, and tensions.
@@ -87,6 +126,7 @@ class BankruptcyBundleCompiler:
         calcs = state.calculations
         nodes: Dict[str, GraphNode] = {}
         sections: List[SectionObject] = []
+        planned_forms = self.planner.plan_required_forms(state)
 
         def _add_authority(
             auth_id: str, title: str, quote: str, section_id: str, url: Optional[str] = None
@@ -147,7 +187,7 @@ class BankruptcyBundleCompiler:
                 nodes[ov_id] = GraphNode(
                     id=ov_id,
                     type="reasoning",
-                    title=f"Human Override: {pf.override.actor_name}",
+                    title=f"Counsel Override: {pf.override.actor_name}",
                     section_id=section_id,
                     body=(
                         f"{pf.override.actor_role.title()} attestation: {pf.override.rationale} "
@@ -181,14 +221,14 @@ class BankruptcyBundleCompiler:
                 _link(claim_id, gap_id, claim_id)
 
         # -----------------------------------------------------------------
-        # Section 1: Voluntary Petition & Statutory Eligibility (B 101)
+        # Section 1: Form B 101 Voluntary Petition & Statutory Eligibility
         # -----------------------------------------------------------------
-        sec1 = "sec_01_petition_eligibility"
+        sec1 = "sec_01_petition_b101"
         debtor_1 = next((p for p in graph.parties if p.role == "debtor_1"), None)
         elig = calcs.eligibility if calcs else None
         auth_elig = _add_authority(
             "aut_109e",
-            "11 U.S.C. § 109(e) / H.R. 7730 Eligibility",
+            "11 U.S.C. § 109(e) / § 109(b) & Form B 101 Instructions",
             (
                 elig.authority_citation
                 if elig
@@ -197,32 +237,40 @@ class BankruptcyBundleCompiler:
             sec1,
         )
 
-        sec1_lines: List[str] = []
+        sec1_rows: List[str] = [
+            "| Form B 101 Line | Petition Field | Scheduled Entry | Verification |",
+            "| :--- | :--- | :--- | :--- |",
+        ]
         if debtor_1:
             c_name = "claim_sec01_debtor"
             nodes[c_name] = GraphNode(
                 id=c_name,
                 type="claim",
-                title="Debtor Identity & Domicile",
+                title="Form B 101 Part 1, Line 1 — Debtor Name & Domicile",
                 section_id=sec1,
                 clause_text=f"{debtor_1.full_name.value} ({debtor_1.county_of_residence} County, {debtor_1.state})",
                 direct_child_ids=[],
                 audit=_audit_for_field(debtor_1.full_name, "Debtor Name"),
             )
-            _attach_pf_evidence(c_name, sec1, "sec01_debtor", "Debtor Name", debtor_1.full_name, [auth_elig])
-            sec1_lines.append(
-                f"**Primary Debtor:** <ref id='{c_name}'>{debtor_1.full_name.value}</ref> · "
-                f"County: **{debtor_1.county_of_residence}** · Filing Date: `{graph.expected_filing_date.isoformat()}` · "
-                f"District: **`{graph.district}`**"
+            _attach_pf_evidence(c_name, sec1, "sec01_debtor", "Form B 101 Line 1 · Debtor Name", debtor_1.full_name, [auth_elig])
+            dist_label = "Central District of CA (CACB)" if graph.district == "CACB" else "Eastern District of CA (CAEB)"
+            sec1_rows.append(
+                f"| B 101 Pt. 1 · 1 | Debtor 1 Legal Name | <ref id='{c_name}'>{debtor_1.full_name.value}</ref> | {VERIFICATION_LABELS.get(debtor_1.full_name.verification_status, 'Verified')} |"
+            )
+            sec1_rows.append(
+                f"| B 101 Pt. 1 · 5 | Residence & Venue | {debtor_1.street_address}, {debtor_1.city}, {debtor_1.state} {debtor_1.zip_code} ({debtor_1.county_of_residence} County) | {dist_label} |"
+            )
+            sec1_rows.append(
+                f"| B 101 · Caption | Chapter & Target Filing Date | Chapter {graph.chapter} · `{graph.expected_filing_date.isoformat()}` | Form B 121 SSN Isolated |"
             )
 
         if elig:
             c_elig = "claim_sec01_elig"
-            status_label = "ELIGIBLE" if elig.eligible else "INELIGIBLE"
+            status_label = "Eligible" if elig.eligible else "Over Cap (Ineligible)"
             nodes[c_elig] = GraphNode(
                 id=c_elig,
                 type="claim",
-                title=f"Chapter {elig.target_chapter} Debt Eligibility",
+                title=f"Chapter {elig.target_chapter} Debt Limit Eligibility (§ 109)",
                 section_id=sec1,
                 clause_text=f"{status_label}: ${elig.total_combined_qualifying_debt:,.2f}",
                 direct_child_ids=[],
@@ -234,11 +282,11 @@ class BankruptcyBundleCompiler:
                 ),
             )
             calc_elig = "calc_sec01_elig"
-            limit_str = f"${elig.threshold_limit_applied:,.2f}" if elig.threshold_limit_applied else "No Cap"
+            limit_str = f"${elig.threshold_limit_applied:,.2f}" if elig.threshold_limit_applied else "No Statutory Cap"
             nodes[calc_elig] = GraphNode(
                 id=calc_elig,
                 type="calculation",
-                title="Noncontingent Liquidated Debt Computation",
+                title="Noncontingent Liquidated Debt Computation (11 U.S.C. § 109)",
                 section_id=sec1,
                 formula=(
                     f"Qualifying = Secured (${elig.total_secured_noncontingent_liquidated:,.2f}) + "
@@ -260,49 +308,145 @@ class BankruptcyBundleCompiler:
             )
             _link(c_elig, calc_elig, c_elig)
             _link(calc_elig, auth_elig, c_elig)
-            sec1_lines.append(
-                f"**Chapter {elig.target_chapter} Eligibility:** <ref id='{c_elig}'>{status_label} — "
-                f"${elig.total_combined_qualifying_debt:,.2f} qualifying debt</ref> (Limit: {limit_str})"
+            sec1_rows.append(
+                f"| B 101 Pt. 6 · 19–20 | Chapter {elig.target_chapter} Debt Eligibility | <ref id='{c_elig}'>{status_label} (${elig.total_combined_qualifying_debt:,.2f} qualifying)</ref> | Limit: {limit_str} |"
             )
 
         sections.append(
             SectionObject(
                 section_id=sec1,
-                section_title="1. Voluntary Petition (B 101) & Statutory Eligibility",
+                section_title="Form B 101 — Voluntary Petition & Chapter Eligibility",
                 order=1,
-                content="\n\n".join(sec1_lines) or "No debtor profile loaded yet.",
+                content="\n".join(sec1_rows),
             )
         )
 
         # -----------------------------------------------------------------
-        # Section 2: Schedule A/B (Assets) & Schedule C (Exemption Optimizer)
+        # Section 2: Form B 106Sum — Official Summary of Assets & Liabilities
         # -----------------------------------------------------------------
-        sec2 = "sec_02_assets_exemptions"
+        sec2 = "sec_02_summary_b106sum"
+        auth_sum = _add_authority(
+            "aut_frbp1007_sum",
+            "FRBP 1007(b) & Official Form 106Sum Instructions",
+            "Form 106Sum aggregates totals across Schedules A/B (Lines 55, 62, 63), D, E/F (Lines 6e, 6j), I (Line 12), J (Line 22c), and Form 122A/C CMI.",
+            sec2,
+        )
+        re_sum = sum(
+            (a.current_value.value for a in graph.assets if a.category == "real_estate"),
+            Decimal("0.00"),
+        )
+        tot_assets = calcs.total_assets if calcs else sum((a.current_value.value for a in graph.assets), Decimal("0.00"))
+        pp_sum = tot_assets - re_sum
+        tot_sec = calcs.total_secured_debt if calcs else Decimal("0.00")
+        tot_pri = calcs.total_priority_debt if calcs else Decimal("0.00")
+        tot_unsec = calcs.total_general_unsecured_debt if calcs else Decimal("0.00")
+        comb_liab = tot_sec + tot_pri + tot_unsec
+        sched_i = calcs.schedule_i_monthly_gross if calcs else Decimal("0.00")
+        sched_j = calcs.schedule_j_monthly_expenses if calcs else Decimal("0.00")
+
+        c_sum_assets = "claim_b106sum_1c"
+        nodes[c_sum_assets] = GraphNode(
+            id=c_sum_assets,
+            type="claim",
+            title="Form 106Sum Line 1c — Total All Property (Schedule A/B Line 63)",
+            section_id=sec2,
+            clause_text=f"${tot_assets:,.2f}",
+            direct_child_ids=[],
+            audit=NodeAudit(status="verified", score=1.0, evaluator_type="deterministic", evaluator_note="Sum of Schedule A/B."),
+        )
+        calc_sum_assets = "calc_b106sum_1c"
+        nodes[calc_sum_assets] = GraphNode(
+            id=calc_sum_assets,
+            type="calculation",
+            title="Form 106Sum Part 1 Rollup (Line 1a + Line 1b = Line 1c)",
+            section_id=sec2,
+            formula=f"Line 1a Real Estate (${re_sum:,.2f}) + Line 1b Personal Property (${pp_sum:,.2f}) = ${tot_assets:,.2f}",
+            body=f"Mirrors Official Form 106A/B Lines 55 + 62 into Form 106Sum Line 1c under <ref id='{auth_sum}'>FRBP 1007(b)</ref>.",
+            direct_child_ids=[],
+            parent_claim_ids=[c_sum_assets],
+            audit=NodeAudit(status="verified", score=1.0, evaluator_type="deterministic", evaluator_note="Exact Decimal sum."),
+        )
+        _link(c_sum_assets, calc_sum_assets, c_sum_assets)
+        _link(calc_sum_assets, auth_sum, c_sum_assets)
+
+        c_sum_liab = "claim_b106sum_3c"
+        nodes[c_sum_liab] = GraphNode(
+            id=c_sum_liab,
+            type="claim",
+            title="Form 106Sum Line 3c — Combined Total Liabilities",
+            section_id=sec2,
+            clause_text=f"${comb_liab:,.2f}",
+            direct_child_ids=[],
+            audit=NodeAudit(status="verified", score=1.0, evaluator_type="deterministic", evaluator_note="Sum of Schedules D + E + F."),
+        )
+        calc_sum_liab = "calc_b106sum_3c"
+        nodes[calc_sum_liab] = GraphNode(
+            id=calc_sum_liab,
+            type="calculation",
+            title="Form 106Sum Part 2 Rollup (Line 2 + Line 3a + Line 3b = Line 3c)",
+            section_id=sec2,
+            formula=f"D (${tot_sec:,.2f}) + E Priority (${tot_pri:,.2f}) + F Unsecured (${tot_unsec:,.2f}) = ${comb_liab:,.2f}",
+            body=f"Mirrors Schedule D Part 1 & Schedule E/F Lines 6e/6j into Form 106Sum Line 3c under <ref id='{auth_sum}'>FRBP 1007(b)</ref>.",
+            direct_child_ids=[],
+            parent_claim_ids=[c_sum_liab],
+            audit=NodeAudit(status="verified", score=1.0, evaluator_type="deterministic", evaluator_note="Exact Decimal sum."),
+        )
+        _link(c_sum_liab, calc_sum_liab, c_sum_liab)
+        _link(calc_sum_liab, auth_sum, c_sum_liab)
+
+        cmi_val = calcs.means_test.current_monthly_income if calcs else Decimal("0.00")
+        sum_rows = [
+            "| Form 106Sum Line | Summary Schedule Description | Source Schedule | Form Amount |",
+            "| :--- | :--- | :--- | ---: |",
+            f"| 106Sum · 1a | Total Real Estate | Schedule A/B, Line 55 | ${re_sum:,.2f} |",
+            f"| 106Sum · 1b | Total Personal Property | Schedule A/B, Line 62 | ${pp_sum:,.2f} |",
+            f"| 106Sum · 1c | Total All Property | Schedule A/B, Line 63 | <ref id='{c_sum_assets}'>${tot_assets:,.2f}</ref> |",
+            f"| 106Sum · 2 | Total Secured Claims | Schedule D, Part 1 | ${tot_sec:,.2f} |",
+            f"| 106Sum · 3a | Priority Unsecured Claims | Schedule E/F, Line 6e | ${tot_pri:,.2f} |",
+            f"| 106Sum · 3b | Nonpriority Unsecured Claims | Schedule E/F, Line 6j | ${tot_unsec:,.2f} |",
+            f"| 106Sum · 3c | Total Liabilities | Schedules D + E/F | <ref id='{c_sum_liab}'>${comb_liab:,.2f}</ref> |",
+            f"| 106Sum · 4 | Combined Monthly Income | Schedule I, Line 12 | ${sched_i:,.2f} |",
+            f"| 106Sum · 5 | Monthly Expenses | Schedule J, Line 22c | ${sched_j:,.2f} |",
+            f"| 106Sum · 8 | Current Monthly Income (CMI) | Form 122A-1 / 122C-1 | ${cmi_val:,.2f} |",
+        ]
+        sections.append(
+            SectionObject(
+                section_id=sec2,
+                section_title="Form B 106Sum — Summary of Assets, Liabilities & Statistical Lines",
+                order=2,
+                content="\n".join(sum_rows),
+            )
+        )
+
+        # -----------------------------------------------------------------
+        # Section 3: Schedule A/B (B 106A/B) & Schedule C (B 106C)
+        # -----------------------------------------------------------------
+        sec3 = "sec_03_assets_exemptions"
         ex_opt = calcs.exemptions if calcs else None
         auth_ex = _add_authority(
             "aut_ca_exemptions",
-            f"Exemption Regime: {ex_opt.recommended_display_name if ex_opt else 'CA Exemptions'}",
+            f"Exemption Regime: {ex_opt.recommended_display_name if ex_opt else 'California Exemptions'}",
             (
                 f"{ex_opt.domicile_rule_note} Recommended election: {ex_opt.recommended_display_name} "
                 f"(Table {ex_opt.table_version_id}, {ex_opt.table_sha256[:18]})."
                 if ex_opt
                 else "Cal. Civ. Proc. Code §§ 704 & 703.140; 11 U.S.C. § 522(p)."
             ),
-            sec2,
+            sec3,
         )
 
-        sec2_lines: List[str] = []
+        sec3_lines: List[str] = []
         if ex_opt:
             rec_eval = next(
                 (e for e in ex_opt.evaluations if e.regime_id == ex_opt.recommended_regime_id),
                 ex_opt.evaluations[0],
             )
-            c_rec = "claim_sec02_opt"
+            c_rec = "claim_sec03_opt"
             nodes[c_rec] = GraphNode(
                 id=c_rec,
                 type="claim",
-                title="Optimal Exemption Regime Selection",
-                section_id=sec2,
+                title="Form 106C Line 1 — Optimal California Exemption System",
+                section_id=sec3,
                 clause_text=f"{ex_opt.recommended_display_name} (${rec_eval.total_non_exempt_equity:,.2f} exposed)",
                 direct_child_ids=[],
                 audit=NodeAudit(
@@ -313,15 +457,15 @@ class BankruptcyBundleCompiler:
                 ),
             )
             comp_str = " | ".join(
-                f"{e.regime_id}: Exempt ${e.total_exempt_equity:,.2f}, Non-Exempt ${e.total_non_exempt_equity:,.2f}"
+                f"{e.display_name}: Exempt ${e.total_exempt_equity:,.2f}, Non-Exempt ${e.total_non_exempt_equity:,.2f}"
                 for e in ex_opt.evaluations
             )
-            calc_opt = "calc_sec02_opt"
+            calc_opt = "calc_sec03_opt"
             nodes[calc_opt] = GraphNode(
                 id=calc_opt,
                 type="calculation",
-                title="Multi-Regime Non-Exempt Equity Comparison",
-                section_id=sec2,
+                title="CCP § 704 vs § 703.140(b) Non-Exempt Equity Comparison",
+                section_id=sec3,
                 formula=comp_str,
                 body=(
                     f"Compared all eligible regimes under <ref id='{auth_ex}'>{ex_opt.domicile_rule_note}</ref>. "
@@ -339,14 +483,14 @@ class BankruptcyBundleCompiler:
             )
             _link(c_rec, calc_opt, c_rec)
             _link(calc_opt, auth_ex, c_rec)
-            sec2_lines.append(
-                f"**Recommended Exemption System:** <ref id='{c_rec}'>{ex_opt.recommended_display_name} "
-                f"(Non-Exempt Equity: ${rec_eval.total_non_exempt_equity:,.2f})</ref>"
+            sec3_lines.append(
+                f"**Form 106C Line 1 Election:** <ref id='{c_rec}'>{ex_opt.recommended_display_name} "
+                f"(Non-Exempt Exposure: ${rec_eval.total_non_exempt_equity:,.2f})</ref>"
             )
 
         if graph.assets:
-            sec2_lines.append("| Asset (Schedule A/B) | Category | Market Value | Net Equity | Exempt (Schedule C) | Statute |")
-            sec2_lines.append("| :--- | :--- | ---: | ---: | ---: | :--- |")
+            sec3_lines.append("| Form Line | Property Description (B 106A/B) | Market Value | Net Equity | Exempt (B 106C) | Statute |")
+            sec3_lines.append("| :--- | :--- | ---: | ---: | ---: | :--- |")
             alloc_map = {}
             if ex_opt:
                 rec_eval = next(
@@ -356,105 +500,111 @@ class BankruptcyBundleCompiler:
                 alloc_map = {a.asset_id: a for a in rec_eval.allocations}
 
             for idx, asset in enumerate(graph.assets, start=1):
-                cid = f"claim_sec02_asset_{idx}"
+                cid = f"claim_sec03_asset_{idx}"
                 alloc = alloc_map.get(asset.asset_id)
                 net_eq_str = f"${alloc.net_equity:,.2f}" if alloc else f"${asset.current_value.value:,.2f}"
                 ex_str = f"${alloc.total_exempt:,.2f}" if alloc else "$0.00"
                 statute_str = alloc.statute_cited if alloc else "Pending"
+                form_line, cat_label = ASSET_CATEGORY_LINE_MAP.get(asset.category, ("106A/B", "Property"))
 
                 nodes[cid] = GraphNode(
                     id=cid,
                     type="claim",
-                    title=f"Asset: {asset.description}",
-                    section_id=sec2,
+                    title=f"{form_line} · {asset.description}",
+                    section_id=sec3,
                     clause_text=f"${asset.current_value.value:,.2f}",
                     direct_child_ids=[],
                     audit=_audit_for_field(asset.current_value, asset.description),
                 )
                 _attach_pf_evidence(
                     cid,
-                    sec2,
-                    f"sec02_asset_{idx}",
-                    asset.description,
+                    sec3,
+                    f"sec03_asset_{idx}",
+                    f"{form_line} · {asset.description}",
                     asset.current_value,
                     [auth_ex],
                 )
-                sec2_lines.append(
-                    f"| {asset.description} | `{asset.category}` | "
+                sec3_lines.append(
+                    f"| {form_line} | {asset.description} ({cat_label}) | "
                     f"<ref id='{cid}'>${asset.current_value.value:,.2f}</ref> | "
                     f"{net_eq_str} | {ex_str} | {statute_str} |"
                 )
 
         sections.append(
             SectionObject(
-                section_id=sec2,
-                section_title="2. Schedule A/B (Property) & Schedule C (Exemption Optimizer)",
-                order=2,
-                content="\n".join(sec2_lines) if sec2_lines else "No assets indexed yet.",
+                section_id=sec3,
+                section_title="Schedules A/B (B 106A/B) & C (B 106C) — Property & Exemptions",
+                order=3,
+                content="\n".join(sec3_lines) if sec3_lines else "No property items indexed yet.",
             )
         )
 
         # -----------------------------------------------------------------
-        # Section 3: Schedules D & E/F (Creditors) & Form B 108
+        # Section 4: Schedules D (B 106D), E/F (B 106E/F) & Form B 108
         # -----------------------------------------------------------------
-        sec3 = "sec_03_creditors"
+        sec4 = "sec_04_creditors"
         auth_claims = _add_authority(
             "aut_claims_506",
-            "11 U.S.C. §§ 506, 507 & FRBP 1007(b) Schedules D/E/F",
-            "Secured claims scheduled on Form B 106D up to collateral value; priority & general unsecured claims on Form B 106E/F.",
-            sec3,
+            "11 U.S.C. §§ 506, 507, 521(a)(2) & Schedules D / E/F / Form 108",
+            "Secured claims scheduled on Form B 106D (with Form 108 Chapter 7 intention); priority & general unsecured claims on Form B 106E/F.",
+            sec4,
         )
-        sec3_lines: List[str] = []
+        sec4_lines: List[str] = []
         if graph.claims:
-            sec3_lines.append("| Creditor | Priority | Claim Amount | Collateral / Intention | Status |")
-            sec3_lines.append("| :--- | :--- | ---: | :--- | :--- |")
+            sec4_lines.append("| Form Line | Creditor Name | Classification | Claim Amount | Collateral / Form 108 Intention | Audit |")
+            sec4_lines.append("| :--- | :--- | :--- | ---: | :--- | :--- |")
             for idx, claim in enumerate(graph.claims, start=1):
-                cid = f"claim_sec03_claim_{idx}"
+                cid = f"claim_sec04_claim_{idx}"
+                form_line, pri_label = CLAIM_PRIORITY_LINE_MAP.get(claim.priority_type, ("106E/F", "Unsecured"))
                 nodes[cid] = GraphNode(
                     id=cid,
                     type="claim",
-                    title=f"Creditor: {claim.creditor_name}",
-                    section_id=sec3,
+                    title=f"{form_line} · {claim.creditor_name}",
+                    section_id=sec4,
                     clause_text=f"${claim.total_claim_amount.value:,.2f}",
                     direct_child_ids=[],
                     audit=_audit_for_field(claim.total_claim_amount, claim.creditor_name),
                 )
                 _attach_pf_evidence(
                     cid,
-                    sec3,
-                    f"sec03_claim_{idx}",
-                    claim.creditor_name,
+                    sec4,
+                    f"sec04_claim_{idx}",
+                    f"{form_line} · {claim.creditor_name}",
                     claim.total_claim_amount,
                     [auth_claims],
                 )
-                col_desc = claim.collateral_asset_id or "Unsecured"
+                col_desc = claim.collateral_asset_id or "None (Unsecured)"
                 if claim.statement_of_intention:
-                    col_desc = f"{col_desc} ({claim.statement_of_intention})"
-                sec3_lines.append(
-                    f"| {claim.creditor_name} | `{claim.priority_type}` | "
+                    int_lbl = INTENTION_LABELS.get(claim.statement_of_intention, claim.statement_of_intention)
+                    col_desc = f"{col_desc} · {int_lbl}"
+                elif claim.priority_type == "secured" and graph.chapter == "7":
+                    col_desc = f"{col_desc} · Form 108 Unset"
+                ver_lbl = VERIFICATION_LABELS.get(claim.total_claim_amount.verification_status, "Needs Proof")
+                sec4_lines.append(
+                    f"| {form_line} | {claim.creditor_name} | {pri_label} | "
                     f"<ref id='{cid}'>${claim.total_claim_amount.value:,.2f}</ref> | "
-                    f"{col_desc} | `{claim.total_claim_amount.verification_status}` |"
+                    f"{col_desc} | {ver_lbl} |"
                 )
         else:
-            sec3_lines.append("No creditor claims indexed yet.")
+            sec4_lines.append("No creditor claims indexed yet.")
 
         sections.append(
             SectionObject(
-                section_id=sec3,
-                section_title="3. Schedules D & E/F (Secured, Priority, & Unsecured Claims)",
-                order=3,
-                content="\n".join(sec3_lines),
+                section_id=sec4,
+                section_title="Schedules D (B 106D), E/F (B 106E/F) & Form B 108 — Creditors & Intentions",
+                order=4,
+                content="\n".join(sec4_lines),
             )
         )
 
         # -----------------------------------------------------------------
-        # Section 4: Form 122A/C (6-Month CMI, Means Test, & Budget I/J)
+        # Section 5: Schedules I/J, Form 122A/C Means Test & Ch. 13 Plan
         # -----------------------------------------------------------------
-        sec4 = "sec_04_means_test_budget"
+        sec5 = "sec_05_means_test_budget"
         mt = calcs.means_test if calcs else None
         auth_mt = _add_authority(
             "aut_707b_ustp",
-            "11 U.S.C. §§ 101(10A), 707(b) & USTP Means Test Tables",
+            "11 U.S.C. §§ 101(10A), 707(b), 1325(b) & USTP Means Test Standards",
             (
                 f"6-month CMI window: {mt.lookback_start} to {mt.lookback_end}. "
                 f"California median ({mt.household_size} person): ${mt.california_median_income:,.2f} "
@@ -462,16 +612,16 @@ class BankruptcyBundleCompiler:
                 if mt
                 else "11 U.S.C. § 707(b)(2) Means Test & IRS Standards."
             ),
-            sec4,
+            sec5,
         )
-        sec4_lines: List[str] = []
+        sec5_lines: List[str] = []
         if mt:
-            c_cmi = "claim_sec04_cmi"
+            c_cmi = "claim_sec05_cmi"
             nodes[c_cmi] = GraphNode(
                 id=c_cmi,
                 type="claim",
-                title="6-Month Current Monthly Income (CMI)",
-                section_id=sec4,
+                title="Form 122A-1 / 122C-1 Line 11 — 6-Month CMI",
+                section_id=sec5,
                 clause_text=f"${mt.current_monthly_income:,.2f}/mo (${mt.annualized_cmi:,.2f}/yr)",
                 direct_child_ids=[],
                 audit=NodeAudit(
@@ -481,7 +631,7 @@ class BankruptcyBundleCompiler:
                     evaluator_note=f"Window {mt.lookback_start}..{mt.lookback_end}",
                 ),
             )
-            calc_cmi = "calc_sec04_cmi"
+            calc_cmi = "calc_sec05_cmi"
             stub_terms = " + ".join(
                 f"${ps.gross_pay.value:,.2f} ({ps.pay_date.isoformat()})"
                 for ps in graph.paystubs
@@ -490,8 +640,8 @@ class BankruptcyBundleCompiler:
             nodes[calc_cmi] = GraphNode(
                 id=calc_cmi,
                 type="calculation",
-                title="CMI 6-Month Average Formula",
-                section_id=sec4,
+                title="Form 122A-1 / 122C-1 CMI 6-Month Average Formula",
+                section_id=sec5,
                 formula=f"CMI = ({stub_terms}) / 6 = ${mt.current_monthly_income:,.2f}",
                 body=(
                     f"Annualized CMI ${mt.annualized_cmi:,.2f} vs CA Median ${mt.california_median_income:,.2f} "
@@ -513,19 +663,19 @@ class BankruptcyBundleCompiler:
                 if mt.lookback_start <= ps.pay_date <= mt.lookback_end:
                     _attach_pf_evidence(
                         c_cmi,
-                        sec4,
-                        f"sec04_ps_{idx}",
+                        sec5,
+                        f"sec05_ps_{idx}",
                         f"Paystub {ps.employer} ({ps.pay_date})",
                         ps.gross_pay,
                         [auth_mt],
                     )
 
-            c_disp = "claim_sec04_disposable"
+            c_disp = "claim_sec05_disposable"
             nodes[c_disp] = GraphNode(
                 id=c_disp,
                 type="claim",
-                title="Means Test Monthly Disposable Income",
-                section_id=sec4,
+                title="Form 122A-2 Line 39c / 122C-2 — Monthly Disposable Income",
+                section_id=sec5,
                 clause_text=f"${mt.monthly_disposable_income:,.2f}/mo",
                 direct_child_ids=[],
                 audit=NodeAudit(
@@ -535,12 +685,12 @@ class BankruptcyBundleCompiler:
                     evaluator_note=f"IRS + Tax + Secured Cure Deductions = ${mt.total_allowed_deductions:,.2f}/mo",
                 ),
             )
-            calc_disp = "calc_sec04_disposable"
+            calc_disp = "calc_sec05_disposable"
             nodes[calc_disp] = GraphNode(
                 id=calc_disp,
                 type="calculation",
-                title="Form 122A-2 / 122C-2 IRS Deduction Breakdown",
-                section_id=sec4,
+                title="Form 122A-2 / 122C-2 IRS Standard Deduction Breakdown",
+                section_id=sec5,
                 formula=(
                     f"CMI ${mt.current_monthly_income:,.2f} - (Food/Cloth ${mt.irs_food_clothing_allowance:,.2f} + "
                     f"Health ${mt.irs_healthcare_allowance:,.2f} + Housing ${mt.irs_housing_utilities_allowance:,.2f} + "
@@ -560,34 +710,46 @@ class BankruptcyBundleCompiler:
             _link(c_disp, calc_disp, c_disp)
             _link(calc_disp, auth_mt, c_disp)
 
-            sec4_lines.append(
-                f"**6-Month CMI:** <ref id='{c_cmi}'>${mt.current_monthly_income:,.2f}/mo "
-                f"(${mt.annualized_cmi:,.2f}/yr)</ref> · CA Median: **${mt.california_median_income:,.2f}** "
-                f"({'ABOVE MEDIAN' if mt.is_above_median else 'BELOW MEDIAN'})"
-            )
-            sec4_lines.append(
-                f"**Means Test Disposable Income:** <ref id='{c_disp}'>${mt.monthly_disposable_income:,.2f}/mo</ref> "
-                f"· IRS + Secured Deductions: **${mt.total_allowed_deductions:,.2f}/mo**"
-            )
+            form_prefix = "122A" if graph.chapter == "7" else "122C"
+            median_verdict = "Above CA Median" if mt.is_above_median else "Below CA Median"
+            net_ij = (calcs.schedule_ij_monthly_net if calcs else Decimal("0.00"))
+            sec5_lines.extend([
+                "| Form Line | Means Test & Budget Item | Statutory Benchmark | Computed Value |",
+                "| :--- | :--- | :--- | ---: |",
+                f"| {form_prefix}-1 · 11 | 6-Month Average CMI ({mt.lookback_start} to {mt.lookback_end}) | 11 U.S.C. § 101(10A) | <ref id='{c_cmi}'>${mt.current_monthly_income:,.2f}</ref> |",
+                f"| {form_prefix}-1 · 15–16 | Annualized CMI vs. CA {mt.household_size}-Person Median | {median_verdict} (${mt.california_median_income:,.2f}) | ${mt.annualized_cmi:,.2f} |",
+                f"| {form_prefix}-2 · 24 | IRS Standards + Taxes + Secured Debt Deductions | Form {form_prefix}-2 Pt. 2 | ${mt.total_allowed_deductions:,.2f} |",
+                f"| {form_prefix}-2 · 39c | Monthly Disposable Income | 60-Mo Pool: ${mt.sixty_month_disposable_income:,.2f} | <ref id='{c_disp}'>${mt.monthly_disposable_income:,.2f}</ref> |",
+                f"| 106I · 12 / 106J · 23c | Schedule I Income / Schedule J Net (I - J) | Income ${sched_i:,.2f} - Exp ${sched_j:,.2f} | ${net_ij:,.2f} |",
+            ])
+
             if calcs and calcs.ch13_plan:
                 plan = calcs.ch13_plan
-                sec4_lines.append(
-                    f"**Chapter 13 Plan ({plan.applicable_commitment_months} mos):** "
-                    f"Liquidation Floor `${plan.best_interests_liquidation_floor:,.2f}` · "
-                    f"Priority `${plan.priority_claims_total:,.2f}` · Arrears `${plan.secured_arrears_total:,.2f}` · "
-                    f"Est. Payment **`${plan.estimated_monthly_plan_payment:,.2f}/mo`**"
+                plan_form = "F 3015-1.01" if graph.district == "CACB" else "EDC 3-080"
+                sec5_lines.append(
+                    f"| {plan_form} · Plan | Ch. 13 Plan ({plan.applicable_commitment_months} mos) · Floor ${plan.best_interests_liquidation_floor:,.2f} | Priority ${plan.priority_claims_total:,.2f} + Arrears ${plan.secured_arrears_total:,.2f} | ${plan.estimated_monthly_plan_payment:,.2f} |"
                 )
+
+            if graph.historical_transactions:
+                inc_hist = "; ".join(
+                    f"{h.tx_date.year if h.tx_date else 'SOFA'}: ${h.amount.value:,.2f}" if h.amount else h.description
+                    for h in graph.historical_transactions[:3]
+                )
+                sec5_lines.append(
+                    f"| Form 107 · Pt. 2 | Statement of Financial Affairs History | {len(graph.historical_transactions)} disclosure(s) | {inc_hist} |"
+                )
+        else:
+            sec5_lines.append("No paystub income or budget records indexed yet.")
 
         sections.append(
             SectionObject(
-                section_id=sec4,
-                section_title="4. Form 122A/C (6-Month CMI, Means Test, & Chapter 13 Plan)",
-                order=4,
-                content="\n\n".join(sec4_lines) or "No paystub income indexed yet.",
+                section_id=sec5,
+                section_title="Schedules I/J, Form 122A/C Means Test & Plan Calculation",
+                order=5,
+                content="\n".join(sec5_lines),
             )
         )
 
-        # Build AuditSummary across all claim nodes.
         claim_nodes = [n for n in nodes.values() if n.type == "claim"]
         verified_claims = sum(1 for n in claim_nodes if n.audit.status == "verified")
         all_tensions: List[TensionObject] = [
@@ -599,19 +761,20 @@ class BankruptcyBundleCompiler:
         return CompiledBundle(
             bundle_id=f"bk_{graph.matter_id}",
             matter_id=graph.matter_id,
-            question=f"Bankruptcy Case Graph Compilation — Chapter {graph.chapter} ({graph.district})",
+            question=f"Bankruptcy Petition & Schedule Compilation — Chapter {graph.chapter} ({graph.district})",
             artifact=ArtifactEnvelope(
-                title=f"Chapter {graph.chapter} Petition Audit Canvas — {graph.matter_id}",
+                title=f"Chapter {graph.chapter} Official Forms Audit Schedule — {graph.matter_id}",
                 created_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 metadata={
                     "application": "bankruptcy_workbench",
                     "chapter": graph.chapter,
                     "district": graph.district,
                     "expected_filing_date": graph.expected_filing_date.isoformat(),
+                    "planned_pdf_forms": planned_forms,
                 },
                 summary=(
-                    f"Audit-grounded Toulmin DAG covering {len(graph.assets)} asset(s), "
-                    f"{len(graph.claims)} claim(s), and {len(graph.paystubs)} paystub(s)."
+                    f"Official-form-aligned audit schedule covering {len(graph.assets)} property item(s), "
+                    f"{len(graph.claims)} creditor claim(s), and {len(graph.paystubs)} paystub(s) across {len(planned_forms)} required court forms."
                 ),
                 sections=sections,
             ),

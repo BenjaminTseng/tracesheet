@@ -1,0 +1,330 @@
+{
+  "version": "2026-11-17",
+  "description": "Declarative widget mapping from BankruptcyCaseService semantic keys to verified official U.S. Courts, CACB, and CAEB AcroForm widget names.",
+  "forms": {
+    "B101": {
+      "official_form_title": "Official Form 101 - Voluntary Petition for Individuals Filing for Bankruptcy",
+      "targets": {
+        "District_Name": [{"page": 1, "field_name": "District", "line_ref": "Form 101 · Caption District"}],
+        "District_State": [{"page": 1, "field_name": "State", "line_ref": "Form 101 · Caption State"}],
+        "Check_Chapter_7": [{"page": 1, "field_name": "Chapter 7", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Chapter 7"}],
+        "Check_Chapter_11": [{"page": 1, "field_name": "Chapter 11", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Chapter 11"}],
+        "Check_Chapter_13": [{"page": 1, "field_name": "Chapter 13", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Chapter 13"}],
+        "Debtor1_FirstName": [{"page": 1, "field_name": "First name", "line_ref": "Form 101 · Part 1, Line 1"}, {"page": 7, "field_name": "First Name_3", "line_ref": "Form 101 · Header"}],
+        "Debtor1_MiddleName": [{"page": 1, "field_name": "Middle name", "line_ref": "Form 101 · Part 1, Line 1"}],
+        "Debtor1_LastName": [{"page": 1, "field_name": "Last name", "line_ref": "Form 101 · Part 1, Line 1"}, {"page": 7, "field_name": "Last Name_3", "line_ref": "Form 101 · Header"}],
+        "Debtor1_Street": [{"page": 2, "field_name": "Street", "line_ref": "Form 101 · Part 1, Line 5"}],
+        "Debtor1_City": [{"page": 2, "field_name": "City", "line_ref": "Form 101 · Part 1, Line 5"}],
+        "Debtor1_State": [{"page": 2, "field_name": "State_2", "line_ref": "Form 101 · Part 1, Line 5"}],
+        "Debtor1_Zip": [{"page": 2, "field_name": "ZIP Code", "line_ref": "Form 101 · Part 1, Line 5"}],
+        "Debtor1_County": [{"page": 2, "field_name": "County", "line_ref": "Form 101 · Part 1, Line 5"}],
+        "Creditor_Tier_1_49": [{"page": 6, "field_name": "149", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 18"}],
+        "Assets_Tier_0_50k": [{"page": 6, "field_name": "050000", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 19"}],
+        "Assets_Tier_50k_100k": [{"page": 6, "field_name": "50001100000_2", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 19"}],
+        "Assets_Tier_100k_500k": [{"page": 6, "field_name": "100001500000", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 19"}],
+        "Assets_Tier_500k_1m": [{"page": 6, "field_name": "5000011 million", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 19"}],
+        "Liab_Tier_0_50k": [{"page": 6, "field_name": "050000_2", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 20"}],
+        "Liab_Tier_50k_100k": [{"page": 6, "field_name": "50001100000_3", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 20"}],
+        "Liab_Tier_100k_500k": [{"page": 6, "field_name": "100001500000_2", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 20"}],
+        "Liab_Tier_500k_1m": [{"page": 6, "field_name": "5000011 million_2", "mode": "checkbox", "on_value": "On", "line_ref": "Form 101 · Part 6, Line 20"}],
+        "Attorney_Name": [{"page": 7, "field_name": "Printed name", "line_ref": "Form 101 · Part 7"}],
+        "Attorney_Bar_Number": [{"page": 7, "field_name": "Bar number", "line_ref": "Form 101 · Part 7"}],
+        "Attorney_State": [{"page": 7, "field_name": "State_9", "line_ref": "Form 101 · Part 7"}]
+      }
+    },
+    "B106Sum": {
+      "official_form_title": "Official Form 106Sum - Summary of Your Assets and Liabilities and Certain Statistical Information",
+      "targets": {
+        "Debtor1_Name": [
+          {"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106Sum · Caption"},
+          {"page": 2, "field_name": "Debtor 1", "line_ref": "Form 106Sum · Page 2 Header"}
+        ],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106Sum · District"}],
+        "Total_RealEstate_AB": [{"page": 1, "field_name": "1a", "line_ref": "Form 106Sum · Line 1a"}],
+        "Total_PersonalProp_AB": [{"page": 1, "field_name": "1b", "line_ref": "Form 106Sum · Line 1b"}],
+        "Total_Assets_AB": [{"page": 1, "field_name": "1c", "line_ref": "Form 106Sum · Line 1c"}],
+        "Total_Secured_D": [{"page": 1, "field_name": "2", "line_ref": "Form 106Sum · Line 2"}],
+        "Total_Priority_E": [{"page": 1, "field_name": "3a", "line_ref": "Form 106Sum · Line 3a"}],
+        "Total_Unsecured_F": [{"page": 1, "field_name": "3b", "line_ref": "Form 106Sum · Line 3b"}],
+        "Combined_Liabilities": [{"page": 1, "field_name": "3c", "line_ref": "Form 106Sum · Line 3c"}],
+        "Schedule_I_Monthly_Income": [{"page": 1, "field_name": "4", "line_ref": "Form 106Sum · Line 4"}],
+        "Schedule_J_Monthly_Expenses": [{"page": 1, "field_name": "5", "line_ref": "Form 106Sum · Line 5"}],
+        "MeansTest_CMI": [{"page": 2, "field_name": "8", "line_ref": "Form 106Sum · Line 8"}]
+      }
+    },
+    "B106AB": {
+      "official_form_title": "Official Form 106A/B - Schedule A/B: Property",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106A/B · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106A/B · District"}],
+        "RE_Row_1_Desc": [{"page": 1, "field_name": "1 1", "line_ref": "Form 106A/B · Part 1, Line 1.1"}],
+        "RE_Row_1_Val": [{"page": 1, "field_name": "undefined_2", "line_ref": "Form 106A/B · Part 1, Line 1.1 Value"}],
+        "Veh_Row_1_Make": [{"page": 2, "field_name": "3 1", "line_ref": "Form 106A/B · Part 2, Line 3.1"}],
+        "Veh_Row_1_Model": [{"page": 2, "field_name": "3 2", "line_ref": "Form 106A/B · Part 2, Line 3.1"}],
+        "Veh_Row_1_Val": [{"page": 2, "field_name": "undefined_14", "line_ref": "Form 106A/B · Part 2, Line 3.1 Value"}],
+        "Fin_Row_1_Desc": [{"page": 5, "field_name": "17.1 Checking account", "line_ref": "Form 106A/B · Part 4, Line 17.1"}],
+        "Fin_Row_1_Val": [{"page": 5, "field_name": "17.1 Checking amount", "line_ref": "Form 106A/B · Part 4, Line 17.1 Value"}],
+        "Fin_Row_2_Desc": [{"page": 5, "field_name": "17.2 Checking account", "line_ref": "Form 106A/B · Part 4, Line 17.2"}],
+        "Fin_Row_2_Val": [{"page": 5, "field_name": "17.2 Checking amount", "line_ref": "Form 106A/B · Part 4, Line 17.2 Value"}],
+        "Fin_Row_3_Desc": [{"page": 5, "field_name": "17.6 Other financial account", "line_ref": "Form 106A/B · Part 4, Line 17.6"}],
+        "Fin_Row_3_Val": [{"page": 5, "field_name": "17.6 Other financial amount", "line_ref": "Form 106A/B · Part 4, Line 17.6 Value"}],
+        "Ret_Row_1_Desc": [{"page": 6, "field_name": "21.1 401k or similar plan", "line_ref": "Form 106A/B · Part 4, Line 21.1"}],
+        "Ret_Row_1_Val": [{"page": 6, "field_name": "21.1 401k or similar plan amount", "line_ref": "Form 106A/B · Part 4, Line 21.1 Value"}],
+        "Total_RealEstate_AB": [{"page": 10, "field_name": "undefined_159", "line_ref": "Form 106A/B · Line 55"}],
+        "Total_Vehicles_AB": [{"page": 10, "field_name": "undefined_160", "line_ref": "Form 106A/B · Line 56"}],
+        "Total_Financial_AB": [{"page": 10, "field_name": "undefined_162", "line_ref": "Form 106A/B · Line 58"}],
+        "Total_PersonalProp_AB": [
+          {"page": 10, "field_name": "undefined_166", "occurrence": 0, "line_ref": "Form 106A/B · Line 62"},
+          {"page": 10, "field_name": "undefined_166", "occurrence": 1, "line_ref": "Form 106A/B · Line 62 Copy"}
+        ],
+        "Total_Assets_AB": [{"page": 10, "field_name": "undefined_167", "line_ref": "Form 106A/B · Line 63"}]
+      }
+    },
+    "B106C": {
+      "official_form_title": "Official Form 106C - Schedule C: The Property You Claim as Exempt",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106C · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106C · District"}],
+        "Check_State_Exemptions": [{"page": 1, "field_name": "check 1", "occurrence": 1, "mode": "checkbox", "on_value": "Yes", "line_ref": "Form 106C · Line 1 State System"}],
+        "Ex_1_Desc": [{"page": 1, "field_name": "description", "line_ref": "Form 106C · Line 2.1 Description"}],
+        "Ex_1_Val": [{"page": 1, "field_name": "undefined", "line_ref": "Form 106C · Line 2.1 Value"}],
+        "Ex_1_Amt": [{"page": 1, "field_name": "undefined_2", "line_ref": "Form 106C · Line 2.1 Exempt"}],
+        "Ex_1_Law": [{"page": 1, "field_name": "2.1", "line_ref": "Form 106C · Line 2.1 Law"}],
+        "Ex_1_Line": [{"page": 1, "field_name": "Schedule AB", "line_ref": "Form 106C · Line 2.1 A/B Ref"}],
+        "Ex_2_Desc": [{"page": 1, "field_name": "description_2", "line_ref": "Form 106C · Line 2.2 Description"}],
+        "Ex_2_Val": [{"page": 1, "field_name": "undefined_6", "line_ref": "Form 106C · Line 2.2 Value"}],
+        "Ex_2_Amt": [{"page": 1, "field_name": "undefined_7", "line_ref": "Form 106C · Line 2.2 Exempt"}],
+        "Ex_2_Law": [{"page": 1, "field_name": "2.2", "line_ref": "Form 106C · Line 2.2 Law"}],
+        "Ex_2_Line": [{"page": 1, "field_name": "Schedule AB_2", "line_ref": "Form 106C · Line 2.2 A/B Ref"}],
+        "Ex_3_Desc": [{"page": 1, "field_name": "description_3", "line_ref": "Form 106C · Line 2.3 Description"}],
+        "Ex_3_Val": [{"page": 1, "field_name": "undefined_8", "line_ref": "Form 106C · Line 2.3 Value"}],
+        "Ex_3_Amt": [{"page": 1, "field_name": "undefined_9", "line_ref": "Form 106C · Line 2.3 Exempt"}],
+        "Ex_3_Law": [{"page": 1, "field_name": "2.3", "line_ref": "Form 106C · Line 2.3 Law"}],
+        "Ex_3_Line": [{"page": 1, "field_name": "Schedule AB_3", "line_ref": "Form 106C · Line 2.3 A/B Ref"}],
+        "Ex_4_Desc": [{"page": 2, "field_name": "description_4", "line_ref": "Form 106C · Line 2.4 Description"}],
+        "Ex_4_Val": [{"page": 2, "field_name": "undefined_11", "line_ref": "Form 106C · Line 2.4 Value"}],
+        "Ex_4_Law": [{"page": 2, "field_name": "3", "line_ref": "Form 106C · Line 2.4 Law"}],
+        "Ex_4_Line": [{"page": 2, "field_name": "Line from", "line_ref": "Form 106C · Line 2.4 A/B Ref"}]
+      }
+    },
+    "B106D": {
+      "official_form_title": "Official Form 106D - Schedule D: Creditors Who Hold Claims Secured by Property",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106D · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106D · District"}],
+        "Sec_1_Creditor": [{"page": 1, "field_name": "Creditors Name", "line_ref": "Form 106D · Part 1, Line 2.1 Creditor"}],
+        "Sec_1_Claim": [{"page": 1, "field_name": "undefined", "line_ref": "Form 106D · Part 1, Line 2.1 Claim Amount"}],
+        "Sec_1_CollatVal": [{"page": 1, "field_name": "undefined_2", "line_ref": "Form 106D · Part 1, Line 2.1 Collateral Value"}],
+        "Sec_1_Desc": [{"page": 1, "field_name": "As of the date you file the claim is Check all that apply", "line_ref": "Form 106D · Part 1, Line 2.1 Property"}],
+        "Sec_2_Creditor": [{"page": 1, "field_name": "Creditors Name_2", "line_ref": "Form 106D · Part 1, Line 2.2 Creditor"}],
+        "Sec_2_Claim": [{"page": 1, "field_name": "undefined_5", "line_ref": "Form 106D · Part 1, Line 2.2 Claim Amount"}],
+        "Sec_2_CollatVal": [{"page": 1, "field_name": "undefined_6", "line_ref": "Form 106D · Part 1, Line 2.2 Collateral Value"}],
+        "Total_Secured_D": [
+          {"page": 2, "field_name": "undefined_23", "line_ref": "Form 106D · Page 2 Total"},
+          {"page": 2, "field_name": "undefined_24", "line_ref": "Form 106D · Cumulative Total"}
+        ]
+      }
+    },
+    "B106EF": {
+      "official_form_title": "Official Form 106E/F - Schedule E/F: Creditors Who Have Unsecured Claims",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106E/F · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106E/F · District"}],
+        "Pri_1_Creditor": [{"page": 1, "field_name": "Creditors Name", "line_ref": "Form 106E/F · Part 1, Line 2.1"}],
+        "Pri_1_Amt": [{"page": 1, "field_name": "undefined", "line_ref": "Form 106E/F · Part 1, Line 2.1 Total Claim"}],
+        "Pri_2_Creditor": [{"page": 1, "field_name": "Creditors Name_2", "line_ref": "Form 106E/F · Part 1, Line 2.2"}],
+        "Pri_2_Amt": [{"page": 1, "field_name": "undefined_5", "line_ref": "Form 106E/F · Part 1, Line 2.2 Total Claim"}],
+        "NonPri_1_Creditor": [{"page": 3, "field_name": "Creditors Name_6", "line_ref": "Form 106E/F · Part 2, Line 4.1"}],
+        "NonPri_1_Amt": [{"page": 3, "field_name": "Total_26", "line_ref": "Form 106E/F · Part 2, Line 4.1 Amount"}],
+        "Total_Priority_E": [{"page": 6, "field_name": "Total_6e", "line_ref": "Form 106E/F · Part 4, Line 6e"}],
+        "Total_Unsecured_F": [{"page": 6, "field_name": "Total_6j", "line_ref": "Form 106E/F · Part 4, Line 6j"}]
+      }
+    },
+    "B106G": {
+      "official_form_title": "Official Form 106G - Schedule G: Executory Contracts and Unexpired Leases",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106G · Caption"}],
+        "Contract_Row_1": [{"page": 1, "field_name": "Company Name 2.1", "line_ref": "Form 106G · Line 2.1"}],
+        "Contract_Row_2": [{"page": 1, "field_name": "Company Name 2.2", "line_ref": "Form 106G · Line 2.2"}],
+        "Contract_Row_3": [{"page": 1, "field_name": "Company Name 2.3", "line_ref": "Form 106G · Line 2.3"}]
+      }
+    },
+    "B106H": {
+      "official_form_title": "Official Form 106H - Schedule H: Your Codebtors",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106H · Caption"}],
+        "Codebtor_Row_1": [{"page": 1, "field_name": "Codebtor Name 3.1", "line_ref": "Form 106H · Line 3.1"}]
+      }
+    },
+    "B106I": {
+      "official_form_title": "Official Form 106I - Schedule I: Your Income",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106I · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106I · District"}],
+        "Employer_Summary": [{"page": 1, "field_name": "Employers Name Debtor 1", "line_ref": "Form 106I · Part 1, Line 1"}],
+        "Schedule_I_Monthly_Income": [
+          {"page": 1, "field_name": "Amount 2 Debtor 1", "line_ref": "Form 106I · Part 2, Line 2"},
+          {"page": 1, "field_name": "Amount 4 Debtor 1", "line_ref": "Form 106I · Part 2, Line 4"},
+          {"page": 2, "field_name": "Amount 7 Debtor 1", "line_ref": "Form 106I · Part 2, Line 7"},
+          {"page": 2, "field_name": "Amount 12", "line_ref": "Form 106I · Part 2, Line 12"}
+        ]
+      }
+    },
+    "B106J": {
+      "official_form_title": "Official Form 106J - Schedule J: Your Expenses",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106J · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106J · District"}],
+        "Schedule_J_Housing": [{"page": 1, "field_name": "4", "line_ref": "Form 106J · Line 4"}],
+        "Schedule_I_Monthly_Income": [{"page": 3, "field_name": "23a", "line_ref": "Form 106J · Line 23a"}],
+        "Schedule_J_Monthly_Expenses": [
+          {"page": 3, "field_name": "22a", "line_ref": "Form 106J · Line 22a"},
+          {"page": 3, "field_name": "22c", "line_ref": "Form 106J · Line 22c"},
+          {"page": 3, "field_name": "23b", "line_ref": "Form 106J · Line 23b"}
+        ],
+        "Monthly_Net_Income": [{"page": 3, "field_name": "23c", "line_ref": "Form 106J · Line 23c"}]
+      }
+    },
+    "B106Dec": {
+      "official_form_title": "Official Form 106Dec - Declaration About an Individual Debtor's Schedules",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 106Dec · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 106Dec · District"}],
+        "Declaration_Date": [{"page": 1, "field_name": "Executed on", "line_ref": "Form 106Dec · Executed Date"}],
+        "Debtor1_Signature": [{"page": 1, "field_name": "Debtor1.signature", "line_ref": "Form 106Dec · Debtor Signature"}]
+      }
+    },
+    "B107": {
+      "official_form_title": "Official Form 107 - Statement of Financial Affairs for Individuals Filing for Bankruptcy",
+      "targets": {
+        "Income_History_Summary": [{"page": 2, "field_name": "Income 4a Debtor 1", "line_ref": "Form 107 · Part 2, Line 4"}]
+      }
+    },
+    "B108": {
+      "official_form_title": "Official Form 108 - Statement of Intention for Individuals Filing Under Chapter 7",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 108 · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 108 · District"}],
+        "Int_1_Creditor": [{"page": 1, "field_name": "Creditors Name 1a", "line_ref": "Form 108 · Part 1, Line 1a Creditor"}],
+        "Int_1_Desc": [{"page": 1, "field_name": "PropertyDescription 1a", "line_ref": "Form 108 · Part 1, Line 1a Property"}],
+        "Int_2_Creditor": [{"page": 1, "field_name": "Creditors Name 1b", "line_ref": "Form 108 · Part 1, Line 1b Creditor"}],
+        "Int_2_Desc": [{"page": 1, "field_name": "PropertyDescription 1b", "line_ref": "Form 108 · Part 1, Line 1b Property"}]
+      }
+    },
+    "B121": {
+      "official_form_title": "Official Form 121 - Statement About Your Social Security Numbers (RESTRICTED PRIVATE)",
+      "targets": {
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 121 · District"}],
+        "Debtor1_FirstName": [{"page": 1, "field_name": "Debtor1.First name", "line_ref": "Form 121 · Part 1, Line 1"}],
+        "Debtor1_MiddleName": [{"page": 1, "field_name": "Debtor1.Middle name", "line_ref": "Form 121 · Part 1, Line 1"}],
+        "Debtor1_LastName": [{"page": 1, "field_name": "Debtor1.Last name", "line_ref": "Form 121 · Part 1, Line 1"}],
+        "Debtor1_Full_SSN": [{"page": 1, "field_name": "Debtor1a.SSNum", "line_ref": "Form 121 · Part 2, Line 2 (Restricted Full SSN)"}],
+        "Filing_Date": [{"page": 1, "field_name": "Executed on", "line_ref": "Form 121 · Part 3 Executed Date"}]
+      }
+    },
+    "B122A1": {
+      "official_form_title": "Official Form 122A-1 - Chapter 7 Statement of Your Current Monthly Income",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor1.Name", "line_ref": "Form 122A-1 · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 122A-1 · District"}],
+        "Current_Monthly_Income": [{"page": 2, "field_name": "Debto1.Quest11", "line_ref": "Form 122A-1 · Part 1, Line 11"}, {"page": 2, "field_name": "Quest11", "occurrence": 0, "line_ref": "Form 122A-1 · Line 11 Total"}],
+        "Annualized_CMI": [{"page": 2, "field_name": "12B", "line_ref": "Form 122A-1 · Part 2, Line 12b"}],
+        "State_Name": [{"page": 2, "field_name": "13A", "line_ref": "Form 122A-1 · Part 2, Line 13a"}],
+        "Household_Size": [{"page": 2, "field_name": "13B", "line_ref": "Form 122A-1 · Part 2, Line 13b"}],
+        "CA_Median_Income": [{"page": 2, "field_name": "13C", "line_ref": "Form 122A-1 · Part 2, Line 13c"}]
+      }
+    },
+    "B122A2": {
+      "official_form_title": "Official Form 122A-2 - Chapter 7 Means Test Calculation",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor1.Name", "line_ref": "Form 122A-2 · Caption"}],
+        "Current_Monthly_Income": [{"page": 1, "field_name": "Quest1", "line_ref": "Form 122A-2 · Line 1"}, {"page": 8, "field_name": "Quest4", "line_ref": "Form 122A-2 · Line 39a"}],
+        "IRS_Food_Clothing": [{"page": 2, "field_name": "Quest6", "line_ref": "Form 122A-2 · Line 6"}],
+        "IRS_Healthcare": [{"page": 2, "field_name": "Quest7G", "occurrence": 0, "line_ref": "Form 122A-2 · Line 7g"}],
+        "IRS_Housing_Utilities": [{"page": 3, "field_name": "Quest8", "line_ref": "Form 122A-2 · Line 8"}, {"page": 3, "field_name": "Quest9", "line_ref": "Form 122A-2 · Line 9"}],
+        "Total_Deductions_MT": [{"page": 5, "field_name": "undefined_56", "line_ref": "Form 122A-2 · Line 24"}],
+        "Monthly_Disposable_Income": [{"page": 8, "field_name": "undefined_107", "occurrence": 0, "line_ref": "Form 122A-2 · Line 39c"}],
+        "SixtyMonth_Disposable_Income": [{"page": 8, "field_name": "undefined_108", "occurrence": 0, "line_ref": "Form 122A-2 · Line 39d"}]
+      }
+    },
+    "B122C1": {
+      "official_form_title": "Official Form 122C-1 - Chapter 13 Statement of Your Current Monthly Income and Calculation of Commitment Period",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtor 1", "line_ref": "Form 122C-1 · Caption"}],
+        "District_Combo": [{"page": 1, "field_name": "Bankruptcy District Information", "line_ref": "Form 122C-1 · District"}],
+        "Current_Monthly_Income": [{"page": 2, "field_name": "undefined_37", "occurrence": 0, "line_ref": "Form 122C-1 · Line 11"}],
+        "Annualized_CMI": [{"page": 3, "field_name": "undefined_40", "line_ref": "Form 122C-1 · Line 15b"}],
+        "State_Name": [{"page": 3, "field_name": "16 Calculate the median family income that applies to you Follow these steps", "line_ref": "Form 122C-1 · Line 16a"}],
+        "Household_Size": [{"page": 3, "field_name": "Fill in the number of people in your household", "line_ref": "Form 122C-1 · Line 16b"}],
+        "CA_Median_Income": [{"page": 3, "field_name": "undefined_41", "occurrence": 0, "line_ref": "Form 122C-1 · Line 16c"}]
+      }
+    },
+    "B122C2": {
+      "official_form_title": "Official Form 122C-2 - Chapter 13 Calculation of Your Disposable Income",
+      "targets": {
+        "IRS_Food_Clothing": [{"page": 1, "field_name": "undefined_2", "line_ref": "Form 122C-2 · Line 6"}],
+        "IRS_Healthcare": [{"page": 2, "field_name": "undefined_5", "occurrence": 0, "line_ref": "Form 122C-2 · Line 7g"}],
+        "IRS_Housing_Utilities": [{"page": 3, "field_name": "undefined_17", "line_ref": "Form 122C-2 · Line 8"}],
+        "Total_Deductions_MT": [{"page": 4, "field_name": "undefined_38", "line_ref": "Form 122C-2 · Line 24"}]
+      }
+    },
+    "CACB_F1007_1": {
+      "official_form_title": "CACB Local Form F 1007-1 - Verification of Master Mailing List of Creditors",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Party Information2", "line_ref": "F 1007-1 · Debtor Caption"}],
+        "Attorney_Header": [{"page": 1, "field_name": "Party Information", "line_ref": "F 1007-1 · Attorney Header"}],
+        "Chapter_Combo": [{"page": 1, "field_name": "Chapter", "line_ref": "F 1007-1 · Chapter"}],
+        "Creditor_Matrix_Count": [{"page": 1, "field_name": "Text3", "line_ref": "F 1007-1 · Page/Creditor Count"}]
+      }
+    },
+    "CACB_F5005_4": {
+      "official_form_title": "CACB Local Form F 9011-1.SIGNATURE.VERIF.DEC - Declaration Verifying Software Generated Signature(s)",
+      "targets": {
+        "Attorney_Name": [{"page": 1, "field_name": "declare as follows", "line_ref": "F 9011-1 · Declarant Attorney"}],
+        "Debtor1_Name": [{"page": 1, "field_name": "9011-1.1-Name of signer1", "line_ref": "F 9011-1 · Signer 1"}],
+        "Verification_Date": [{"page": 1, "field_name": "Date of oral verification1", "line_ref": "F 9011-1 · Verification Date"}],
+        "Attest_Printed_Name": [{"page": 1, "field_name": "Printed Name", "line_ref": "F 9011-1 · Printed Name"}]
+      }
+    },
+    "CACB_F3015_1_01": {
+      "official_form_title": "CACB Local Form F 3015-1.01 - Chapter 13 Plan",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "CH-13-PLAN-Debtor", "line_ref": "F 3015-1.01 · Debtor"}],
+        "Attorney_Header": [{"page": 1, "field_name": "CH-13-PLAN-Text1", "line_ref": "F 3015-1.01 · Attorney"}],
+        "Estimated_Monthly_Payment": [{"page": 3, "field_name": "CH-13-PLAN-1A 1a", "line_ref": "F 3015-1.01 · Sec. II.A Monthly Plan Payment"}],
+        "Commitment_Period_Months": [{"page": 3, "field_name": "CH-13-PLAN-Total Months", "line_ref": "F 3015-1.01 · Total Plan Months"}]
+      }
+    },
+    "CACB_F3015_1_7_RARA": {
+      "official_form_title": "CACB Local Form F 3015-1.7.RARA - Rights and Responsibilities Agreement",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Text2", "line_ref": "F 3015-1.7.RARA · Debtor"}],
+        "Attorney_Header": [{"page": 1, "field_name": "Text1", "line_ref": "F 3015-1.7.RARA · Attorney"}]
+      }
+    },
+    "CAEB_EDC_3_080": {
+      "official_form_title": "CAEB Mandatory Local Form EDC 3-080 - Chapter 13 Plan",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Names", "line_ref": "EDC 3-080 · Debtor"}, {"page": 6, "field_name": "Db printed name field", "line_ref": "EDC 3-080 · Signature Block"}],
+        "Debtor1_Last4_Digits": [{"page": 1, "field_name": "DB SSN Fill", "line_ref": "EDC 3-080 · SSN Last 4"}],
+        "Estimated_Monthly_Payment": [{"page": 1, "field_name": "from future earnings  This monthly plan payment is subject to", "line_ref": "EDC 3-080 · Sec. 2.01 Monthly Payment"}],
+        "Commitment_Period_Months": [{"page": 1, "field_name": "months unless all allowed unsecured", "line_ref": "EDC 3-080 · Sec. 2.03 Commitment Period"}],
+        "Secured_Arrears_Total": [{"page": 3, "field_name": "Totals", "line_ref": "EDC 3-080 · Sec. 3.07 Class 1 Arrears Total"}],
+        "Attorney_Name": [{"page": 6, "field_name": "Debtors Attorney", "line_ref": "EDC 3-080 · Attorney"}]
+      }
+    },
+    "CAEB_ESIG": {
+      "official_form_title": "CAEB Local Form EDC 2-100 - Verification of Master Address List",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtors", "line_ref": "EDC 2-100 · Debtor"}]
+      }
+    },
+    "CAEB_EDC_3_096": {
+      "official_form_title": "CAEB Local Form EDC 3-096 - Rights and Responsibilities of Chapter 13 Debtors and Their Attorneys",
+      "targets": {
+        "Debtor1_Name": [{"page": 1, "field_name": "Debtors", "line_ref": "EDC 3-096 · Debtor"}],
+        "Attorney_Name": [{"page": 3, "field_name": "AtySignature", "line_ref": "EDC 3-096 · Attorney"}]
+      }
+    }
+  }
+}

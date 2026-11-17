@@ -2092,3 +2092,186 @@
     font-weight: 600;
   }
 }
+
+/* =====================================================================
+ * Bankruptcy Case Workbench Component Styles (`static/bankruptcy.js`)
+ * ===================================================================== */
+@layer components {
+  .bk-triage-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-block-end: 20px;
+    padding: 14px;
+    background-color: var(--color-bg-surface-subtle);
+    border-block-start: 2px solid var(--color-border-strong);
+    border-inline: 1px solid var(--color-border-subtle);
+    border-block-end: 1px solid var(--color-border-subtle);
+  }
+
+  .bk-triage-card {
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border-mid);
+    border-block-start: 2px solid #B45309;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .bk-triage-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .bk-triage-prompt {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--color-text-primary);
+  }
+
+  .bk-inline-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .bk-stack-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .bk-input,
+  .bk-select {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 6px 10px;
+    border: 1px solid var(--color-border-mid);
+    border-radius: var(--radius-xs);
+    background-color: var(--color-bg-card);
+    color: var(--color-text-primary);
+  }
+
+  .bk-opt-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+    margin-block-end: 20px;
+  }
+
+  .bk-opt-card {
+    padding: 12px;
+    border: 1px solid var(--color-border-subtle);
+    border-block-start: 2px solid var(--color-border-mid);
+    background-color: var(--color-bg-card);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .bk-opt-card.is-recommended {
+    border-block-start: 2px solid #14532D;
+    background-color: #F6FBF8;
+  }
+
+  .bk-table-wrap {
+    overflow-x: auto;
+    margin-block: 10px;
+  }
+
+  .bk-schedule-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .bk-schedule-table th,
+  .bk-schedule-table td {
+    padding: 7px 10px;
+    border-block-end: 1px solid var(--color-border-subtle);
+    text-align: left;
+  }
+
+  .bk-schedule-table th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-secondary);
+    border-block-start: 2px solid var(--color-border-strong);
+    background-color: var(--color-bg-surface-subtle);
+  }
+
+  .bk-prose-line {
+    margin: 6px 0;
+    line-height: 1.6;
+  }
+
+  .bk-formula-box {
+    margin: 6px 0;
+    padding: 8px 10px;
+    background-color: var(--color-bg-surface-muted);
+    border: 1px solid var(--color-border-subtle);
+    white-space: pre-wrap;
+    font-size: 12.5px;
+  }
+
+  .bk-gate-banner {
+    padding: 12px;
+    border: 1px solid var(--color-border-mid);
+    font-size: 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .bk-gate-banner.is-ready {
+    border-block-start: 2px solid #14532D;
+    background-color: #F0FDF4;
+    color: #14532D;
+  }
+
+  .bk-gate-banner.is-blocked {
+    border-block-start: 2px solid #991B1B;
+    background-color: #FEF2F2;
+    color: #991B1B;
+  }
+
+  .bk-section-box,
+  .bk-receipt-card {
+    padding: 12px;
+    border: 1px solid var(--color-border-subtle);
+    background-color: var(--color-bg-surface-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .bk-file-list,
+  .bk-step-log {
+    margin: 4px 0;
+    padding-inline-start: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12.5px;
+  }
+
+  .bk-checkbox-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    font-size: 12.5px;
+  }
+
+  .bk-error-text {
+    color: #991B1B;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+}

@@ -57,7 +57,7 @@ GEMINI_API_KEY="your-key" uv run python main.py \
   --ask "Evaluate whether complete diversity and the $75,000 threshold are met."
 ```
 
-### 4. Start the Web UI Server
+### 4. Start the Web UI Server (Broadsheet Research App — Port 8000)
 ```bash
 cd ~/restructure/jd_screen
 GEMINI_API_KEY="your-key" uv run python main.py \
@@ -66,3 +66,11 @@ GEMINI_API_KEY="your-key" uv run python main.py \
 ```
 
 Then open `http://127.0.0.1:8000` in your browser.
+
+### 5. Start the Standalone Bankruptcy Case Workbench Webapp (Port 8001)
+```bash
+cd ~/restructure/jd_screen
+uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001 --name bk_workbench
+```
+
+Then open `http://127.0.0.1:8001` in your browser to test pre-seeded cases (`bk_ch7_cacb_martinez`, `bk_ch13_caeb_chen`) or upload client PDFs.

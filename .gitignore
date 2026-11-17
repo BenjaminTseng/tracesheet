@@ -7,3 +7,13 @@ logs/
 .env
 .env.*
 !.env.example
+
+# Official & raw court PDF forms (downloaded locally into canonical/ at setup)
+canonical/tables/bankruptcy/templates/*.pdf
+canonical/raw/bankruptcy/*.pdf
+canonical/.synopsis_cache.json
+
+# Runtime-seeded bankruptcy cases, vaults, and design critique snapshots
+matters/bk_*/
+matters/_vault/
+.impeccable/

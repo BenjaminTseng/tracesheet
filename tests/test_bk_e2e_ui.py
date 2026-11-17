@@ -34,9 +34,23 @@ def test_bankruptcy_ui_shell_assets_and_both_ca_districts_e2e(tmp_path: Path) ->
     js_res = client.get("/static/bankruptcy.js")
     assert js_res.status_code == 200
     assert "FilingPacketDrawer" in js_res.text
+    assert "NextBlockerStepper" in js_res.text
+    assert "column-lane" in js_res.text
+    assert "artifact-sheet" in js_res.text
+    assert "sheet-table" in js_res.text
+    assert 'aria-modal="true"' in js_res.text
+    # Ensure P0 fake defaults were removed from static JS UI state initializers.
+    assert "Elena Counsel" not in js_res.text
+    assert "useState('2021 Toyota Camry')" not in js_res.text
+    assert "[attested, setAttested] = useState(false)" in js_res.text
 
     # 2. Complete Case 1: bk_ch7_cacb_martinez (Resolve all Emerging Questions + Contradictions -> CACB Submit).
     m1 = client.get("/api/v1/bankruptcy/matters/bk_ch7_cacb_martinez/case").json()
+    section_titles = [s["section_title"] for s in m1["compiled_bundle"]["artifact"]["sections"]]
+    assert any("Form B 101" in t for t in section_titles)
+    assert any("Form B 106Sum" in t for t in section_titles)
+    assert any("Schedules A/B" in t for t in section_titles)
+    assert "106Sum · 1c" in m1["compiled_bundle"]["artifact"]["sections"][1]["content"]
     assert m1["readiness"]["status"] == "BLOCKED"
     assert m1["calculations"]["exemptions"]["recommended_regime_id"] == "CA_CCP_703_140"
 
@@ -114,4 +128,6 @@ def test_bankruptcy_ui_shell_assets_and_both_ca_districts_e2e(tmp_path: Path) ->
         pkt2 = client.post("/api/v1/bankruptcy/matters/bk_ch13_caeb_chen/compile-packet")
         assert pkt2.status_code == 200
         assert "CAEB_EDC_3_080.pdf" in pkt2.json()["files"]
+        assert "CAEB_EDC_3_096.pdf" in pkt2.json()["files"]
         assert "CAEB_ESIG.pdf" in pkt2.json()["files"]
+        assert "field_lineage.json" in pkt2.json()["files"]

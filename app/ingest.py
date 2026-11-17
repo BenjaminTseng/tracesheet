@@ -30,6 +30,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import openpyxl
 import pdfplumber
 
+from app.core.ocr import OCRProvider
+from app.core.pii import PIITokenizer
 from app.llm import LLMProvider, ToolDefinition
 from app.models import (
     CanonicalAuthorityRef,
@@ -1364,13 +1366,36 @@ class CanonicalIngestor:
 class MatterIngestor:
     """Deterministic file parser and search tool builder for project inputs `(a)`."""
 
-    def __init__(self, matters_root: Path) -> None:
+    def __init__(
+        self,
+        matters_root: Path,
+        ocr_provider: Optional[OCRProvider] = None,
+        pii_tokenizer: Optional[PIITokenizer] = None,
+    ) -> None:
         """Initializes the matter ingestor.
 
         Args:
             matters_root: Root directory containing per-matter folders (`matters/<id>`).
+            ocr_provider: Optional pluggable OCR provider for raster/scanned PDF pages.
+            pii_tokenizer: Optional deterministic PII masking vault for indexed text.
         """
         self.matters_root = matters_root
+        self.ocr_provider = ocr_provider
+        self.pii_tokenizer = pii_tokenizer
+
+    def _mask_text(self, matter_id: Optional[str], text: str) -> str:
+        """Masks sensitive PII in extracted text when a `PIITokenizer` is configured.
+
+        Args:
+            matter_id: Active matter slug used to isolate per-matter vaults.
+            text: Raw extracted string.
+
+        Returns:
+            Masked string if `self.pii_tokenizer` and `matter_id` are set; otherwise `text`.
+        """
+        if self.pii_tokenizer is not None and matter_id:
+            return self.pii_tokenizer.mask_text(matter_id, text)
+        return text
 
     def _matter_dirs(self, matter_id: str) -> Tuple[Path, Path, Path, Path]:
         """Returns `(matter_dir, raw_dir, indexed_dir, bundles_dir)` for a matter."""
@@ -1577,17 +1602,20 @@ class MatterIngestor:
         raw_path: Path,
         indexed_dir: Path,
         meta: Optional[MatterFileMetadata] = None,
+        matter_id: Optional[str] = None,
     ) -> Tuple[Path, int, List[Dict[str, Any]]]:
         """Extracts coordinate-stamped tables and prose blocks from a PDF using `pdfplumber`.
 
         Detects tables first via `page.find_tables()` (`<STEM>-P#-TBL#`), emits pipe-delimited
         Markdown plus structured cell coordinates for `sheets_index.jsonl`, and excludes
-        in-table words before grouping prose lines (`<STEM>-P#-B#`).
+        in-table words before grouping prose lines (`<STEM>-P#-B#`). Falls back to
+        `self.ocr_provider` for raster/scanned pages with no extractable text layer.
 
         Args:
             raw_path: Path to the source `.pdf` file.
             indexed_dir: Target directory for `<filename>.indexed.md`.
             meta: Optional persisted origin/reliability metadata for `raw_path`.
+            matter_id: Optional matter identifier used when PII masking is enabled.
 
         Returns:
             Tuple of `(output_markdown_path, block_count, table_cell_rows)`.
@@ -1606,7 +1634,12 @@ class MatterIngestor:
                 for t_idx, table in enumerate(tables, start=1):
                     extracted = table.extract() or []
                     rows = [
-                        [re.sub(r"\s+", " ", (cell or "")).strip() for cell in row]
+                        [
+                            self._mask_text(
+                                matter_id, re.sub(r"\s+", " ", (cell or "")).strip()
+                            )
+                            for cell in row
+                        ]
                         for row in extracted
                         if any((cell or "").strip() for cell in row)
                     ]
@@ -1668,6 +1701,7 @@ class MatterIngestor:
                 if not raw_words and not table_bboxes:
                     plain_text = (page.extract_text() or "").strip()
                     if plain_text:
+                        plain_text = self._mask_text(matter_id, plain_text)
                         block_count += 1
                         loc = SourceLocator(
                             source_type="pdf",
@@ -1682,6 +1716,26 @@ class MatterIngestor:
                             f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n"
                             f"{plain_text}\n"
                         )
+                    elif self.ocr_provider is not None:
+                        ocr_blocks = self.ocr_provider.extract_page_blocks(raw_path, page_idx)
+                        for b_idx, ocr_blk in enumerate(ocr_blocks, start=1):
+                            masked_ocr = self._mask_text(matter_id, ocr_blk.text.strip())
+                            if not masked_ocr:
+                                continue
+                            block_count += 1
+                            loc = SourceLocator(
+                                source_type="pdf",
+                                file_name=raw_path.name,
+                                page=page_idx,
+                                bounding_box=list(ocr_blk.bounding_box),
+                                locator_key=f"{stem}-P{page_idx}-B{b_idx}",
+                                payload_hash=file_hash,
+                                **loc_meta,
+                            )
+                            md_blocks.append(
+                                f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n"
+                                f"{masked_ocr}\n"
+                            )
                     continue
                 if not words:
                     continue
@@ -1715,6 +1769,7 @@ class MatterIngestor:
                     text = " ".join(" ".join(w["text"] for w in ln) for ln in para).strip()
                     if not text:
                         continue
+                    text = self._mask_text(matter_id, text)
                     x1 = int(min(float(w["x0"]) for w in flat_words))
                     y1 = int(min(float(w["top"]) for w in flat_words))
                     x2 = int(max(float(w["x1"]) for w in flat_words))
@@ -1843,6 +1898,7 @@ class MatterIngestor:
         raw_path: Path,
         indexed_dir: Path,
         meta: Optional[MatterFileMetadata] = None,
+        matter_id: Optional[str] = None,
     ) -> Tuple[Path, int]:
         """Splits a Markdown/text file into paragraph blocks stamped with locators."""
         content = raw_path.read_text(encoding="utf-8")
@@ -1853,6 +1909,7 @@ class MatterIngestor:
         md_blocks: List[str] = [f"# Indexed Document: {raw_path.name}\n"]
 
         for idx, para in enumerate(paragraphs, start=1):
+            masked_para = self._mask_text(matter_id, para)
             loc = SourceLocator(
                 source_type="markdown",
                 file_name=raw_path.name,
@@ -1861,7 +1918,7 @@ class MatterIngestor:
                 **loc_meta,
             )
             md_blocks.append(
-                f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{para}\n"
+                f"<!-- LOCATOR: {loc.model_dump_json(exclude_none=True)} -->\n{masked_para}\n"
             )
 
         out_path = indexed_dir / f"{raw_path.name}.indexed.md"
@@ -2014,7 +2071,9 @@ class MatterIngestor:
                     f"[{idx}/{len(raw_candidates)}] Indexing {raw_path.name}...",
                 )
             if suffix == ".pdf":
-                out_path, count, table_cells = self.ingest_pdf(raw_path, indexed_dir, meta=meta)
+                out_path, count, table_cells = self.ingest_pdf(
+                    raw_path, indexed_dir, meta=meta, matter_id=matter_id
+                )
                 sheet_entries.extend(table_cells)
                 indexed_files.append(
                     {
@@ -2052,7 +2111,9 @@ class MatterIngestor:
                     }
                 )
             elif suffix in (".md", ".txt"):
-                out_path, count = self.ingest_markdown(raw_path, indexed_dir, meta=meta)
+                out_path, count = self.ingest_markdown(
+                    raw_path, indexed_dir, meta=meta, matter_id=matter_id
+                )
                 indexed_files.append(
                     {
                         "raw": raw_path.name,

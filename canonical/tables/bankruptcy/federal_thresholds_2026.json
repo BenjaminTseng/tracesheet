@@ -1,0 +1,62 @@
+{
+  "table_id": "federal_thresholds_2026",
+  "description": "Effective-dated federal Bankruptcy Code dollar thresholds including 11 U.S.C. § 104 triennial adjustments (April 1, 2025) and H.R. 7730 Bankruptcy Threshold Adjustment Act (Nov 10, 2026).",
+  "source_authority": "11 U.S.C. §§ 104, 109(e), 522(p), 707(b), 1182; 90 FR 8941; H.R. 7730 (enacted Nov 10, 2026)",
+  "effective_periods": [
+    {
+      "version_id": "fed_2025_04_01",
+      "effective_from": "2025-04-01",
+      "effective_to": "2026-11-09",
+      "chapter_13_eligibility": {
+        "mode": "bifurcated",
+        "unsecured_limit": "526700.00",
+        "secured_limit": "1580125.00",
+        "authority_citation": "11 U.S.C. § 109(e) (90 FR 8941, eff. 2025-04-01)"
+      },
+      "subchapter_v_eligibility": {
+        "debt_limit": "3424000.00",
+        "min_commercial_debt_ratio": "0.50",
+        "exclude_insider_affiliate": true,
+        "authority_citation": "11 U.S.C. § 1182(1) (90 FR 8941, eff. 2025-04-01)"
+      },
+      "homestead_1215_day_cap_522p": {
+        "cap_amount": "214000.00",
+        "lookback_days": 1215,
+        "authority_citation": "11 U.S.C. § 522(p)(1) (90 FR 8941, eff. 2025-04-01)"
+      },
+      "means_test_707b_abuse": {
+        "floor_60_month_disposable": "10275.00",
+        "ceiling_60_month_disposable": "17150.00",
+        "unsecured_debt_pct": "0.25",
+        "authority_citation": "11 U.S.C. § 707(b)(2)(A)(i) (90 FR 8941)"
+      }
+    },
+    {
+      "version_id": "fed_2026_11_10_hr7730",
+      "effective_from": "2026-11-10",
+      "effective_to": null,
+      "chapter_13_eligibility": {
+        "mode": "unified",
+        "combined_limit": "2750000.00",
+        "authority_citation": "11 U.S.C. § 109(e) as amended by H.R. 7730 (eff. 2026-11-10)"
+      },
+      "subchapter_v_eligibility": {
+        "debt_limit": "7500000.00",
+        "min_commercial_debt_ratio": "0.50",
+        "exclude_insider_affiliate": true,
+        "authority_citation": "11 U.S.C. § 1182(1) as amended by H.R. 7730 (eff. 2026-11-10)"
+      },
+      "homestead_1215_day_cap_522p": {
+        "cap_amount": "214000.00",
+        "lookback_days": 1215,
+        "authority_citation": "11 U.S.C. § 522(p)(1) (90 FR 8941)"
+      },
+      "means_test_707b_abuse": {
+        "floor_60_month_disposable": "10275.00",
+        "ceiling_60_month_disposable": "17150.00",
+        "unsecured_debt_pct": "0.25",
+        "authority_citation": "11 U.S.C. § 707(b)(2)(A)(i) (90 FR 8941)"
+      }
+    }
+  ]
+}

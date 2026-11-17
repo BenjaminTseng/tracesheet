@@ -1,0 +1,196 @@
+{
+  "table_id": "exemptions_2026",
+  "description": "Universal multi-jurisdiction ExemptionRegimeSpec table supporting California CCP § 704, California CCP § 703.140 (Form EJ-156), and Federal 11 U.S.C. § 522(d).",
+  "source_authority": "CA CCP §§ 703.140, 703.150, 704.010-704.730; Judicial Council Form EJ-156 (eff. 2025-04-01 & 2026-07-20); 11 U.S.C. § 522(d), (p)",
+  "effective_periods": [
+    {
+      "version_id": "exemptions_2026_07_20",
+      "effective_from": "2026-01-01",
+      "effective_to": null,
+      "state_policies": {
+        "CA": {
+          "opt_out_federal": true,
+          "selectable_regimes": ["CA_CCP_704", "CA_CCP_703_140"],
+          "required_domicile_days": 730
+        },
+        "DEFAULT_DUAL_ELECTION": {
+          "opt_out_federal": false,
+          "selectable_regimes": ["FEDERAL_522D"],
+          "required_domicile_days": 730
+        }
+      },
+      "regimes": {
+        "CA_CCP_704": {
+          "regime_id": "CA_CCP_704",
+          "display_name": "California System 1 (CCP § 704 Homestead)",
+          "allow_joint_doubling": false,
+          "rules": [
+            {
+              "category": "real_property",
+              "rule_type": "locality_lookup",
+              "statute": "Cal. Civ. Proc. Code § 704.730",
+              "floor": "371547.00",
+              "ceiling": "743681.00",
+              "subject_to_522p_1215_day_cap": true,
+              "county_amounts": {
+                "Los Angeles": "743681.00",
+                "Orange": "743681.00",
+                "San Diego": "743681.00",
+                "San Francisco": "743681.00",
+                "Santa Clara": "743681.00",
+                "Alameda": "743681.00",
+                "Sacramento": "565000.00",
+                "Riverside": "615000.00",
+                "San Bernardino": "515000.00",
+                "Fresno": "425000.00",
+                "Imperial": "371547.00",
+                "DEFAULT_CA_COUNTY": "550000.00"
+              }
+            },
+            {
+              "category": "vehicle",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.010",
+              "cap": "8625.00"
+            },
+            {
+              "category": "bank_account",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.220",
+              "cap": "2325.00"
+            },
+            {
+              "category": "tools_of_trade",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.060",
+              "cap": "10975.00"
+            },
+            {
+              "category": "household_goods",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 704.020",
+              "cap": null
+            },
+            {
+              "category": "jewelry",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.040",
+              "cap": "10975.00"
+            },
+            {
+              "category": "retirement",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 704.115 / 11 U.S.C. § 522(b)(3)(C)",
+              "cap": null
+            }
+          ],
+          "wildcard": null
+        },
+        "CA_CCP_703_140": {
+          "regime_id": "CA_CCP_703_140",
+          "display_name": "California System 2 (CCP § 703.140 Wildcard)",
+          "allow_joint_doubling": false,
+          "rules": [
+            {
+              "category": "real_property",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(1)",
+              "cap": "36750.00",
+              "subject_to_522p_1215_day_cap": true
+            },
+            {
+              "category": "vehicle",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(2)",
+              "cap": "8625.00"
+            },
+            {
+              "category": "household_goods",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(3)",
+              "cap": null
+            },
+            {
+              "category": "jewelry",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(4)",
+              "cap": "2175.00"
+            },
+            {
+              "category": "tools_of_trade",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(6)",
+              "cap": "10975.00"
+            },
+            {
+              "category": "retirement",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(10)(E) / 11 U.S.C. § 522(b)(3)(C)",
+              "cap": null
+            }
+          ],
+          "wildcard": {
+            "rule_type": "wildcard_with_spillover",
+            "statute": "Cal. Civ. Proc. Code § 703.140(b)(5)",
+            "base_amount": "1950.00",
+            "spillover_source_category": "real_property",
+            "spillover_ratio": "1.0",
+            "max_spillover_amount": "36750.00"
+          }
+        },
+        "FEDERAL_522D": {
+          "regime_id": "FEDERAL_522D",
+          "display_name": "Federal Exemptions (11 U.S.C. § 522(d))",
+          "allow_joint_doubling": true,
+          "rules": [
+            {
+              "category": "real_property",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(1)",
+              "cap": "31575.00",
+              "subject_to_522p_1215_day_cap": false
+            },
+            {
+              "category": "vehicle",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(2)",
+              "cap": "5025.00"
+            },
+            {
+              "category": "household_goods",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(3)",
+              "cap": "16850.00"
+            },
+            {
+              "category": "jewelry",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(4)",
+              "cap": "2125.00"
+            },
+            {
+              "category": "tools_of_trade",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(6)",
+              "cap": "3175.00"
+            },
+            {
+              "category": "retirement",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "11 U.S.C. § 522(d)(12)",
+              "cap": null
+            }
+          ],
+          "wildcard": {
+            "rule_type": "wildcard_with_spillover",
+            "statute": "11 U.S.C. § 522(d)(5)",
+            "base_amount": "1675.00",
+            "spillover_source_category": "real_property",
+            "spillover_ratio": "1.0",
+            "max_spillover_amount": "15800.00"
+          }
+        }
+      }
+    }
+  ]
+}

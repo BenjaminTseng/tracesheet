@@ -1,0 +1,87 @@
+{
+  "table_id": "ustp_ca_means_test_2026",
+  "description": "DOJ U.S. Trustee Program Census Bureau California Median Family Income and IRS National/Local Expense Standards for Form 122A-1/2 and 122C-1/2.",
+  "source_authority": "DOJ U.S. Trustee Program Means Testing Data Tables (justice.gov/ust/means-testing)",
+  "effective_periods": [
+    {
+      "version_id": "ustp_ca_2026_11",
+      "effective_from": "2026-05-15",
+      "effective_to": null,
+      "california_median_annual_income": {
+        "1": "76120.00",
+        "2": "99850.00",
+        "3": "112400.00",
+        "4": "131250.00",
+        "additional_person_annual": "11100.00"
+      },
+      "irs_national_standards": {
+        "food_clothing_other_monthly": {
+          "1": "815.00",
+          "2": "1460.00",
+          "3": "1710.00",
+          "4": "2045.00",
+          "additional_person_monthly": "385.00"
+        },
+        "out_of_pocket_healthcare_per_person_monthly": {
+          "under_65": "84.00",
+          "65_and_over": "154.00"
+        }
+      },
+      "irs_local_transportation": {
+        "west_region_operating_costs_monthly": {
+          "0_vehicles": "320.00",
+          "1_vehicle": "312.00",
+          "2_plus_vehicles": "624.00"
+        },
+        "national_ownership_cost_per_vehicle_monthly": "645.00",
+        "max_vehicles_ownership": 2
+      },
+      "ca_county_housing_and_utilities_monthly": {
+        "Los Angeles": {
+          "mortgage_or_rent": { "1": "2480.00", "2": "2910.00", "3": "3240.00", "4": "3620.00", "5_plus": "3890.00" },
+          "utilities": { "1": "595.00", "2": "675.00", "3": "740.00", "4": "815.00", "5_plus": "880.00" }
+        },
+        "Orange": {
+          "mortgage_or_rent": { "1": "2690.00", "2": "3140.00", "3": "3510.00", "4": "3920.00", "5_plus": "4210.00" },
+          "utilities": { "1": "610.00", "2": "690.00", "3": "755.00", "4": "830.00", "5_plus": "895.00" }
+        },
+        "San Diego": {
+          "mortgage_or_rent": { "1": "2540.00", "2": "2980.00", "3": "3310.00", "4": "3710.00", "5_plus": "3980.00" },
+          "utilities": { "1": "605.00", "2": "685.00", "3": "750.00", "4": "825.00", "5_plus": "890.00" }
+        },
+        "Riverside": {
+          "mortgage_or_rent": { "1": "1980.00", "2": "2310.00", "3": "2580.00", "4": "2890.00", "5_plus": "3110.00" },
+          "utilities": { "1": "590.00", "2": "665.00", "3": "730.00", "4": "805.00", "5_plus": "865.00" }
+        },
+        "San Bernardino": {
+          "mortgage_or_rent": { "1": "1890.00", "2": "2210.00", "3": "2470.00", "4": "2760.00", "5_plus": "2970.00" },
+          "utilities": { "1": "585.00", "2": "660.00", "3": "725.00", "4": "795.00", "5_plus": "855.00" }
+        },
+        "Sacramento": {
+          "mortgage_or_rent": { "1": "1960.00", "2": "2290.00", "3": "2560.00", "4": "2860.00", "5_plus": "3080.00" },
+          "utilities": { "1": "565.00", "2": "640.00", "3": "705.00", "4": "775.00", "5_plus": "835.00" }
+        },
+        "Fresno": {
+          "mortgage_or_rent": { "1": "1490.00", "2": "1740.00", "3": "1950.00", "4": "2190.00", "5_plus": "2360.00" },
+          "utilities": { "1": "555.00", "2": "630.00", "3": "695.00", "4": "765.00", "5_plus": "825.00" }
+        },
+        "San Francisco": {
+          "mortgage_or_rent": { "1": "3180.00", "2": "3690.00", "3": "4120.00", "4": "4590.00", "5_plus": "4920.00" },
+          "utilities": { "1": "620.00", "2": "705.00", "3": "770.00", "4": "845.00", "5_plus": "910.00" }
+        },
+        "Santa Clara": {
+          "mortgage_or_rent": { "1": "3240.00", "2": "3760.00", "3": "4190.00", "4": "4680.00", "5_plus": "5020.00" },
+          "utilities": { "1": "625.00", "2": "710.00", "3": "775.00", "4": "850.00", "5_plus": "915.00" }
+        },
+        "Alameda": {
+          "mortgage_or_rent": { "1": "2760.00", "2": "3210.00", "3": "3580.00", "4": "3990.00", "5_plus": "4290.00" },
+          "utilities": { "1": "605.00", "2": "685.00", "3": "750.00", "4": "825.00", "5_plus": "890.00" }
+        },
+        "DEFAULT_CA_COUNTY": {
+          "mortgage_or_rent": { "1": "1950.00", "2": "2280.00", "3": "2540.00", "4": "2840.00", "5_plus": "3050.00" },
+          "utilities": { "1": "570.00", "2": "645.00", "3": "710.00", "4": "780.00", "5_plus": "840.00" }
+        }
+      }
+    }
+  ]
+}

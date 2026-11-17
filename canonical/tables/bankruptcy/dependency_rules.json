@@ -1,0 +1,91 @@
+{
+  "table_id": "dependency_rules",
+  "description": "Declarative cross-schedule relational completeness rules derived from Official Bankruptcy Forms B 101, B 106A/B-J, B 107 (SOFA), B 108, and B 122A/C.",
+  "source_authority": "Official Bankruptcy Forms Instructions (uscourts.gov); 11 U.S.C. §§ 521, 707(b), 522(p)",
+  "rules": [
+    {
+      "rule_id": "ASSET_MISSING_LIEN_STATUS",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B106D"],
+      "prompt_template": "Asset '{description}' (${value}) on Schedule A/B has no linked loan on Schedule D and is not confirmed free-and-clear. Is there an active loan/lease or is it owned free and clear?",
+      "resolution_options": ["confirm_free_and_clear", "link_or_add_claim"]
+    },
+    {
+      "rule_id": "SECURED_LOAN_MISSING_COLLATERAL_VALUE",
+      "severity": "critical",
+      "trigger_forms": ["B106D", "B106AB"],
+      "prompt_template": "Secured claim '{creditor_name}' (${amount}) on Schedule D lacks a linked collateral asset and verified market value on Schedule A/B. Supply collateral description and value.",
+      "resolution_options": ["add_or_link_collateral_asset"]
+    },
+    {
+      "rule_id": "SECURED_CLAIM_MISSING_INTENTION",
+      "severity": "critical",
+      "trigger_forms": ["B108", "B106D"],
+      "prompt_template": "Chapter 7 secured claim '{creditor_name}' requires a Form 108 Statement of Intention (surrender, retain_and_redeem, or retain_and_reaffirm).",
+      "resolution_options": ["set_statement_of_intention"]
+    },
+    {
+      "rule_id": "PAYSTUB_RETIREMENT_MISSING_ON_AB",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B106C"],
+      "prompt_template": "Paystubs from '{employer}' show retirement/401(k)/HSA deductions (${amount}), but no retirement/HSA asset is listed on Schedule A/B.",
+      "resolution_options": ["add_retirement_asset", "confirm_zero_balance"]
+    },
+    {
+      "rule_id": "PAYSTUB_GARNISHMENT_MISSING_ON_SOFA",
+      "severity": "critical",
+      "trigger_forms": ["B107", "B106EF"],
+      "prompt_template": "Paystubs from '{employer}' show wage garnishment/support deductions (${amount}), which must be disclosed on SOFA Line 9 and Schedules E/F or J.",
+      "resolution_options": ["add_garnishment_disclosure"]
+    },
+    {
+      "rule_id": "PAYSTUB_DEPOSIT_ACCOUNT_MISSING",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B107"],
+      "prompt_template": "Paystub direct deposit references account ending in '{last4}', which is missing from Schedule A/B bank accounts (or closed-account SOFA Line 20).",
+      "resolution_options": ["add_bank_account", "confirm_closed_account"]
+    },
+    {
+      "rule_id": "TAX_SCHED_B_ACCOUNT_MISSING",
+      "severity": "critical",
+      "trigger_forms": ["B106AB"],
+      "prompt_template": "Form 1040 Schedule B reports interest/dividends from '{institution}', which is missing from Schedule A/B financial accounts.",
+      "resolution_options": ["add_financial_account", "confirm_closed_account"]
+    },
+    {
+      "rule_id": "TAX_SCHED_C_BUSINESS_MISSING",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B106I", "B107"],
+      "prompt_template": "Form 1040 reports business/entity income (Schedule C/E/K-1), requiring Schedule A/B Part 4 business interest, SOFA Line 27, and Schedule I Line 8a P&L.",
+      "resolution_options": ["add_business_disclosure"]
+    },
+    {
+      "rule_id": "RENT_MISSING_SCHEDULE_G",
+      "severity": "warning",
+      "trigger_forms": ["B106J", "B106G"],
+      "prompt_template": "Schedule J reports monthly rent/lease expense (${amount}) with no owned residence, requiring an unexpired lease entry on Schedule G or month-to-month confirmation.",
+      "resolution_options": ["add_lease_on_g", "confirm_month_to_month"]
+    },
+    {
+      "rule_id": "CODEBTOR_MISSING_SCHEDULE_H",
+      "severity": "critical",
+      "trigger_forms": ["B106D", "B106EF", "B106H"],
+      "prompt_template": "Claim '{creditor_name}' or asset is marked joint/co-signed with a non-filing person, requiring a Schedule H codebtor entry.",
+      "resolution_options": ["add_codebtor_on_h"]
+    },
+    {
+      "rule_id": "CMI_WINDOW_GAP",
+      "severity": "critical",
+      "trigger_forms": ["B122A1", "B122C1"],
+      "prompt_template": "Lookback month '{month_label}' inside the mandatory 6-month CMI window has no paystub records. Upload paystubs or attest $0 gross income for that month.",
+      "resolution_options": ["confirm_zero_income_month", "upload_paystub"]
+    },
+    {
+      "rule_id": "HOMESTEAD_PREREQUISITE_GAP",
+      "severity": "critical",
+      "trigger_forms": ["B106C"],
+      "prompt_template": "Claiming homestead exemption on '{description}' requires verified property acquisition date (11 U.S.C. § 522(p) 1,215-day rule) and >= 730 days domicile.",
+      "resolution_options": ["supply_homestead_dates"]
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+# California Exemptions & Title 11 Bankruptcy Statutory Authorities
+
+## 1. Domicile & Governing Exemption Law (11 U.S.C. § 522(b)(3)(A) & § 522(p))
+- **730-Day Domicile Rule (`11 U.S.C. § 522(b)(3)(A)`):** A debtor domiciled continuously in California for the 730 days immediately preceding the filing date may elect California exemptions. If domiciled in California for less than 730 days, look back to where the debtor was domiciled for the greater part of the 180-day period preceding the 730-day window.
+- **1,215-Day Homestead Cap (`11 U.S.C. § 522(p)`):** Real or personal property used as a residence acquired within 1,215 days prior to the petition is capped under the federal statutory cap unless rolled over from a prior residence within the same state.
+
+## 2. California Dual Exemption Systems (CCP § 703.130 Non-Stacking Election)
+California has opted out of federal § 522(d) exemptions (`Cal. Civ. Proc. Code § 703.130`). Debtors must choose EITHER System 1 (CCP § 704 Series) OR System 2 (CCP § 703.140(b) Series)—never mix both.
+
+### System 1 — `CA_704` (`Cal. Civ. Proc. Code §§ 704.010–704.995`)
+- Best suited when the debtor owns significant home equity.
+- **Homestead (`CCP § 704.730`):** County-indexed median home sale price floor/ceiling adjusted annually by California Judicial Council (`minimum $300,000` baseline indexed upward; check `canonical/tables/bankruptcy/` effective-dated table for exact filing-year limits).
+- **Motor Vehicle (`CCP § 704.010`):** Indexed statutory equity cap across motor vehicles.
+- **Deposit Accounts / Necessaries (`CCP § 704.220 / § 704.020`):** Statutory minimum protected checking/deposit balance and ordinary household furnishings.
+
+### System 2 — `CA_703_140B` (`Cal. Civ. Proc. Code § 703.140(b)`)
+- Best suited for renters or homeowners with minimal home equity due to the large **Wildcard Exemption (`CCP § 703.140(b)(5)`)**.
+- **Residence (`CCP § 703.140(b)(1)`):** Indexed residence equity cap; unused portion spills dollar-for-dollar into the **Wildcard Pool (`§ 703.140(b)(5)`)**.
+- **Wildcard (`CCP § 703.140(b)(5)`):** Fixed statutory base + any unused `(b)(1)` residence amount may be applied to **any property** (cash, bank accounts, brokerage accounts, tax refunds, non-exempt vehicle equity).
+- **Motor Vehicle (`CCP § 703.140(b)(2)`):** Indexed vehicle equity exemption.
+
+## 3. Chapter Eligibility & Means Test Authorities (`11 U.S.C. §§ 109, 707(b), 1182, 1325`)
+- **Chapter 7 Eligibility (`11 U.S.C. § 109(b)`):** Individuals residing/domiciled in the U.S. not disqualified under 11 U.S.C. § 109(g) (180-day bar).
+- **Chapter 13 Eligibility (`11 U.S.C. § 109(e)`):** Individuals with regular income whose **noncontingent, liquidated** secured and unsecured debts are below statutory thresholds (see `canonical/tables/bankruptcy/` effective-dated limits table). Contingent/unliquidated and insider debts are analyzed separately for cap eligibility.
+- **Chapter 11 Subchapter V (`11 U.S.C. § 1182(1)`):** Small business debtors engaged in commercial or business activities with aggregate noncontingent liquidated secured and unsecured debts within the statutory debt cap, at least 50% arising from commercial/business activities.
+- **Current Monthly Income & Means Test (`11 U.S.C. §§ 101(10A), 707(b)(2)`):**
+  - **CMI Window:** Exact 6 full calendar months ending on the last day of the calendar month immediately preceding the petition filing date, divided by 6 (excluding Social Security benefits).
+  - **Median Comparison (Form 122A-1 / 122C-1):** Annualized CMI (`CMI * 12`) compared against U.S. Trustee Census/DOJ California state median income by household size.
+  - **Presumption of Abuse / Commitment Period (`11 U.S.C. §§ 707(b)(2), 1325(b)(4)`):** Above-median Chapter 7 requires Form 122A-2 IRS National & Local Standards deductions; above-median Chapter 13 fixes a 60-month applicable commitment period and Form 122C-2 disposable income floor.
+- **Best Interests of Creditors Test (`11 U.S.C. § 1325(a)(4)`):** A Chapter 13 plan must distribute at least the non-exempt equity value unsecured creditors would receive in a hypothetical Chapter 7 liquidation.
+- **Privacy & FRBP 9037 / Official Form B 121:** Full 9-digit SSNs appear **only** on Official Form 121 (submitted privately) and must never appear on any public petition, schedule, plan, or creditor matrix (`last 4 digits` only or masked).

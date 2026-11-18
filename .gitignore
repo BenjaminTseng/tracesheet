@@ -12,6 +12,7 @@ logs/
 canonical/tables/bankruptcy/templates/*.pdf
 canonical/raw/bankruptcy/*.pdf
 canonical/.synopsis_cache.json
+canonical/tables/bankruptcy/.sync_status.json
 
 # Runtime-seeded bankruptcy cases, vaults, and design critique snapshots
 matters/bk_*/

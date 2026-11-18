@@ -1,0 +1,275 @@
+{
+  "table_id": "uscourts_schedule_ab_53_lines_2026",
+  "description": "Official Form 106A/B 53-line taxonomy mapped to Best Case 35-item property aliases, canonical AssetCategory defaults, orthogonal statutory exemption pools, and malpractice risk tiers.",
+  "source_authority": "Official Form 106A/B (uscourts.gov); Best Case Bankruptcy 35 Personal Property Categories",
+  "effective_date": "2026-01-01",
+  "stale_after": "2028-04-01",
+  "category_defaults": {
+    "real_property": {
+      "schedule_ab_line": "1.1",
+      "best_case_alias": "Real Estate (Schedule A/B Part 1)",
+      "default_exemption_pool": "real_property",
+      "risk_tier": "standard_property"
+    },
+    "vehicle": {
+      "schedule_ab_line": "3.1",
+      "best_case_alias": "25. Automobiles, vans, trucks, motorcycles, trailers, and titled vehicles",
+      "default_exemption_pool": "vehicle",
+      "risk_tier": "standard_property"
+    },
+    "watercraft_aircraft": {
+      "schedule_ab_line": "4.1",
+      "best_case_alias": "26. Boats, motors, and accessories / 27. Aircraft and accessories",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "household_goods": {
+      "schedule_ab_line": "6",
+      "best_case_alias": "4. Household goods and furnishings",
+      "default_exemption_pool": "household_goods",
+      "risk_tier": "standard_property"
+    },
+    "electronics": {
+      "schedule_ab_line": "7",
+      "best_case_alias": "4a. Electronics (TVs, computers, phones, audio)",
+      "default_exemption_pool": "household_goods",
+      "risk_tier": "standard_property"
+    },
+    "collectibles": {
+      "schedule_ab_line": "8",
+      "best_case_alias": "5. Books, pictures and other art objects, antiques, stamp/coin collections",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "sports_hobby": {
+      "schedule_ab_line": "9",
+      "best_case_alias": "8. Firearms and sports, photographic, and other hobby equipment",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "firearms": {
+      "schedule_ab_line": "10",
+      "best_case_alias": "8a. Firearms",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "apparel": {
+      "schedule_ab_line": "11",
+      "best_case_alias": "6. Wearing apparel",
+      "default_exemption_pool": "household_goods",
+      "risk_tier": "standard_property"
+    },
+    "jewelry": {
+      "schedule_ab_line": "12",
+      "best_case_alias": "7. Furs and jewelry",
+      "default_exemption_pool": "jewelry",
+      "risk_tier": "standard_property"
+    },
+    "pets_non_farm": {
+      "schedule_ab_line": "13",
+      "best_case_alias": "31. Animals (non-farm pets)",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "cash": {
+      "schedule_ab_line": "16",
+      "best_case_alias": "1. Cash on hand",
+      "default_exemption_pool": "bank_account",
+      "risk_tier": "cash_equivalents"
+    },
+    "bank_account": {
+      "schedule_ab_line": "17",
+      "best_case_alias": "2. Checking, savings, or other financial accounts, CDs, or shares in banks/unions",
+      "default_exemption_pool": "bank_account",
+      "risk_tier": "cash_equivalents"
+    },
+    "social_security_deposit": {
+      "schedule_ab_line": "17",
+      "best_case_alias": "2a. Direct deposit account containing Social Security / public benefits",
+      "default_exemption_pool": "social_security_deposit",
+      "risk_tier": "cash_equivalents"
+    },
+    "brokerage_stocks": {
+      "schedule_ab_line": "18",
+      "best_case_alias": "13. Stock and interests in incorporated and unincorporated businesses / bonds",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "cash_equivalents"
+    },
+    "retirement": {
+      "schedule_ab_line": "21",
+      "best_case_alias": "12. Interests in IRA, ERISA, Keogh, or other pension or profit sharing plans",
+      "default_exemption_pool": "retirement",
+      "risk_tier": "standard_property"
+    },
+    "retirement_erisa_ira": {
+      "schedule_ab_line": "21",
+      "best_case_alias": "12. Interests in IRA, ERISA, Keogh, or other pension or profit sharing plans",
+      "default_exemption_pool": "retirement",
+      "risk_tier": "standard_property"
+    },
+    "ira_non_rollover": {
+      "schedule_ab_line": "21",
+      "best_case_alias": "12a. Traditional / Roth IRA (Non-Rollover Subject to 11 U.S.C. § 522(n) Cap)",
+      "default_exemption_pool": "ira_non_rollover",
+      "risk_tier": "standard_property"
+    },
+    "education_529": {
+      "schedule_ab_line": "24",
+      "best_case_alias": "11. Interests in an education IRA, 529 tuition program, or ABLE account",
+      "default_exemption_pool": "education_529",
+      "risk_tier": "cash_equivalents"
+    },
+    "trust_inheritance": {
+      "schedule_ab_line": "25",
+      "best_case_alias": "20. Contingent and noncontingent interests in estate of a decedent, death benefit, life insurance, or trust",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "intellectual_property": {
+      "schedule_ab_line": "26",
+      "best_case_alias": "22. Patents, copyrights, and other intellectual property",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "licenses_franchises": {
+      "schedule_ab_line": "27",
+      "best_case_alias": "23. Licenses, franchises, and other general intangibles (incl. crypto)",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "cash_equivalents"
+    },
+    "security_deposit": {
+      "schedule_ab_line": "28",
+      "best_case_alias": "3. Security deposits with public utilities, telephone companies, landlords, and others",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "cash_equivalents"
+    },
+    "tax_refund": {
+      "schedule_ab_line": "28",
+      "best_case_alias": "18. Other liquidated debts owed to debtor including tax refunds",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "receivable": {
+      "schedule_ab_line": "28",
+      "best_case_alias": "18. Other liquidated debts owed to debtor including tax refunds",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "annuities": {
+      "schedule_ab_line": "29",
+      "best_case_alias": "10. Annuities",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "unpaid_wages": {
+      "schedule_ab_line": "30",
+      "best_case_alias": "18a. Unpaid wages, commissions, vacation pay, or bonuses",
+      "default_exemption_pool": "unpaid_wages",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "life_insurance_csv": {
+      "schedule_ab_line": "31",
+      "best_case_alias": "9. Interests in insurance policies (cash surrender or loan value)",
+      "default_exemption_pool": "life_insurance_csv",
+      "risk_tier": "standard_property"
+    },
+    "personal_injury": {
+      "schedule_ab_line": "33",
+      "best_case_alias": "21. Other contingent and unliquidated claims of every nature (Personal Injury)",
+      "default_exemption_pool": "personal_injury",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "workers_comp": {
+      "schedule_ab_line": "33",
+      "best_case_alias": "21a. Workers' compensation claim or pending award",
+      "default_exemption_pool": "workers_comp",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "legal_claims": {
+      "schedule_ab_line": "34",
+      "best_case_alias": "21b. Other claims against third parties, whether or not you have filed a lawsuit",
+      "default_exemption_pool": "legal_claims",
+      "risk_tier": "high_malpractice_claims"
+    },
+    "tools_of_trade": {
+      "schedule_ab_line": "35",
+      "best_case_alias": "29. Machinery, fixtures, equipment, and supplies used in business",
+      "default_exemption_pool": "tools_of_trade",
+      "risk_tier": "standard_property"
+    },
+    "business_interest": {
+      "schedule_ab_line": "42",
+      "best_case_alias": "14. Interests in partnerships or joint ventures / LLC equity",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "business_equity": {
+      "schedule_ab_line": "42",
+      "best_case_alias": "14. Interests in partnerships or joint ventures / LLC equity",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "wildcard_only": {
+      "schedule_ab_line": "53",
+      "best_case_alias": "35. Other personal property of any kind not already listed",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    },
+    "other": {
+      "schedule_ab_line": "53",
+      "best_case_alias": "35. Other personal property of any kind not already listed",
+      "default_exemption_pool": "wildcard_only",
+      "risk_tier": "standard_property"
+    }
+  },
+  "lines": [
+    {"line_id": "1.1", "part": 1, "official_label": "Single-family home, duplex, condo, mobile home, land, or other real estate", "best_case_alias": "Real Estate (Schedule A)", "default_category": "real_property", "default_exemption_pool": "real_property", "risk_tier": "standard_property"},
+    {"line_id": "2", "part": 1, "official_label": "Total of all real estate property", "best_case_alias": "Real Estate Subtotal", "default_category": "real_property", "default_exemption_pool": "real_property", "risk_tier": "standard_property"},
+    {"line_id": "3.1", "part": 2, "official_label": "Cars, vans, trucks, tractors, sport utility vehicles, motorcycles", "best_case_alias": "25. Automobiles, vans, trucks, motorcycles", "default_category": "vehicle", "default_exemption_pool": "vehicle", "risk_tier": "standard_property"},
+    {"line_id": "4.1", "part": 2, "official_label": "Watercraft, aircraft, motor homes, ATVs and other recreational vehicles", "best_case_alias": "26. Boats / 27. Aircraft / 25. Recreational Vehicles", "default_category": "watercraft_aircraft", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "6", "part": 3, "official_label": "Household goods and furnishings", "best_case_alias": "4. Household goods and furnishings", "default_category": "household_goods", "default_exemption_pool": "household_goods", "risk_tier": "standard_property"},
+    {"line_id": "7", "part": 3, "official_label": "Electronics (TVs, computers, audio, tablets, smartphones)", "best_case_alias": "4. Household goods and furnishings (Electronics)", "default_category": "electronics", "default_exemption_pool": "household_goods", "risk_tier": "standard_property"},
+    {"line_id": "8", "part": 3, "official_label": "Collectibles of value (antiques, artwork, stamps, coins, cards)", "best_case_alias": "5. Books, pictures, art objects, stamps/coins", "default_category": "collectibles", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "9", "part": 3, "official_label": "Equipment for sports and hobbies", "best_case_alias": "8. Firearms, sports, photographic equipment", "default_category": "sports_hobby", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "10", "part": 3, "official_label": "Firearms", "best_case_alias": "8. Firearms, sports, photographic equipment", "default_category": "firearms", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "11", "part": 3, "official_label": "Clothes", "best_case_alias": "6. Wearing apparel", "default_category": "apparel", "default_exemption_pool": "household_goods", "risk_tier": "standard_property"},
+    {"line_id": "12", "part": 3, "official_label": "Jewelry", "best_case_alias": "7. Furs and jewelry", "default_category": "jewelry", "default_exemption_pool": "jewelry", "risk_tier": "standard_property"},
+    {"line_id": "13", "part": 3, "official_label": "Non-farm animals (pets)", "best_case_alias": "31. Animals", "default_category": "pets_non_farm", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "14", "part": 3, "official_label": "Any other personal and household items you did not already list", "best_case_alias": "4. Household goods / 35. Other personal property", "default_category": "household_goods", "default_exemption_pool": "household_goods", "risk_tier": "standard_property"},
+    {"line_id": "16", "part": 4, "official_label": "Cash on hand", "best_case_alias": "1. Cash on hand", "default_category": "cash", "default_exemption_pool": "bank_account", "risk_tier": "cash_equivalents"},
+    {"line_id": "17", "part": 4, "official_label": "Deposits of money (checking, savings, CDs, credit union shares)", "best_case_alias": "2. Checking, savings, or other financial accounts", "default_category": "bank_account", "default_exemption_pool": "bank_account", "risk_tier": "cash_equivalents"},
+    {"line_id": "18", "part": 4, "official_label": "Bonds, mutual funds, or publicly traded stocks", "best_case_alias": "13. Stocks and bonds / 15. Government bonds", "default_category": "brokerage_stocks", "default_exemption_pool": "wildcard_only", "risk_tier": "cash_equivalents"},
+    {"line_id": "19", "part": 4, "official_label": "Non-publicly traded stock and interests in incorporated and unincorporated businesses", "best_case_alias": "13/14. Business equity interests", "default_category": "business_interest", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "20", "part": 4, "official_label": "Government and corporate bonds and other negotiable and non-negotiable instruments", "best_case_alias": "15. Government and corporate bonds / 16. Accounts receivable", "default_category": "brokerage_stocks", "default_exemption_pool": "wildcard_only", "risk_tier": "cash_equivalents"},
+    {"line_id": "21", "part": 4, "official_label": "Retirement or pension accounts (401(k), 403(b), IRA, pension, profit-sharing)", "best_case_alias": "12. Interests in IRA, ERISA, Keogh, or other pension plans", "default_category": "retirement", "default_exemption_pool": "retirement", "risk_tier": "standard_property"},
+    {"line_id": "22", "part": 4, "official_label": "Security deposits and prepayments (utilities, landlords, others)", "best_case_alias": "3. Security deposits with utilities, landlords, and others", "default_category": "security_deposit", "default_exemption_pool": "wildcard_only", "risk_tier": "cash_equivalents"},
+    {"line_id": "23", "part": 4, "official_label": "Annuities", "best_case_alias": "10. Annuities", "default_category": "annuities", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "24", "part": 4, "official_label": "Interests in an education IRA, 529 plan, or ABLE account", "best_case_alias": "11. Interests in an education IRA / 529 tuition account", "default_category": "education_529", "default_exemption_pool": "education_529", "risk_tier": "cash_equivalents"},
+    {"line_id": "25", "part": 4, "official_label": "Trusts, equitable or future interests in property, life estates, powers of appointment", "best_case_alias": "19. Equitable/future interests / 20. Decedent estate/trust", "default_category": "trust_inheritance", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "26", "part": 4, "official_label": "Patents, copyrights, trademarks, trade secrets, and other intellectual property", "best_case_alias": "22. Patents, copyrights, and other intellectual property", "default_category": "intellectual_property", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "27", "part": 4, "official_label": "Licenses, franchises, and other general intangibles (incl. domain names & cryptocurrency)", "best_case_alias": "23. Licenses, franchises, and general intangibles", "default_category": "licenses_franchises", "default_exemption_pool": "wildcard_only", "risk_tier": "cash_equivalents"},
+    {"line_id": "28", "part": 4, "official_label": "Tax refunds owed to you (Federal, State, Local)", "best_case_alias": "18. Other liquidated debts owed to debtor including tax refunds", "default_category": "tax_refund", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "29", "part": 4, "official_label": "Family support (alimony, maintenance, child support, property settlement)", "best_case_alias": "17. Alimony, maintenance, support, and property settlements", "default_category": "receivable", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "30", "part": 4, "official_label": "Other amounts someone owes you (unpaid wages, commissions, IOUs, loans to others)", "best_case_alias": "16/18. Accounts receivable & unpaid wages owed to debtor", "default_category": "unpaid_wages", "default_exemption_pool": "unpaid_wages", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "31", "part": 4, "official_label": "Interests in insurance policies (health, disability, life cash surrender value)", "best_case_alias": "9. Interests in insurance policies", "default_category": "life_insurance_csv", "default_exemption_pool": "life_insurance_csv", "risk_tier": "standard_property"},
+    {"line_id": "32", "part": 4, "official_label": "Any interest in property that is due you from someone who has died (inheritance/will)", "best_case_alias": "20. Contingent and noncontingent interests in estate of a decedent", "default_category": "trust_inheritance", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "33", "part": 4, "official_label": "Claims against third parties, whether or not you have filed a lawsuit or made a demand (personal injury, workers' comp)", "best_case_alias": "21. Other contingent and unliquidated claims (Personal Injury / Workers' Comp)", "default_category": "personal_injury", "default_exemption_pool": "personal_injury", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "34", "part": 4, "official_label": "Other contingent and unliquidated claims of every nature, including counterclaims and rights to set off claims", "best_case_alias": "21. Other contingent and unliquidated claims", "default_category": "legal_claims", "default_exemption_pool": "legal_claims", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "35", "part": 4, "official_label": "Any financial assets you did not already list", "best_case_alias": "35. Other personal property / financial assets", "default_category": "wildcard_only", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "37", "part": 5, "official_label": "Do you own or have any legal or equitable interest in any business-related property? (No/Yes)", "best_case_alias": "Part 5 Gate Question", "default_category": "business_interest", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "38", "part": 5, "official_label": "Accounts receivable or commissions already earned (business)", "best_case_alias": "16. Accounts receivable", "default_category": "receivable", "default_exemption_pool": "wildcard_only", "risk_tier": "high_malpractice_claims"},
+    {"line_id": "39", "part": 5, "official_label": "Office equipment, furnishings, and supplies", "best_case_alias": "28. Office equipment, furnishings, and supplies", "default_category": "tools_of_trade", "default_exemption_pool": "tools_of_trade", "risk_tier": "standard_property"},
+    {"line_id": "40", "part": 5, "official_label": "Machinery, fixtures, equipment, supplies you use in business, and tools of your trade", "best_case_alias": "29. Machinery, fixtures, equipment, and supplies used in business", "default_category": "tools_of_trade", "default_exemption_pool": "tools_of_trade", "risk_tier": "standard_property"},
+    {"line_id": "41", "part": 5, "official_label": "Inventory", "best_case_alias": "30. Inventory", "default_category": "business_interest", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "42", "part": 5, "official_label": "Interests in partnerships or joint ventures", "best_case_alias": "14. Interests in partnerships or joint ventures", "default_category": "business_interest", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "43", "part": 5, "official_label": "Customer lists, mailing lists, or other compilations", "best_case_alias": "24. Customer lists or other compilations", "default_category": "business_interest", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "44", "part": 5, "official_label": "Any business-related property you did not already list", "best_case_alias": "35. Other business personal property", "default_category": "tools_of_trade", "default_exemption_pool": "tools_of_trade", "risk_tier": "standard_property"},
+    {"line_id": "46", "part": 6, "official_label": "Do you own or have any legal or equitable interest in any farm- or commercial fishing-related property?", "best_case_alias": "Part 6 Gate Question", "default_category": "other", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "47", "part": 6, "official_label": "Farm animals (livestock, poultry, farm-raised fish)", "best_case_alias": "31. Animals", "default_category": "other", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "48", "part": 6, "official_label": "Crops — either growing or harvested", "best_case_alias": "32. Crops — growing or harvested", "default_category": "other", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "49", "part": 6, "official_label": "Farm and fishing equipment, implements, machinery, fixtures, and tools", "best_case_alias": "33. Farming equipment and implements", "default_category": "tools_of_trade", "default_exemption_pool": "tools_of_trade", "risk_tier": "standard_property"},
+    {"line_id": "50", "part": 6, "official_label": "Farm and fishing supplies, chemicals, and feed", "best_case_alias": "34. Farm supplies, chemicals, and feed", "default_category": "other", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "51", "part": 6, "official_label": "Any farm- and commercial fishing-related property you did not already list", "best_case_alias": "35. Other personal property", "default_category": "other", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"},
+    {"line_id": "53", "part": 7, "official_label": "Do you have other property of any kind you did not already list? (Season tickets, country club memberships, etc.)", "best_case_alias": "35. Other personal property of any kind not already listed", "default_category": "wildcard_only", "default_exemption_pool": "wildcard_only", "risk_tier": "standard_property"}
+  ]
+}

@@ -1,5 +1,6 @@
 {
   "table_id": "exemptions_2026",
+  "stale_after": "2027-04-01",
   "description": "Universal multi-jurisdiction ExemptionRegimeSpec table supporting California CCP § 704, California CCP § 703.140 (Form EJ-156), and Federal 11 U.S.C. § 522(d).",
   "source_authority": "CA CCP §§ 703.140, 703.150, 704.010-704.730; Judicial Council Form EJ-156 (eff. 2025-04-01 & 2026-07-20); 11 U.S.C. § 522(d), (p)",
   "effective_periods": [
@@ -82,6 +83,56 @@
               "rule_type": "unlimited_with_conditions",
               "statute": "Cal. Civ. Proc. Code § 704.115 / 11 U.S.C. § 522(b)(3)(C)",
               "cap": null
+            },
+            {
+              "category": "workers_comp",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 704.160",
+              "cap": null,
+              "notes": "100% exempt workers' compensation claim or award prior to payment/award."
+            },
+            {
+              "category": "personal_injury",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 704.140",
+              "cap": null,
+              "notes": "Cause of action exempt without making a claim; award/settlement exempt to extent necessary for support."
+            },
+            {
+              "category": "legal_claims",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 704.140",
+              "cap": null,
+              "notes": "Personal injury / wrongful death cause of action exempt under CCP §§ 704.140–704.150."
+            },
+            {
+              "category": "unpaid_wages",
+              "rule_type": "percentage_of_value",
+              "percentage": "0.75",
+              "statute": "Cal. Civ. Proc. Code § 704.070",
+              "cap": null,
+              "notes": "75% of paid earnings within 30 days prior to levy/filing automatically exempt."
+            },
+            {
+              "category": "social_security_deposit",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.080",
+              "cap": "4200.00",
+              "notes": "Direct deposit account holding Social Security benefits exempt up to $4,200 single / $6,300 two payees."
+            },
+            {
+              "category": "life_insurance_csv",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.100(b)",
+              "cap": "19675.00",
+              "notes": "Loan/cash surrender value of unmatured life insurance policies."
+            },
+            {
+              "category": "ira_non_rollover",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 704.115(b) / 11 U.S.C. § 522(n)",
+              "cap": "1711975.00",
+              "notes": "Traditional/Roth IRA subject to 11 U.S.C. § 522(n) federal aggregate cap."
             }
           ],
           "wildcard": null
@@ -127,6 +178,41 @@
               "rule_type": "unlimited_with_conditions",
               "statute": "Cal. Civ. Proc. Code § 703.140(b)(10)(E) / 11 U.S.C. § 522(b)(3)(C)",
               "cap": null
+            },
+            {
+              "category": "workers_comp",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(11)(E)",
+              "cap": null,
+              "notes": "Payment in compensation of loss of future earnings / workers' compensation."
+            },
+            {
+              "category": "personal_injury",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(11)(D)",
+              "cap": "36750.00",
+              "notes": "Personal bodily injury cap (not including pain and suffering or actual pecuniary loss)."
+            },
+            {
+              "category": "legal_claims",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(11)(D)",
+              "cap": "36750.00",
+              "notes": "Personal bodily injury cap under CCP § 703.140(b)(11)(D)."
+            },
+            {
+              "category": "life_insurance_csv",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(8)",
+              "cap": "19675.00",
+              "notes": "Unmatured life insurance contract accrued dividend/interest/loan value."
+            },
+            {
+              "category": "ira_non_rollover",
+              "rule_type": "fixed_dollar",
+              "statute": "Cal. Civ. Proc. Code § 703.140(b)(10)(E) / 11 U.S.C. § 522(n)",
+              "cap": "1711975.00",
+              "notes": "Non-rollover IRA subject to 11 U.S.C. § 522(n) aggregate cap."
             }
           ],
           "wildcard": {
@@ -179,6 +265,36 @@
               "rule_type": "unlimited_with_conditions",
               "statute": "11 U.S.C. § 522(d)(12)",
               "cap": null
+            },
+            {
+              "category": "workers_comp",
+              "rule_type": "unlimited_with_conditions",
+              "statute": "11 U.S.C. § 522(d)(10)(C)",
+              "cap": null
+            },
+            {
+              "category": "personal_injury",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(11)(D)",
+              "cap": "31575.00"
+            },
+            {
+              "category": "legal_claims",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(11)(D)",
+              "cap": "31575.00"
+            },
+            {
+              "category": "life_insurance_csv",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(8)",
+              "cap": "16850.00"
+            },
+            {
+              "category": "ira_non_rollover",
+              "rule_type": "fixed_dollar",
+              "statute": "11 U.S.C. § 522(d)(12) / § 522(n)",
+              "cap": "1711975.00"
             }
           ],
           "wildcard": {

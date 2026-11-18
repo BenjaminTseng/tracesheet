@@ -86,6 +86,76 @@
       "trigger_forms": ["B106C"],
       "prompt_template": "Claiming homestead exemption on '{description}' requires verified property acquisition date (11 U.S.C. § 522(p) 1,215-day rule) and >= 730 days domicile.",
       "resolution_options": ["supply_homestead_dates"]
+    },
+    {
+      "rule_id": "POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM",
+      "severity": "critical",
+      "trigger_forms": ["B106EF", "B107", "B106AB", "B106C"],
+      "prompt_template": "Trauma/medical creditor or disability indicator ('{creditor_name}') suggests a potential personal injury, accident, or workers' compensation claim not yet listed on Schedule A/B Line 33.",
+      "resolution_options": ["add_unliquidated_claim_asset", "confirm_no_injury_claim"]
+    },
+    {
+      "rule_id": "SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB",
+      "severity": "critical",
+      "trigger_forms": ["B107", "B106AB"],
+      "prompt_template": "SOFA Part 4 Line 9 discloses plaintiff action '{description}', which must also be scheduled as an asset on Schedule A/B Line 33/34 (marked 'Unknown' if unliquidated).",
+      "resolution_options": ["sync_lawsuit_to_schedule_ab"]
+    },
+    {
+      "rule_id": "SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF",
+      "severity": "critical",
+      "trigger_forms": ["B107", "B106EF"],
+      "prompt_template": "SOFA Part 4 Line 9 discloses defense action '{description}', which must also be scheduled as a contingent/disputed claim on Schedule E/F (so the creditor receives stay notice).",
+      "resolution_options": ["sync_lawsuit_to_schedule_ef"]
+    },
+    {
+      "rule_id": "RENTER_MISSING_SECURITY_DEPOSIT_LINE_28",
+      "severity": "warning",
+      "trigger_forms": ["B106J", "B106AB"],
+      "prompt_template": "Debtor pays monthly rent (${amount}/mo) with no owned residence, but no landlord or utility security deposit is listed on Schedule A/B Line 22/28.",
+      "resolution_options": ["add_security_deposit_asset", "confirm_no_security_deposit"]
+    },
+    {
+      "rule_id": "PAYSTUB_60_DAY_CONTINUITY_GAP",
+      "severity": "critical",
+      "trigger_forms": ["B106I", "B122A1", "CACB_F1002"],
+      "prompt_template": "11 U.S.C. § 521(a)(1)(B)(iv) requires all payment advices within 60 days before filing; detected missing/gapped paystubs ({detail}). Upload missing stubs or attest statutory exception.",
+      "resolution_options": ["upload_paystub", "attest_payment_advices_exception"]
+    },
+    {
+      "rule_id": "HOMESTEAD_522P_ROLLOVER_INQUIRY",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B106C"],
+      "prompt_template": "Homestead '{description}' was acquired within 1,215 days with net equity ${equity} exceeding the $214,000 § 522(p) cap. Did equity roll over from a prior residence in the SAME state under § 522(p)(2)(B)?",
+      "resolution_options": ["apply_522p_rollover", "confirm_no_rollover"]
+    },
+    {
+      "rule_id": "MARRIED_SEPARATE_703_SPOUSAL_WAIVER",
+      "severity": "critical",
+      "trigger_forms": ["B101", "B106C"],
+      "prompt_template": "Married individual filing separately selected California System 2 (CCP § 703.140), which is barred under Cal. Civ. Proc. Code § 703.140(a)(2) without a written spousal waiver of § 704 exemptions.",
+      "resolution_options": ["confirm_spousal_waiver_signed", "switch_to_704_regime"]
+    },
+    {
+      "rule_id": "UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK",
+      "severity": "critical",
+      "trigger_forms": ["B106AB", "B106C"],
+      "prompt_template": "Unliquidated claim '{description}' has Unknown FMV ('100% of FMV' per Schwab v. Reilly), but '{regime}' imposes a dollar cap creating trustee windfall exposure. Review switching or confirm risk.",
+      "resolution_options": ["switch_to_704_regime", "confirm_unknown_within_cap"]
+    },
+    {
+      "rule_id": "CH13_FOUR_YEAR_TAX_RETURN_MISSING",
+      "severity": "critical",
+      "trigger_forms": ["B107", "CACB_F3015_1_01", "CAEB_EDC_3_080"],
+      "prompt_template": "Chapter 13 requires all federal/state tax returns for the 4 tax years preceding filing ({missing_years}) to be filed before the § 341 meeting (11 U.S.C. §§ 1308, 1325(a)(9)).",
+      "resolution_options": ["confirm_4yr_tax_returns"]
+    },
+    {
+      "rule_id": "MANDATORY_ASSET_AND_WINDFALL_SWEEP",
+      "severity": "warning",
+      "trigger_forms": ["B106AB", "B107"],
+      "prompt_template": "Pre-filing malpractice gate: Confirm debtor holds no unlisted cash, tax refunds, inheritances, life insurance proceeds, or 180-day windfall entitlements (11 U.S.C. § 541(a)(5)).",
+      "resolution_options": ["confirm_mandatory_asset_and_windfall_sweep"]
     }
   ]
 }

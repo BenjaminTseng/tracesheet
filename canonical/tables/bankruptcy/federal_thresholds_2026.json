@@ -1,5 +1,6 @@
 {
   "table_id": "federal_thresholds_2026",
+  "stale_after": "2028-04-01",
   "description": "Effective-dated federal Bankruptcy Code dollar thresholds including 11 U.S.C. § 104 triennial adjustments (April 1, 2025) and H.R. 7730 Bankruptcy Threshold Adjustment Act (Nov 10, 2026).",
   "source_authority": "11 U.S.C. §§ 104, 109(e), 522(p), 707(b), 1182; 90 FR 8941; H.R. 7730 (enacted Nov 10, 2026)",
   "effective_periods": [
@@ -56,6 +57,20 @@
         "ceiling_60_month_disposable": "17150.00",
         "unsecured_debt_pct": "0.25",
         "authority_citation": "11 U.S.C. § 707(b)(2)(A)(i) (90 FR 8941)"
+      },
+      "ira_cap_522n": {
+        "cap_amount": "1711975.00",
+        "authority_citation": "11 U.S.C. § 522(n) (90 FR 8941)"
+      },
+      "education_529_exclusion_541b": {
+        "cap_365_to_720_days": "7575.00",
+        "excluded_within_365_days": "0.00",
+        "authority_citation": "11 U.S.C. § 541(b)(5)-(6) (90 FR 8941)"
+      },
+      "ch13_vehicle_cramdown_hanging_paragraph": {
+        "lookback_days": 910,
+        "other_personal_property_lookback_days": 365,
+        "authority_citation": "11 U.S.C. § 1325(a) (hanging paragraph)"
       }
     }
   ]

@@ -109,6 +109,8 @@ class StatutoryTableRegistry:
         if not self.tables_dir.exists():
             return summaries
         for path in sorted(self.tables_dir.glob("*.json")):
+            if path.name.startswith("."):
+                continue
             data = self.load_table(path.name)
             summaries.append(
                 {
@@ -215,3 +217,98 @@ class StatutoryTableRegistry:
             Parsed dictionary from `dependency_rules.json`.
         """
         return self.load_table("dependency_rules.json")
+
+    def get_schedule_ab_taxonomy(self) -> Dict[str, Any]:
+        """Returns Official Form 106A/B 53-line taxonomy mapped to Best Case aliases.
+
+        Returns:
+            Parsed dictionary from `schedule_ab_taxonomy.json`.
+        """
+        return self.load_table("schedule_ab_taxonomy.json")
+
+    def check_staleness(self, filing_date: datetime.date) -> List[str]:
+        """Checks whether any versioned statutory table is stale relative to `filing_date`.
+
+        Args:
+            filing_date: Expected or actual petition filing date.
+
+        Returns:
+            List of descriptive staleness warning/blocker messages.
+        """
+        warnings: List[str] = []
+        for fname in (
+            "ustp_ca_means_test_2026.json",
+            "exemptions_2026.json",
+            "federal_thresholds_2026.json",
+            "schedule_ab_taxonomy.json",
+        ):
+            path = self.tables_dir / fname
+            if not path.exists():
+                continue
+            data = self.load_table(fname)
+            stale_str = data.get("stale_after")
+            if stale_str:
+                stale_date = self._parse_date(str(stale_str))
+                if filing_date > stale_date:
+                    tid = data.get("table_id", fname)
+                    warnings.append(
+                        f"Statutory table '{tid}' ({fname}) expired after {stale_date.isoformat()} "
+                        f"for target filing date {filing_date.isoformat()}. Run statutory table sync."
+                    )
+        return warnings
+
+    def sync_statutory_tables(
+        self, reference_date: Optional[datetime.date] = None
+    ) -> Dict[str, Any]:
+        """Verifies SHA-256 checksums and staleness across canonical bankruptcy tables.
+
+        Clears in-memory caches, recomputes SHA-256 digests for all registered JSON
+        tables under `self.tables_dir`, writes `.sync_status.json`, and returns a
+        structured audit summary.
+
+        Args:
+            reference_date: Optional filing date for staleness evaluation (defaults to today).
+
+        Returns:
+            Summary dict containing `synced_at`, `tables_verified`, and `stale_warnings`.
+        """
+        self._cache.clear()
+        self._hashes.clear()
+        ref = reference_date or datetime.date.today()
+
+        verified: List[Dict[str, str]] = []
+        target_files = (
+            "federal_thresholds_2026.json",
+            "ustp_ca_means_test_2026.json",
+            "exemptions_2026.json",
+            "dependency_rules.json",
+            "schedule_ab_taxonomy.json",
+            "form_field_maps.json",
+        )
+        for fname in target_files:
+            if not (self.tables_dir / fname).exists():
+                continue
+            data = self.load_table(fname)
+            verified.append(
+                {
+                    "filename": fname,
+                    "table_id": str(data.get("table_id", fname)),
+                    "sha256": self._hashes[fname],
+                    "stale_after": str(data.get("stale_after", "")),
+                }
+            )
+
+        stale_warnings = self.check_staleness(ref)
+        synced_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        payload = {
+            "synced_at": synced_at,
+            "reference_date": ref.isoformat(),
+            "tables_verified": verified,
+            "stale_warnings": stale_warnings,
+        }
+        status_path = self.tables_dir / ".sync_status.json"
+        status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+
+StatutoryTableLoader = StatutoryTableRegistry

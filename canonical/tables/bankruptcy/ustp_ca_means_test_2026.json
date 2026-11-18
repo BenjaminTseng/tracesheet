@@ -1,5 +1,6 @@
 {
   "table_id": "ustp_ca_means_test_2026",
+  "stale_after": "2027-04-01",
   "description": "DOJ U.S. Trustee Program Census Bureau California Median Family Income and IRS National/Local Expense Standards for Form 122A-1/2 and 122C-1/2.",
   "source_authority": "DOJ U.S. Trustee Program Means Testing Data Tables (justice.gov/ust/means-testing)",
   "effective_periods": [

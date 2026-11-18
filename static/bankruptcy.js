@@ -9,11 +9,23 @@ const RULE_TITLE_MAP = {
   SECURED_CLAIM_MISSING_INTENTION: 'Missing Chapter 7 Statement of Intention',
   UNLISTED_CREDITOR_FROM_BANK_OUTFLOW: 'Possible Unlisted Creditor in Bank Activity',
   ASSET_MISSING_LIEN_STATUS: 'Unconfirmed Asset Lien Status',
+  POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM: 'Possible Unscheduled Personal Injury / Workers Comp Claim',
+  SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB: 'SOFA Line 9 Plaintiff Action Missing on Schedule A/B',
+  SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF: 'SOFA Line 9 Lawsuit Defendant Claim Missing on Schedule E/F',
+  RENTER_MISSING_SECURITY_DEPOSIT_LINE_28: 'Renter Security Deposit Check (Schedule A/B Line 22/28)',
+  PAYSTUB_60_DAY_CONTINUITY_GAP: '60-Day Pre-Petition Paystub Continuity Gap (§ 521)',
+  HOMESTEAD_522P_ROLLOVER_INQUIRY: 'Homestead § 522(p)(2)(B) Same-State Rollover Inquiry',
+  MARRIED_SEPARATE_703_SPOUSAL_WAIVER: 'Married Filing Separately CCP § 703.140(a)(2) Spousal Waiver',
+  UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK: 'Schwab v. Reilly Unknown-Value Windfall Risk Under Capped System',
+  CH13_FOUR_YEAR_TAX_RETURN_MISSING: 'Chapter 13 Four-Year Tax Return Verification (11 U.S.C. § 1308)',
+  MANDATORY_ASSET_AND_WINDFALL_SWEEP: 'Mandatory Asset Sweep & 180-Day Windfall Check (§ 541(a)(5))',
 };
 
 const TENSION_TITLE_MAP = {
   LARGE_UNEXPLAINED_DEPOSIT: 'Large Unexplained Deposit vs. Scheduled Income',
   INCOME_VS_TAX_VARIANCE: 'Paystub CMI vs. Tax Return Income Variance',
+  tension_ch13_plan_infeasible: 'Chapter 13 Plan Feasibility Shortfall (11 U.S.C. § 1325(a)(6))',
+  tension_180_day_windfall: '180-Day Post-Petition Windfall Estate Inclusion (§ 541(a)(5))',
 };
 
 const FORM_LABEL_MAP = {
@@ -266,6 +278,11 @@ function NextBlockerStepper({
   // Inputs start empty with zero fake defaults.
   const [desc, setDesc] = useState('');
   const [val, setVal] = useState('');
+  const [unknownVal, setUnknownVal] = useState(false);
+  const [claimCat, setClaimCat] = useState('personal_injury');
+  const [rolloverAmt, setRolloverAmt] = useState('');
+  const [sweepAssetsChecked, setSweepAssetsChecked] = useState(false);
+  const [sweepWindfallChecked, setSweepWindfallChecked] = useState(false);
   const [intention, setIntention] = useState('');
   const [credName, setCredName] = useState('');
   const [credAmt, setCredAmt] = useState('');
@@ -275,6 +292,11 @@ function NextBlockerStepper({
     setErr(null);
     setDesc('');
     setVal('');
+    setUnknownVal(false);
+    setClaimCat('personal_injury');
+    setRolloverAmt('');
+    setSweepAssetsChecked(false);
+    setSweepWindfallChecked(false);
     setIntention('');
     setCredName('');
     setCredAmt('');
@@ -550,7 +572,260 @@ function NextBlockerStepper({
         </div>
       `}
 
-      ${isQuestion && !['SECURED_LOAN_MISSING_COLLATERAL_VALUE', 'SECURED_CLAIM_MISSING_INTENTION', 'UNLISTED_CREDITOR_FROM_BANK_OUTFLOW', 'ASSET_MISSING_LIEN_STATUS'].includes(q.rule_id) && html`
+      ${isQuestion && (q.rule_id === 'POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM' || q.rule_id === 'SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB') && html`
+        <div class="bk-stack-form">
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-pi-cat">Schedule A/B Claim Category (Line 33/34)</label>
+            <select id="bk-pi-cat" class="bk-select" value=${claimCat} onChange=${(e) => setClaimCat(e.target.value)}>
+              <option value="personal_injury">Line 33: Personal Injury Cause of Action (CCP § 704.140)</option>
+              <option value="workers_comp">Line 33: Workers Compensation Claim (CCP § 704.160)</option>
+              <option value="legal_claims">Line 34: Other Third-Party / Counterclaim</option>
+            </select>
+          </div>
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-pi-desc">Claim or Lawsuit Description</label>
+            <input
+              id="bk-pi-desc"
+              class="bk-input"
+              value=${desc}
+              onInput=${(e) => setDesc(e.target.value)}
+              placeholder="e.g., Auto collision claim v. Third Party Driver"
+            />
+          </div>
+          <label class="bk-checkbox-row" htmlFor="bk-pi-unknown">
+            <input
+              id="bk-pi-unknown"
+              type="checkbox"
+              checked=${unknownVal}
+              onChange=${(e) => setUnknownVal(e.target.checked)}
+            />
+            <span>Value is Unknown (Unliquidated) — check "100% of Fair Market Value" on Form 106C (Schwab v. Reilly)</span>
+          </label>
+          ${!unknownVal && html`
+            <div class="bk-field-group">
+              <label class="bk-label" htmlFor="bk-pi-val">Estimated Settlement Value (USD)</label>
+              <input
+                id="bk-pi-val"
+                class="bk-input font-mono-data"
+                inputMode="decimal"
+                value=${val}
+                onInput=${(e) => setVal(e.target.value)}
+                placeholder="0.00"
+              />
+            </div>
+          `}
+          <div class="bk-inline-form">
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${submitting || !desc.trim() || (!unknownVal && !validMoney(val))}
+              onClick=${() => submitQuestion(
+                q.rule_id === 'SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB' ? 'sync_lawsuit_to_schedule_ab' : 'add_unliquidated_claim_asset',
+                {
+                  category: claimCat,
+                  description: desc.trim(),
+                  valuation_state: unknownVal ? 'unknown' : 'estimated',
+                  current_value: unknownVal ? '0.00' : val.trim(),
+                },
+                `Scheduled ${claimCat} claim '${desc.trim()}' (${unknownVal ? 'Unknown FMV / 100% FMV' : `$${val.trim()}`})`
+              )}
+            >
+              ${submitting ? 'Scheduling...' : 'Add Claim to Schedule A/B & C'}
+            </button>
+            ${q.rule_id === 'POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM' && html`
+              <button
+                type="button"
+                class="btn"
+                disabled=${submitting}
+                onClick=${() => submitQuestion('confirm_no_injury_claim', {}, 'Client confirmed medical treatment did not arise from any personal injury or workers comp claim.')}
+              >
+                Confirm No Injury / WC Claim
+              </button>
+            `}
+          </div>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF' && html`
+        <div class="bk-stack-form">
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-sofa-def-cred">Opposing Plaintiff Legal Name (Schedule E/F)</label>
+            <input
+              id="bk-sofa-def-cred"
+              class="bk-input"
+              value=${credName}
+              onInput=${(e) => setCredName(e.target.value)}
+              placeholder="e.g., Plaintiff / Opposing Claimant"
+            />
+          </div>
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-sofa-def-amt">Claimed or Disputed Demand Amount (USD)</label>
+            <input
+              id="bk-sofa-def-amt"
+              class="bk-input font-mono-data"
+              inputMode="decimal"
+              value=${credAmt}
+              onInput=${(e) => setCredAmt(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+          <div class="bk-inline-form">
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${submitting || !credName.trim() || !validMoney(credAmt)}
+              onClick=${() => submitQuestion('sync_lawsuit_to_schedule_ef', { creditor_name: credName.trim(), total_claim_amount: credAmt.trim(), contingent: true, unliquidated: true }, `Synced SOFA defendant suit '${credName.trim()}' to Schedule E/F for stay notice.`)}
+            >
+              ${submitting ? 'Syncing...' : 'Sync Contingent Claim to Schedule E/F'}
+            </button>
+          </div>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'RENTER_MISSING_SECURITY_DEPOSIT_LINE_28' && html`
+        <div class="bk-stack-form">
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-secdep-val">Landlord / Utility Security Deposit Held (USD)</label>
+            <input
+              id="bk-secdep-val"
+              class="bk-input font-mono-data"
+              inputMode="decimal"
+              value=${val}
+              onInput=${(e) => setVal(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+          <div class="bk-inline-form">
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${submitting || !validMoney(val)}
+              onClick=${() => submitQuestion('add_security_deposit_asset', { description: 'Residential Security Deposit', current_value: val.trim() }, `Scheduled security deposit of $${val.trim()} on Line 22/28.`)}
+            >
+              ${submitting ? 'Adding...' : 'Add Deposit to Schedule A/B'}
+            </button>
+            <button
+              type="button"
+              class="btn"
+              disabled=${submitting}
+              onClick=${() => submitQuestion('confirm_no_security_deposit', {}, 'Client confirmed zero refundable security deposits held.')}
+            >
+              Confirm No Deposit
+            </button>
+          </div>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'HOMESTEAD_522P_ROLLOVER_INQUIRY' && html`
+        <div class="bk-stack-form">
+          <div class="bk-field-group">
+            <label class="bk-label" htmlFor="bk-522p-rollover">Same-State Prior Residence Rollover Amount Under § 522(p)(2)(B) (USD)</label>
+            <input
+              id="bk-522p-rollover"
+              class="bk-input font-mono-data"
+              inputMode="decimal"
+              value=${rolloverAmt}
+              onInput=${(e) => setRolloverAmt(e.target.value)}
+              placeholder="0.00"
+            />
+          </div>
+          <div class="bk-inline-form">
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${submitting || !validMoney(rolloverAmt)}
+              onClick=${() => submitQuestion('apply_522p_rollover', { rollover_amount: rolloverAmt.trim() }, `Applied $${rolloverAmt.trim()} same-state rollover exception under 11 U.S.C. § 522(p)(2)(B).`)}
+            >
+              ${submitting ? 'Applying...' : 'Apply § 522(p)(2)(B) Rollover'}
+            </button>
+            <button
+              type="button"
+              class="btn"
+              disabled=${submitting}
+              onClick=${() => submitQuestion('confirm_no_rollover', {}, 'Confirmed no prior same-state residence rollover; $214,000 § 522(p) cap applies.')}
+            >
+              Confirm No Rollover ($214k Cap)
+            </button>
+          </div>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'MARRIED_SEPARATE_703_SPOUSAL_WAIVER' && html`
+        <div class="bk-inline-form">
+          <button
+            type="button"
+            class="btn btn-primary"
+            disabled=${submitting}
+            onClick=${() => submitQuestion('confirm_spousal_waiver_signed', {}, 'Written CCP § 703.140(a)(2) spousal waiver executed and retained.')}
+          >
+            Confirm Written Waiver Signed
+          </button>
+          <button
+            type="button"
+            class="btn"
+            disabled=${submitting}
+            onClick=${() => submitQuestion('switch_to_704_regime', {}, 'Switched exemption election to CCP § 704 Homestead System.')}
+          >
+            Switch to CCP § 704 System
+          </button>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK' && html`
+        <div class="bk-inline-form">
+          <button
+            type="button"
+            class="btn btn-primary"
+            disabled=${submitting}
+            onClick=${() => submitQuestion('switch_to_704_regime', {}, 'Switched to CCP § 704 for unlimited personal injury / workers comp protection.')}
+          >
+            Switch to CCP § 704 (Unlimited PI)
+          </button>
+          <button
+            type="button"
+            class="btn"
+            disabled=${submitting}
+            onClick=${() => submitQuestion('confirm_unknown_within_cap', {}, 'Attorney reviewed capped exemption windfall risk and elected to proceed.')}
+          >
+            Confirm Recovery Within Cap
+          </button>
+        </div>
+      `}
+
+      ${isQuestion && q.rule_id === 'MANDATORY_ASSET_AND_WINDFALL_SWEEP' && html`
+        <div class="bk-stack-form">
+          <label class="bk-checkbox-row" htmlFor="bk-sweep-assets">
+            <input
+              id="bk-sweep-assets"
+              type="checkbox"
+              checked=${sweepAssetsChecked}
+              onChange=${(e) => setSweepAssetsChecked(e.target.checked)}
+            />
+            <span>Negative Confirmation: Client holds no unlisted cash on hand, tax refunds, inheritances, or third-party legal claims (Lines 16–35).</span>
+          </label>
+          <label class="bk-checkbox-row" htmlFor="bk-sweep-windfall">
+            <input
+              id="bk-sweep-windfall"
+              type="checkbox"
+              checked=${sweepWindfallChecked}
+              onChange=${(e) => setSweepWindfallChecked(e.target.checked)}
+            />
+            <span>180-Day Windfall Advisement: Advised debtor of 11 U.S.C. § 541(a)(5) estate inclusion for inheritances, divorce decrees, or life insurance proceeds within 180 days post-filing.</span>
+          </label>
+          <div class="bk-inline-form">
+            <button
+              type="button"
+              class="btn btn-primary"
+              disabled=${submitting || !sweepAssetsChecked || !sweepWindfallChecked}
+              onClick=${() => submitQuestion('confirm_mandatory_asset_and_windfall_sweep', {}, 'Completed Tier-2 negative asset sweep and 180-day windfall advisement.')}
+            >
+              ${submitting ? 'Recording...' : 'Confirm Asset Sweep & Windfall Advisement'}
+            </button>
+          </div>
+        </div>
+      `}
+
+      ${isQuestion && !['SECURED_LOAN_MISSING_COLLATERAL_VALUE', 'SECURED_CLAIM_MISSING_INTENTION', 'UNLISTED_CREDITOR_FROM_BANK_OUTFLOW', 'ASSET_MISSING_LIEN_STATUS', 'POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM', 'SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB', 'SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF', 'RENTER_MISSING_SECURITY_DEPOSIT_LINE_28', 'HOMESTEAD_522P_ROLLOVER_INQUIRY', 'MARRIED_SEPARATE_703_SPOUSAL_WAIVER', 'UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK', 'MANDATORY_ASSET_AND_WINDFALL_SWEEP'].includes(q.rule_id) && html`
         <div class="bk-stack-form">
           <div class="bk-field-group">
             <label class="bk-label" htmlFor="bk-generic-rationale">Verification Note</label>
@@ -964,6 +1239,7 @@ function BankruptcyApp() {
   const [newDistrict, setNewDistrict] = useState('CACB');
   const [uploadFiles, setUploadFiles] = useState([]);
   const [busyMsg, setBusyMsg] = useState(null);
+  const [tableSyncStatus, setTableSyncStatus] = useState(null);
   const [modalError, setModalError] = useState(null);
   const [paths, setPaths] = useState([]);
 
@@ -1037,20 +1313,41 @@ function BankruptcyApp() {
     ...(caseState?.plausibility_warnings || []),
   ].filter((t) => !(caseState?.resolved_tension_records || {})[t.tension_id]);
 
-  // Unified Next-Blocker queue ordered: Critical Blockers -> Open Questions -> Advisories
+  // Unified Next-Blocker queue ordered: Critical Blockers -> Open Critical Questions -> Warning Advisories
   const triageItems = useMemo(() => {
     const items = [];
     for (const t of openTensions.filter((x) => x.severity === 'blocker')) {
       items.push({ kind: 'tension', severity: 'blocker', itemId: `t:${t.tension_id}`, tension: t });
     }
-    for (const q of openQuestions) {
+    for (const q of openQuestions.filter((x) => x.severity !== 'warning')) {
       items.push({ kind: 'question', severity: 'blocker', itemId: `q:${q.question_id}`, question: q });
+    }
+    for (const q of openQuestions.filter((x) => x.severity === 'warning')) {
+      items.push({ kind: 'question', severity: 'advisory', itemId: `q:${q.question_id}`, question: q });
     }
     for (const t of openTensions.filter((x) => x.severity !== 'blocker')) {
       items.push({ kind: 'tension', severity: 'advisory', itemId: `t:${t.tension_id}`, tension: t });
     }
     return items;
   }, [openQuestions, openTensions]);
+
+  const handleSyncTables = async () => {
+    setTableSyncStatus('Syncing...');
+    try {
+      const res = await fetch('/api/v1/bankruptcy/tables/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Sync failed (${res.status})`);
+      const staleCount = (data.stale_warnings || []).length;
+      setTableSyncStatus(
+        staleCount > 0
+          ? `${data.tables_verified?.length || 0} tables (${staleCount} stale)`
+          : `${data.tables_verified?.length || 0} tables verified`
+      );
+      if (activeMatterId) await loadMatters(activeMatterId);
+    } catch (e) {
+      setTableSyncStatus(`Sync error: ${e.message}`);
+    }
+  };
 
   useEffect(() => {
     if (stepperIndex >= triageItems.length && triageItems.length > 0) {
@@ -1217,6 +1514,10 @@ function BankruptcyApp() {
           `}
         </div>
         <div class="top-bar-right">
+          ${tableSyncStatus && html`<span class="kicker-label font-mono-data">${tableSyncStatus}</span>`}
+          <button type="button" class="btn btn-compact" onClick=${handleSyncTables}>
+            Sync Statutory Tables
+          </button>
           <button type="button" class="btn" onClick=${() => { setModalError(null); setShowUploadModal(true); }}>
             New Case & Upload PDFs
           </button>
@@ -1309,6 +1610,7 @@ function BankruptcyApp() {
                             <div class="bk-opt-head">
                               <span>${formatRegimeLabel(ev)}</span>
                               ${isRec && html`<span class="bk-severity-pill is-ready">Recommended</span>`}
+                              ${!isRec && ev.has_unbounded_unknown_exposure && html`<span class="bk-severity-pill is-advisory">Unknown Cap Risk</span>`}
                             </div>
                             <div class="bk-opt-stat">
                               <span>Exempt Protected Equity</span>

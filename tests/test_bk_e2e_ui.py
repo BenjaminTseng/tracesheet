@@ -123,11 +123,26 @@ def test_bankruptcy_ui_shell_assets_and_both_ca_districts_e2e(tmp_path: Path) ->
     assert m2["calculations"]["eligibility"]["eligible"] is True
     assert m2["calculations"]["ch13_plan"] is not None
 
-    # Resolve any open questions (e.g., homestead acquisition/domicile if needed) and compile CAEB packet.
-    if m2["readiness"]["status"] == "READY":
-        pkt2 = client.post("/api/v1/bankruptcy/matters/bk_ch13_caeb_chen/compile-packet")
-        assert pkt2.status_code == 200
-        assert "CAEB_EDC_3_080.pdf" in pkt2.json()["files"]
-        assert "CAEB_EDC_3_096.pdf" in pkt2.json()["files"]
-        assert "CAEB_ESIG.pdf" in pkt2.json()["files"]
-        assert "field_lineage.json" in pkt2.json()["files"]
+    # Resolve open critical questions (4-year tax returns / homestead acquisition if needed) and compile CAEB packet.
+    for q in m2["emerging_questions"]:
+        if q["status"] != "open" or q["severity"] != "critical":
+            continue
+        if q["rule_id"] == "CH13_FOUR_YEAR_TAX_RETURN_MISSING":
+            client.post(
+                f"/api/v1/bankruptcy/matters/bk_ch13_caeb_chen/questions/{q['question_id']}/answer",
+                json={
+                    "selected_option": "confirm_4yr_tax_returns",
+                    "actor_name": "Paralegal UI",
+                    "actor_role": "paralegal",
+                    "rationale": "Verified 2022-2025 federal and California returns filed under § 1308.",
+                    "payload": {},
+                },
+            )
+    m2_ready = client.get("/api/v1/bankruptcy/matters/bk_ch13_caeb_chen/case").json()
+    assert m2_ready["readiness"]["status"] == "READY"
+    pkt2 = client.post("/api/v1/bankruptcy/matters/bk_ch13_caeb_chen/compile-packet")
+    assert pkt2.status_code == 200
+    assert "CAEB_EDC_3_080.pdf" in pkt2.json()["files"]
+    assert "CAEB_EDC_3_096.pdf" in pkt2.json()["files"]
+    assert "CAEB_ESIG.pdf" in pkt2.json()["files"]
+    assert "field_lineage.json" in pkt2.json()["files"]

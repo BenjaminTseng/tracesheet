@@ -75,6 +75,8 @@ class ExemptionOptimizer:
         graph: CanonicalCaseGraph,
         regime_spec: Dict[str, Any],
         homestead_522p_cfg: Dict[str, Any],
+        ira_cap_522n_amt: Decimal = Decimal("1711975.00"),
+        ed_529_cfg: Optional[Dict[str, Any]] = None,
     ) -> ExemptionRegimeEvaluation:
         """Evaluates all assets under a single `ExemptionRegimeSpec`."""
         debtor_1 = next((p for p in graph.parties if p.role == "debtor_1"), None)
@@ -87,7 +89,7 @@ class ExemptionOptimizer:
             else Decimal("1")
         )
 
-        # Index rules by asset category and prepare per-category remaining cap pools.
+        # Index rules by asset category/pool and prepare per-category remaining cap pools.
         rules_by_cat: Dict[str, Dict[str, Any]] = {
             r["category"]: r for r in regime_spec.get("rules", [])
         }
@@ -97,8 +99,8 @@ class ExemptionOptimizer:
         for cat, rule in rules_by_cat.items():
             statute_by_cat[cat] = rule["statute"]
             rtype = rule["rule_type"]
-            if rtype == "unlimited_with_conditions":
-                remaining_pool_by_cat[cat] = None  # Unlimited
+            if rtype in ("unlimited_with_conditions", "percentage_of_value"):
+                remaining_pool_by_cat[cat] = None  # Unlimited or value-relative %
             elif rtype == "locality_lookup":
                 county_map = rule.get("county_amounts", {})
                 raw_amt = Decimal(county_map.get(county, county_map.get("DEFAULT_CA_COUNTY", rule["floor"])))
@@ -117,52 +119,137 @@ class ExemptionOptimizer:
                     + claim.total_claim_amount.value
                 )
 
-        # Pass 1: Apply primary category-specific exemptions (enforcing § 522(p) 1,215-day cap).
+        # Pass 1: Apply primary category-specific exemptions (enforcing §§ 522(p), 522(o), 522(n), 541(b)(6)).
         allocations: List[ExemptionAllocation] = []
         cap_522p = Decimal(homestead_522p_cfg["cap_amount"]) * multiplier
         lookback_522p_days = int(homestead_522p_cfg["lookback_days"])
+        ed_529_cap_mid = Decimal(str((ed_529_cfg or {}).get("cap_365_to_720_days", "7575.00")))
+        ira_522n_remaining = ira_cap_522n_amt
+        homestead_exceeds_522p_cap = False
+        homestead_acquired_within_1215_days = False
+        has_unbounded_unknown_exposure = False
 
         for asset in graph.assets:
             cur_val = asset.current_value.value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             liens = liens_by_asset.get(asset.asset_id, Decimal("0.00")).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP
             )
-            net_eq = max(Decimal("0.00"), cur_val - liens).quantize(Decimal("0.01"))
             cat = asset.category
-            rule = rules_by_cat.get(cat)
-            cap_notes: Optional[str] = None
+            excluded_from_estate = Decimal("0.00")
+            cap_notes_parts: List[str] = []
+
+            if cat == "education_529":
+                within_365 = max(Decimal("0.00"), asset.contributions_within_365_days)
+                mid_window = max(Decimal("0.00"), asset.contributions_365_to_720_days)
+                older_than_720 = max(Decimal("0.00"), cur_val - within_365 - mid_window)
+                excluded_mid = min(mid_window, ed_529_cap_mid)
+                excluded_from_estate = (older_than_720 + excluded_mid).quantize(Decimal("0.01"))
+                estate_val = max(Decimal("0.00"), cur_val - excluded_from_estate)
+                net_eq = max(Decimal("0.00"), estate_val - liens).quantize(Decimal("0.01"))
+                if excluded_from_estate > Decimal("0.00"):
+                    cap_notes_parts.append(
+                        f"${excluded_from_estate:,.2f} excluded from estate under 11 U.S.C. § 541(b)(5)-(6) "
+                        f"(${within_365:,.2f} within 365d non-excluded)."
+                    )
+            else:
+                net_eq = max(Decimal("0.00"), cur_val - liens).quantize(Decimal("0.01"))
+
+            # Route via orthogonal exemption_pool first, falling back to granular category.
+            pool_key = asset.category if asset.category in rules_by_cat else (asset.exemption_pool or asset.category)
+            rule = rules_by_cat.get(pool_key)
+            is_unknown = asset.valuation_state == "unknown"
+            claim_100pct = is_unknown or asset.claim_100pct_fmv_exemption
+            unknown_risk = False
 
             if rule is None:
                 cat_exempt = Decimal("0.00")
                 statute = "No specific category exemption (candidate for Wildcard)"
+                if is_unknown:
+                    unknown_risk = True
+                    has_unbounded_unknown_exposure = True
+                    cap_notes_parts.append(
+                        "Schwab v. Reilly 100% FMV checked; unliquidated claim exceeds fixed/wildcard ceiling if any."
+                    )
             else:
                 statute = rule["statute"]
-                pool = remaining_pool_by_cat[cat]
-                if pool is None:
+                rtype = rule["rule_type"]
+                pool = remaining_pool_by_cat[pool_key]
+                if rtype == "unlimited_with_conditions":
                     cat_exempt = net_eq
+                    unknown_risk = False
+                    if is_unknown:
+                        cap_notes_parts.append(
+                            "100% of FMV exempt under statutory cause-of-action/support protection."
+                        )
+                elif rtype == "percentage_of_value":
+                    pct = Decimal(str(rule.get("percentage", "0.75")))
+                    cat_exempt = (net_eq * pct).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                    if is_unknown:
+                        unknown_risk = True
+                        has_unbounded_unknown_exposure = True
                 else:
+                    assert pool is not None
                     effective_pool = pool
-                    if (
-                        bool(rule.get("subject_to_522p_1215_day_cap", False))
-                        and asset.acquisition_date is not None
-                    ):
+                    if cat == "ira_non_rollover":
+                        effective_pool = min(effective_pool, ira_522n_remaining)
+                    if cat == "real_property" and asset.fraudulent_addition_522o_amount > Decimal("0.00"):
+                        effective_pool = max(
+                            Decimal("0.00"),
+                            effective_pool - asset.fraudulent_addition_522o_amount,
+                        )
+                        cap_notes_parts.append(
+                            f"Homestead reduced by ${asset.fraudulent_addition_522o_amount:,.2f} under 11 U.S.C. § 522(o)."
+                        )
+                    if cat == "real_property" and asset.acquisition_date is not None:
                         held_days = (graph.expected_filing_date - asset.acquisition_date.value).days
-                        if held_days < lookback_522p_days and effective_pool > cap_522p:
-                            effective_pool = cap_522p
-                            cap_notes = (
-                                f"Capped at ${cap_522p:,.2f} under 11 U.S.C. § 522(p) "
-                                f"(property held {held_days} days < {lookback_522p_days} days)."
-                            )
+                        if held_days < lookback_522p_days:
+                            homestead_acquired_within_1215_days = True
+                            if bool(rule.get("subject_to_522p_1215_day_cap", False)):
+                                effective_522p_cap = (
+                                    cap_522p + asset.prior_state_residence_rollover_amount
+                                ).quantize(Decimal("0.01"))
+                                if effective_pool > effective_522p_cap:
+                                    effective_pool = effective_522p_cap
+                                    if asset.prior_state_residence_rollover_amount > Decimal("0.00"):
+                                        cap_notes_parts.append(
+                                            f"Capped at ${effective_522p_cap:,.2f} (${cap_522p:,.2f} 522(p) + "
+                                            f"${asset.prior_state_residence_rollover_amount:,.2f} § 522(p)(2)(B) same-state rollover; "
+                                            f"held {held_days}d < {lookback_522p_days}d)."
+                                        )
+                                    else:
+                                        cap_notes_parts.append(
+                                            f"Capped at ${cap_522p:,.2f} under 11 U.S.C. § 522(p) "
+                                            f"(property held {held_days} days < {lookback_522p_days} days)."
+                                        )
+
                     cat_exempt = min(net_eq, effective_pool).quantize(Decimal("0.01"))
-                    # Deduct applied amount from category pool (tracking against original pool).
-                    remaining_pool_by_cat[cat] = max(Decimal("0.00"), pool - cat_exempt)
+                    if cat == "real_property" and cat_exempt > cap_522p:
+                        homestead_exceeds_522p_cap = True
+                    if cat == "ira_non_rollover":
+                        ira_522n_remaining = max(Decimal("0.00"), ira_522n_remaining - cat_exempt)
+                        if net_eq > cat_exempt:
+                            cap_notes_parts.append(
+                                f"Capped at ${ira_cap_522n_amt:,.2f} aggregate under 11 U.S.C. § 522(n)."
+                            )
+                    if is_unknown:
+                        unknown_risk = True
+                        has_unbounded_unknown_exposure = True
+                        cap_notes_parts.append(
+                            f"Unknown FMV with dollar cap (${effective_pool:,.2f}) creates trustee excess risk above cap."
+                        )
+                    remaining_pool_by_cat[pool_key] = max(Decimal("0.00"), pool - cat_exempt)
 
             allocations.append(
                 ExemptionAllocation(
                     asset_id=asset.asset_id,
                     asset_description=asset.description,
                     category=cat,
+                    schedule_ab_line=asset.schedule_ab_line,
                     current_value=cur_val,
+                    valuation_state=asset.valuation_state,
+                    claim_100pct_fmv=claim_100pct,
+                    unknown_value_exposed_risk=unknown_risk,
+                    excluded_from_estate_amount=excluded_from_estate,
                     linked_liens=liens,
                     net_equity=net_eq,
                     statute_cited=statute,
@@ -170,7 +257,7 @@ class ExemptionOptimizer:
                     wildcard_exempt_applied=Decimal("0.00"),
                     total_exempt=cat_exempt,
                     non_exempt_equity=(net_eq - cat_exempt).quantize(Decimal("0.01")),
-                    cap_notes=cap_notes,
+                    cap_notes=" ".join(cap_notes_parts) if cap_notes_parts else None,
                 )
             )
 
@@ -240,6 +327,9 @@ class ExemptionOptimizer:
             total_non_exempt_equity=total_non_ex,
             wildcard_pool_available=wildcard_avail,
             wildcard_pool_used=wildcard_used.quantize(Decimal("0.01")),
+            homestead_exceeds_522p_cap=homestead_exceeds_522p_cap,
+            homestead_acquired_within_1215_days=homestead_acquired_within_1215_days,
+            has_unbounded_unknown_exposure=has_unbounded_unknown_exposure,
             allocations=allocations,
         )
 
@@ -255,21 +345,39 @@ class ExemptionOptimizer:
         exemptions_cfg = self.registry.get_exemption_regimes(graph.expected_filing_date)
         fed_cfg = self.registry.get_federal_thresholds(graph.expected_filing_date)
         homestead_522p = fed_cfg["homestead_1215_day_cap_522p"]
+        ira_522n = Decimal(str(fed_cfg.get("ira_cap_522n", {}).get("cap_amount", "1711975.00")))
+        ed_529_cfg = fed_cfg.get("education_529_exclusion_541b")
 
         domicile_state, regime_ids, domicile_note = self._resolve_domicile_policy(
             graph, exemptions_cfg
         )
         regimes_map = exemptions_cfg["regimes"]
         evaluations = [
-            self._evaluate_regime(graph, regimes_map[rid], homestead_522p)
+            self._evaluate_regime(
+                graph,
+                regimes_map[rid],
+                homestead_522p,
+                ira_cap_522n_amt=ira_522n,
+                ed_529_cfg=ed_529_cfg,
+            )
             for rid in regime_ids
             if rid in regimes_map
         ]
 
-        # Select regime leaving minimal non-exempt equity; tie-break by total exempt.
-        best = min(
+        # Honor explicit counsel regime override if valid; otherwise pick minimum exposure,
+        # avoiding unbounded unknown-value exposure on ties.
+        explicit = (
+            next((ev for ev in evaluations if ev.regime_id == graph.selected_exemption_regime), None)
+            if graph.selected_exemption_regime
+            else None
+        )
+        best = explicit or min(
             evaluations,
-            key=lambda ev: (ev.total_non_exempt_equity, -ev.total_exempt_equity),
+            key=lambda ev: (
+                ev.total_non_exempt_equity,
+                1 if ev.has_unbounded_unknown_exposure else 0,
+                -ev.total_exempt_equity,
+            ),
         )
         return ExemptionOptimizationResult(
             domicile_state_applied=domicile_state,

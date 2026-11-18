@@ -89,16 +89,74 @@ class CMIAndMeansTestEngine:
             graph.expected_filing_date
         )
 
-        # Sum only verified/present paystubs strictly inside the 6 full calendar months.
-        six_mo_gross = Decimal("0.00")
-        six_mo_taxes = Decimal("0.00")
+        # Sum only verified/present paystubs strictly inside the 6 full calendar months,
+        # partitioned between Debtor 1 (Column A) and Spouse (Column B).
+        party_roles = {p.party_id: p.role for p in graph.parties}
+        d1_six_mo_gross = Decimal("0.00")
+        d1_six_mo_taxes = Decimal("0.00")
+        sp_six_mo_gross = Decimal("0.00")
+        sp_six_mo_taxes = Decimal("0.00")
+        sp_six_mo_separate_withholdings = Decimal("0.00")
+
         for ps in graph.paystubs:
             if lookback_start <= ps.pay_date <= lookback_end:
-                six_mo_gross += ps.gross_pay.value
-                six_mo_taxes += ps.tax_withheld.value
+                prole = party_roles.get(ps.party_id, "debtor_1")
+                is_spouse = prole in ("debtor_2_spouse", "non_filing_spouse") or "spouse" in ps.party_id.lower()
+                if is_spouse:
+                    sp_six_mo_gross += ps.gross_pay.value
+                    sp_six_mo_taxes += ps.tax_withheld.value
+                    sp_six_mo_separate_withholdings += ps.tax_withheld.value
+                    if ps.retirement_deduction is not None:
+                        sp_six_mo_separate_withholdings += ps.retirement_deduction.value
+                    if ps.garnishment_or_support_deduction is not None:
+                        sp_six_mo_separate_withholdings += ps.garnishment_or_support_deduction.value
+                else:
+                    d1_six_mo_gross += ps.gross_pay.value
+                    d1_six_mo_taxes += ps.tax_withheld.value
 
-        six_mo_gross = six_mo_gross.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        cmi = (six_mo_gross / Decimal("6")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        debtor_1_cmi = (d1_six_mo_gross / Decimal("6")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        raw_spouse_cmi = (sp_six_mo_gross / Decimal("6")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+        # Married living separate and apart (Form 122A-1 Line 1a unchecked) excludes spouse CMI.
+        is_living_apart = graph.marital_status == "married_filing_separately_apart"
+        has_non_filing_spouse_together = (
+            graph.marital_status == "married_filing_separately_together"
+            or any(p.role == "non_filing_spouse" for p in graph.parties)
+        )
+        spouse_cmi = Decimal("0.00") if is_living_apart else raw_spouse_cmi
+        six_mo_gross = (
+            d1_six_mo_gross + (Decimal("0.00") if is_living_apart else sp_six_mo_gross)
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        six_mo_taxes = (
+            d1_six_mo_taxes + (Decimal("0.00") if is_living_apart else sp_six_mo_taxes)
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+        gross_household_cmi = (debtor_1_cmi + spouse_cmi).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+
+        marital_adjustment = Decimal("0.00")
+        if not is_living_apart and has_non_filing_spouse_together:
+            if graph.marital_adjustment_deductions:
+                raw_adj = sum(
+                    (item.monthly_amount.value for item in graph.marital_adjustment_deductions),
+                    Decimal("0.00"),
+                )
+            else:
+                raw_adj = sp_six_mo_separate_withholdings / Decimal("6")
+            marital_adjustment = min(
+                spouse_cmi,
+                raw_adj.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+            )
+
+        adjusted_cmi = max(Decimal("0.00"), gross_household_cmi - marital_adjustment).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        cmi = adjusted_cmi
         annualized_cmi = (cmi * Decimal("12")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
         debtor_1 = next((p for p in graph.parties if p.role == "debtor_1"), None)
@@ -122,8 +180,13 @@ class CMIAndMeansTestEngine:
 
         # Healthcare allowance per household member using 65+ rate for any party age 65+.
         hc_rates = nat["out_of_pocket_healthcare_per_person_monthly"]
+        spouse_roles_in_hh = (
+            ("debtor_1", "debtor_2_spouse")
+            if is_living_apart
+            else ("debtor_1", "debtor_2_spouse", "non_filing_spouse")
+        )
         over_65_count = sum(
-            1 for p in graph.parties if p.role in ("debtor_1", "debtor_2_spouse") and p.age_65_or_older
+            1 for p in graph.parties if p.role in spouse_roles_in_hh and p.age_65_or_older
         )
         under_65_count = max(0, household_size - over_65_count)
         healthcare = (
@@ -251,7 +314,7 @@ class CMIAndMeansTestEngine:
             lookback_end=lookback_end,
             lookback_months=lookback_months,
             total_6_month_gross_income=six_mo_gross,
-            current_monthly_income=cmi,
+            current_monthly_income=gross_household_cmi,
             annualized_cmi=annualized_cmi,
             household_size=household_size,
             california_median_income=ca_median,
@@ -270,4 +333,8 @@ class CMIAndMeansTestEngine:
             applicable_commitment_months=commitment_months,
             table_version_id=ustp["version_id"],
             table_sha256=ustp["_table_sha256"],
+            debtor_1_cmi=debtor_1_cmi,
+            spouse_cmi=spouse_cmi,
+            marital_adjustment_deduction=marital_adjustment,
+            adjusted_cmi=cmi,
         )

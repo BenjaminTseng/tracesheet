@@ -120,15 +120,80 @@ class PartyEntity(BaseModel):
 AssetCategory = Literal[
     "real_property",
     "vehicle",
-    "bank_account",
-    "retirement",
+    "watercraft_aircraft",
     "household_goods",
-    "tools_of_trade",
+    "electronics",
+    "collectibles",
+    "sports_hobby",
+    "firearms",
+    "apparel",
     "jewelry",
-    "business_interest",
+    "pets_non_farm",
+    "cash",
+    "bank_account",
+    "social_security_deposit",
+    "brokerage_stocks",
+    "retirement",
+    "retirement_erisa_ira",
+    "ira_non_rollover",
+    "education_529",
+    "trust_inheritance",
+    "intellectual_property",
+    "licenses_franchises",
+    "security_deposit",
+    "tax_refund",
     "receivable",
+    "annuities",
+    "unpaid_wages",
+    "life_insurance_csv",
+    "personal_injury",
+    "workers_comp",
+    "legal_claims",
+    "tools_of_trade",
+    "business_interest",
+    "business_equity",
+    "wildcard_only",
     "other",
 ]
+
+_FALLBACK_CATEGORY_TAXONOMY: Dict[str, tuple[str, str, str]] = {
+    "real_property": ("1.1", "Real Estate (Schedule A/B Part 1)", "real_property"),
+    "vehicle": ("3.1", "25. Automobiles, vans, trucks, motorcycles, trailers, and titled vehicles", "vehicle"),
+    "watercraft_aircraft": ("4.1", "26. Boats / 27. Aircraft / Recreational Vehicles", "wildcard_only"),
+    "household_goods": ("6", "4. Household goods and furnishings", "household_goods"),
+    "electronics": ("7", "4a. Electronics (TVs, computers, phones, audio)", "household_goods"),
+    "collectibles": ("8", "5. Books, pictures, art objects, stamps/coins", "wildcard_only"),
+    "sports_hobby": ("9", "8. Firearms, sports, photographic equipment", "wildcard_only"),
+    "firearms": ("10", "8a. Firearms", "wildcard_only"),
+    "apparel": ("11", "6. Wearing apparel", "household_goods"),
+    "jewelry": ("12", "7. Furs and jewelry", "jewelry"),
+    "pets_non_farm": ("13", "31. Animals (non-farm pets)", "wildcard_only"),
+    "cash": ("16", "1. Cash on hand", "bank_account"),
+    "bank_account": ("17", "2. Checking, savings, or other financial accounts", "bank_account"),
+    "social_security_deposit": ("17", "2a. Direct deposit Social Security / public benefits account", "social_security_deposit"),
+    "brokerage_stocks": ("18", "13. Stocks, bonds, mutual funds", "wildcard_only"),
+    "retirement": ("21", "12. Interests in IRA, ERISA, Keogh, or other pension plans", "retirement"),
+    "retirement_erisa_ira": ("21", "12. Interests in IRA, ERISA, Keogh, or other pension plans", "retirement"),
+    "ira_non_rollover": ("21", "12a. Traditional / Roth IRA (Non-Rollover 522(n) Capped)", "ira_non_rollover"),
+    "education_529": ("24", "11. Interests in an education IRA / 529 tuition program", "education_529"),
+    "trust_inheritance": ("25", "20. Contingent and noncontingent interests in estate of a decedent / trust", "wildcard_only"),
+    "intellectual_property": ("26", "22. Patents, copyrights, and other intellectual property", "wildcard_only"),
+    "licenses_franchises": ("27", "23. Licenses, franchises, and general intangibles", "wildcard_only"),
+    "security_deposit": ("28", "3. Security deposits with utilities, landlords, and others", "wildcard_only"),
+    "tax_refund": ("28", "18. Other liquidated debts owed to debtor including tax refunds", "wildcard_only"),
+    "receivable": ("28", "18. Other liquidated debts owed to debtor including tax refunds", "wildcard_only"),
+    "annuities": ("29", "10. Annuities", "wildcard_only"),
+    "unpaid_wages": ("30", "18a. Unpaid wages, commissions, vacation pay", "unpaid_wages"),
+    "life_insurance_csv": ("31", "9. Interests in insurance policies (cash surrender value)", "life_insurance_csv"),
+    "personal_injury": ("33", "21. Other contingent and unliquidated claims (Personal Injury)", "personal_injury"),
+    "workers_comp": ("33", "21a. Workers' compensation claim or pending award", "workers_comp"),
+    "legal_claims": ("34", "21b. Other claims against third parties", "legal_claims"),
+    "tools_of_trade": ("35", "29. Machinery, fixtures, equipment, and supplies used in business", "tools_of_trade"),
+    "business_interest": ("42", "14. Interests in partnerships or joint ventures / LLC equity", "wildcard_only"),
+    "business_equity": ("42", "14. Interests in partnerships or joint ventures / LLC equity", "wildcard_only"),
+    "wildcard_only": ("53", "35. Other personal property of any kind", "wildcard_only"),
+    "other": ("53", "35. Other personal property of any kind", "wildcard_only"),
+}
 
 
 class AssetItem(BaseModel):
@@ -138,11 +203,20 @@ class AssetItem(BaseModel):
         asset_id: Unique asset identifier within the case.
         category: Normalized Schedule A/B asset classification.
         description: Human-readable asset description (address, year/make/model, institution).
+        schedule_ab_line: Official Form 106A/B line reference (`1.1` through `53`).
+        best_case_alias: Matching Best Case 35-item property category label.
+        exemption_pool: Orthogonal statutory pool key in `exemptions_2026.json`.
         ownership: Ownership attribution (`debtor_1`, `debtor_2`, `community`, `business`).
         joint_with_non_filing: True if co-owned with a non-filing third party (triggers Schedule H).
         account_last4: Trailing 4 digits for financial accounts (FRBP 9037).
         current_value: Verified fair-market value (`Schedule A/B`).
+        valuation_state: Whether FMV is `certain`, `estimated`, or `unknown` (unliquidated claim).
+        claim_100pct_fmv_exemption: When True, claims `"100% of fair market value"` on Form 106C (*Schwab v. Reilly*).
         acquisition_date: Acquisition date for `11 U.S.C. § 522(p)` 1,215-day homestead cap.
+        prior_state_residence_rollover_amount: Same-state prior residence rollover exempt under `§ 522(p)(2)(B)`.
+        fraudulent_addition_522o_amount: Equity reduction under `11 U.S.C. § 522(o)`.
+        contributions_within_365_days: 529 plan contributions within 365 days (`0%` excluded).
+        contributions_365_to_720_days: 529 plan contributions 365–720 days prior (`$7,575` cap excluded).
         owned_free_and_clear: Explicit confirmation when no lien encumbers real property/vehicle.
         attestation_note: Optional explanatory note for free-and-clear or closed status.
     """
@@ -150,13 +224,38 @@ class AssetItem(BaseModel):
     asset_id: str
     category: AssetCategory
     description: str
+    schedule_ab_line: Optional[str] = None
+    best_case_alias: Optional[str] = None
+    exemption_pool: Optional[str] = None
     ownership: Literal["debtor_1", "debtor_2", "community", "business"] = "debtor_1"
     joint_with_non_filing: bool = False
     account_last4: Optional[str] = None
     current_value: ProvenanceField[Decimal]
+    valuation_state: Literal["certain", "estimated", "unknown"] = "certain"
+    claim_100pct_fmv_exemption: bool = False
     acquisition_date: Optional[ProvenanceField[datetime.date]] = None
+    prior_state_residence_rollover_amount: Decimal = Decimal("0.00")
+    fraudulent_addition_522o_amount: Decimal = Decimal("0.00")
+    contributions_within_365_days: Decimal = Decimal("0.00")
+    contributions_365_to_720_days: Decimal = Decimal("0.00")
     owned_free_and_clear: Optional[bool] = None
     attestation_note: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _populate_taxonomy_and_schwab_defaults(self) -> "AssetItem":
+        """Auto-populates Form 106A/B taxonomy defaults and Schwab v. Reilly FMV flag."""
+        line_id, alias, pool = _FALLBACK_CATEGORY_TAXONOMY.get(
+            self.category, ("53", "35. Other personal property of any kind", "wildcard_only")
+        )
+        if self.schedule_ab_line is None:
+            self.schedule_ab_line = line_id
+        if self.best_case_alias is None:
+            self.best_case_alias = alias
+        if self.exemption_pool is None:
+            self.exemption_pool = pool
+        if self.valuation_state == "unknown":
+            self.claim_100pct_fmv_exemption = True
+        return self
 
 
 class ClaimItem(BaseModel):
@@ -213,6 +312,10 @@ class ClaimItem(BaseModel):
     disputed: bool = False
     is_insider_or_affiliate: bool = False
     commercial_business_pct: float = Field(default=0.0, ge=0.0, le=1.0)
+    origination_date: Optional[datetime.date] = None
+    contract_interest_rate: Optional[Decimal] = None
+    lien_rank: int = 1
+    is_trauma_or_medical_creditor: bool = False
 
 
 class PaystubRecord(BaseModel):
@@ -383,10 +486,20 @@ class HistoricalTransaction(BaseModel):
     """Historical financial disclosure scheduled on Form B 107 (SOFA)."""
 
     tx_id: str
-    sofa_part: Literal["income_history", "preferential_transfer", "lawsuit_garnishment", "closed_account", "business_interest"]
+    sofa_part: Literal[
+        "income_history",
+        "preferential_transfer",
+        "lawsuit_garnishment",
+        "closed_account",
+        "business_interest",
+        "windfall_180_day",
+    ]
     description: str
     tx_date: Optional[datetime.date] = None
     amount: Optional[ProvenanceField[Decimal]] = None
+    party_role: Optional[Literal["plaintiff", "defendant"]] = None
+    linked_asset_id: Optional[str] = None
+    linked_claim_id: Optional[str] = None
 
 
 class EmergingQuestionItem(BaseModel):
@@ -442,6 +555,25 @@ class CanonicalCaseGraph(BaseModel):
     signed_declaration_sha256: Optional[str] = None
     attorney_name: str = ""
     attorney_bar_number: str = ""
+    marital_status: Literal[
+        "single",
+        "married_joint",
+        "married_filing_separately_together",
+        "married_filing_separately_apart",
+    ] = "single"
+    marital_adjustment_deductions: List[BudgetLineItem] = Field(default_factory=list)
+    spousal_703_waiver_signed: bool = False
+    selected_exemption_regime: Optional[str] = None
+    no_security_deposit_attested: bool = False
+    no_injury_or_wc_claim_attested: bool = False
+    payment_advices_exception_attested: bool = False
+    homestead_rollover_reviewed: bool = False
+    unknown_valuation_cap_reviewed: bool = False
+    mandatory_asset_sweep_attested: bool = False
+    windfall_180_day_attested: bool = False
+    ch13_trustee_fee_pct: Decimal = Decimal("0.00")
+    ch13_attorney_fee_in_plan: Decimal = Decimal("0.00")
+    tax_years_filed_4yr: List[int] = Field(default_factory=list)
 
 
 # =====================================================================
@@ -492,6 +624,10 @@ class MeansTestResult(BaseModel):
     applicable_commitment_months: int = 36
     table_version_id: str
     table_sha256: str
+    debtor_1_cmi: Decimal = Decimal("0.00")
+    spouse_cmi: Decimal = Decimal("0.00")
+    marital_adjustment_deduction: Decimal = Decimal("0.00")
+    adjusted_cmi: Decimal = Decimal("0.00")
 
 
 class ExemptionAllocation(BaseModel):
@@ -500,7 +636,12 @@ class ExemptionAllocation(BaseModel):
     asset_id: str
     asset_description: str
     category: AssetCategory
+    schedule_ab_line: Optional[str] = None
     current_value: Decimal
+    valuation_state: Literal["certain", "estimated", "unknown"] = "certain"
+    claim_100pct_fmv: bool = False
+    unknown_value_exposed_risk: bool = False
+    excluded_from_estate_amount: Decimal = Decimal("0.00")
     linked_liens: Decimal
     net_equity: Decimal
     statute_cited: str
@@ -521,6 +662,9 @@ class ExemptionRegimeEvaluation(BaseModel):
     total_non_exempt_equity: Decimal
     wildcard_pool_available: Decimal
     wildcard_pool_used: Decimal
+    homestead_exceeds_522p_cap: bool = False
+    homestead_acquired_within_1215_days: bool = False
+    has_unbounded_unknown_exposure: bool = False
     allocations: List[ExemptionAllocation] = Field(default_factory=list)
 
 
@@ -548,6 +692,13 @@ class Chapter13PlanResult(BaseModel):
     secured_arrears_total: Decimal
     total_minimum_plan_funding: Decimal
     estimated_monthly_plan_payment: Decimal
+    cramdown_savings_total: Decimal = Decimal("0.00")
+    junior_liens_stripped_total: Decimal = Decimal("0.00")
+    trustee_fee_total: Decimal = Decimal("0.00")
+    attorney_fee_in_plan: Decimal = Decimal("0.00")
+    gross_monthly_payment_with_8pct_trustee_fee: Decimal = Decimal("0.00")
+    plan_is_feasible: bool = True
+    feasibility_shortfall_monthly: Decimal = Decimal("0.00")
 
 
 class CalculationSummary(BaseModel):

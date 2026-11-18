@@ -411,3 +411,280 @@ def test_ch13_plan_calculator_liquidation_floor_and_full_summary() -> None:
     assert summary.ch13_plan.total_minimum_plan_funding == Decimal("34000.00")
     assert summary.ch13_plan.applicable_commitment_months == 36
     assert summary.ch13_plan.estimated_monthly_plan_payment == Decimal("944.44")
+
+
+def test_unknown_valuation_schwab_v_reilly_704_vs_703() -> None:
+    """Verifies Unknown valuations, 53-line mapping, Schwab 100% FMV flag, and CCP § 704 unlimited PI win."""
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    opt = ExemptionOptimizer(reg)
+
+    graph = CanonicalCaseGraph(
+        matter_id="ex_schwab_pi",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=_base_party(county="Los Angeles", domicile_days=1800),
+        assets=[
+            AssetItem(
+                asset_id="pi_claim_1",
+                category="personal_injury",
+                description="Pending Auto Accident Bodily Injury Lawsuit",
+                valuation_state="unknown",
+                current_value=_ov(Decimal("0.00")),
+            ),
+            AssetItem(
+                asset_id="wc_claim_1",
+                category="workers_comp",
+                description="Open Workers Comp Award Claim",
+                valuation_state="unknown",
+                current_value=_ov(Decimal("0.00")),
+            ),
+            AssetItem(
+                asset_id="wages_1",
+                category="unpaid_wages",
+                description="Earned Unpaid Commission",
+                current_value=_ov(Decimal("2000.00")),
+            ),
+        ],
+    )
+    assert graph.assets[0].schedule_ab_line == "33"
+    assert graph.assets[0].claim_100pct_fmv_exemption is True
+    assert "21." in (graph.assets[0].best_case_alias or "")
+
+    res = opt.optimize(graph)
+    ev_704 = next(e for e in res.evaluations if e.regime_id == "CA_CCP_704")
+    ev_703 = next(e for e in res.evaluations if e.regime_id == "CA_CCP_703_140")
+
+    # Under CCP § 703.140(b)(11)(D), PI is dollar-capped ($36,750) -> unbounded unknown exposure!
+    assert ev_703.has_unbounded_unknown_exposure is True
+    pi_703 = next(a for a in ev_703.allocations if a.asset_id == "pi_claim_1")
+    assert pi_703.unknown_value_exposed_risk is True
+    assert pi_703.claim_100pct_fmv is True
+
+    # Under CCP § 704.140 & § 704.160, both PI & Workers' Comp are unlimited_with_conditions -> no unbounded cap risk!
+    assert ev_704.has_unbounded_unknown_exposure is False
+    pi_704 = next(a for a in ev_704.allocations if a.asset_id == "pi_claim_1")
+    assert pi_704.unknown_value_exposed_risk is False
+    assert pi_704.claim_100pct_fmv is True
+    wages_704 = next(a for a in ev_704.allocations if a.asset_id == "wages_1")
+    assert wages_704.category_exempt_applied == Decimal("1500.00")  # 75% under CCP § 704.070
+
+    # When numeric non-exempt equity ties ($0.00), CA_CCP_704 wins over CA_CCP_703_140 because PI is unlimited.
+    pi_only_graph = graph.model_copy(update={"assets": graph.assets[:2]})
+    res_unknown = opt.optimize(pi_only_graph)
+    assert res_unknown.recommended_regime_id == "CA_CCP_704"
+
+
+def test_federal_caps_522p_rollover_522n_ira_and_541b_529_lookback() -> None:
+    """Verifies § 522(p)(2)(B) same-state rollover, § 522(n) IRA cap, and § 541(b)(5)-(6) 529 lookbacks."""
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    opt = ExemptionOptimizer(reg)
+
+    graph = CanonicalCaseGraph(
+        matter_id="fed_caps_1",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=_base_party(county="Orange", domicile_days=2000),
+        assets=[
+            AssetItem(
+                asset_id="home_roll",
+                category="real_property",
+                description="Irvine Condo Bought With Prior CA Home Proceeds",
+                current_value=_ov(Decimal("500000.00")),
+                acquisition_date=_ov(datetime.date(2025, 4, 1)),  # < 1215 days
+                prior_state_residence_rollover_amount=Decimal("120000.00"),
+            ),
+            AssetItem(
+                asset_id="ira_big",
+                category="ira_non_rollover",
+                description="Non-Rollover Traditional IRA",
+                current_value=_ov(Decimal("1800000.00")),
+            ),
+            AssetItem(
+                asset_id="acct_529",
+                category="education_529",
+                description="ScholarShare 529 College Savings",
+                current_value=_ov(Decimal("20000.00")),
+                contributions_within_365_days=Decimal("3000.00"),  # 0% excluded
+                contributions_365_to_720_days=Decimal("10000.00"),  # $7,575 max excluded
+            ),
+        ],
+    )
+    res = opt.optimize(graph)
+    ev_704 = next(e for e in res.evaluations if e.regime_id == "CA_CCP_704")
+    assert ev_704.homestead_acquired_within_1215_days is True
+    assert ev_704.homestead_exceeds_522p_cap is True
+
+    home_al = next(a for a in ev_704.allocations if a.asset_id == "home_roll")
+    assert home_al.category_exempt_applied == Decimal("334000.00")  # $214,000 + $120,000 rollover
+    assert home_al.non_exempt_equity == Decimal("166000.00")
+
+    ira_al = next(a for a in ev_704.allocations if a.asset_id == "ira_big")
+    assert ira_al.category_exempt_applied == Decimal("1711975.00")  # § 522(n) aggregate cap
+    assert ira_al.non_exempt_equity == Decimal("88025.00")
+
+    ed_al = next(a for a in ev_704.allocations if a.asset_id == "acct_529")
+    # $7,000 (>720d) + $7,575 (capped 365-720d) = $14,575 excluded; $5,425 remains in estate.
+    assert ed_al.excluded_from_estate_amount == Decimal("14575.00")
+    assert ed_al.net_equity == Decimal("5425.00")
+
+
+def test_married_filing_separately_marital_adjustment_deduction() -> None:
+    """Verifies Column B non-filing spouse CMI and Form 122A-2 Line 3 Marital Adjustment deduction."""
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    engine = CMIAndMeansTestEngine(reg)
+
+    paystubs = []
+    for month in range(5, 11):
+        paystubs.append(
+            PaystubRecord(
+                paystub_id=f"d1_{month}",
+                party_id="debtor_1",
+                employer="Debtor Co",
+                pay_period_start=datetime.date(2026, month, 1),
+                pay_period_end=datetime.date(2026, month, 28),
+                pay_date=datetime.date(2026, month, 28),
+                gross_pay=_ov(Decimal("4500.00")),
+                net_pay=_ov(Decimal("3400.00")),
+                tax_withheld=_ov(Decimal("900.00")),
+            )
+        )
+        paystubs.append(
+            PaystubRecord(
+                paystub_id=f"sp_{month}",
+                party_id="non_filing_spouse",
+                employer="Spouse Co",
+                pay_period_start=datetime.date(2026, month, 1),
+                pay_period_end=datetime.date(2026, month, 28),
+                pay_date=datetime.date(2026, month, 28),
+                gross_pay=_ov(Decimal("4000.00")),
+                net_pay=_ov(Decimal("3000.00")),
+                tax_withheld=_ov(Decimal("800.00")),
+            )
+        )
+
+    parties = _base_party(county="Los Angeles", household=2) + [
+        PartyEntity(
+            party_id="non_filing_spouse",
+            role="non_filing_spouse",
+            full_name=_ov("Riley Test"),
+            county_of_residence="Los Angeles",
+            ca_domicile_days_continuous=_ov(1500),
+            household_size=_ov(2),
+        )
+    ]
+
+    graph_together = CanonicalCaseGraph(
+        matter_id="mfs_together",
+        chapter="7",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        marital_status="married_filing_separately_together",
+        parties=parties,
+        paystubs=paystubs,
+        marital_adjustment_deductions=[
+            BudgetLineItem(
+                item_id="ma_car",
+                category="vehicle_payment",
+                description="Spouse Separate Car Note & Personal Expenses",
+                monthly_amount=_ov(Decimal("1800.00")),
+            )
+        ],
+    )
+    mt_together = engine.evaluate(graph_together)
+    assert mt_together.debtor_1_cmi == Decimal("4500.00")
+    assert mt_together.spouse_cmi == Decimal("4000.00")
+    assert mt_together.current_monthly_income == Decimal("8500.00")
+    assert mt_together.marital_adjustment_deduction == Decimal("1800.00")
+    assert mt_together.adjusted_cmi == Decimal("6700.00")
+    assert mt_together.annualized_cmi == Decimal("80400.00")
+
+    graph_apart = graph_together.model_copy(update={"marital_status": "married_filing_separately_apart"})
+    mt_apart = engine.evaluate(graph_apart)
+    assert mt_apart.spouse_cmi == Decimal("0.00")
+    assert mt_apart.adjusted_cmi == Decimal("4500.00")
+
+
+def test_ch13_910_day_vehicle_cramdown_and_junior_lien_strip_and_feasibility() -> None:
+    """Verifies Ch. 13 910-day cramdown, Zimmer/Lam 2nd mortgage strip, trustee fee, and feasibility gate."""
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    graph = CanonicalCaseGraph(
+        matter_id="ch13_cram_1",
+        chapter="13",
+        district="CACB",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=_base_party(county="Los Angeles", domicile_days=2000),
+        ch13_trustee_fee_pct=Decimal("0.08"),
+        ch13_attorney_fee_in_plan=Decimal("4000.00"),
+        assets=[
+            AssetItem(
+                asset_id="home_underwater",
+                category="real_property",
+                description="Underwater Residence",
+                current_value=_ov(Decimal("400000.00")),
+                acquisition_date=_ov(datetime.date(2019, 1, 1)),
+            ),
+            AssetItem(
+                asset_id="car_old",
+                category="vehicle",
+                description="2019 Ford Escape",
+                current_value=_ov(Decimal("13000.00")),
+            ),
+        ],
+        claims=[
+            ClaimItem(
+                claim_id="mtg_1st",
+                creditor_name="First Mortgage",
+                priority_type="secured",
+                total_claim_amount=_ov(Decimal("420000.00")),
+                arrears_amount=_ov(Decimal("0.00")),
+                collateral_asset_id="home_underwater",
+                lien_rank=1,
+            ),
+            ClaimItem(
+                claim_id="mtg_2nd",
+                creditor_name="Wholly Unsecured 2nd HELOC",
+                priority_type="secured",
+                total_claim_amount=_ov(Decimal("65000.00")),
+                arrears_amount=_ov(Decimal("12000.00")),
+                collateral_asset_id="home_underwater",
+                lien_rank=2,
+            ),
+            ClaimItem(
+                claim_id="auto_old",
+                creditor_name="Santander Auto Loan",
+                priority_type="secured",
+                total_claim_amount=_ov(Decimal("22000.00")),
+                collateral_asset_id="car_old",
+                origination_date=datetime.date(2022, 1, 10),  # > 910 days before 2026-11-16
+            ),
+        ],
+        budget=MonthlyBudgetScheduleIJ(
+            income_items=[
+                BudgetLineItem(
+                    item_id="i1",
+                    category="gross_wages",
+                    description="Wages",
+                    monthly_amount=_ov(Decimal("3000.00")),
+                )
+            ],
+            expense_items=[
+                BudgetLineItem(
+                    item_id="e1",
+                    category="rent_or_mortgage",
+                    description="First Mortgage",
+                    monthly_amount=_ov(Decimal("2800.00")),
+                )
+            ],
+        ),
+    )
+    summary = compute_case_calculations(graph, reg)
+    plan = summary.ch13_plan
+    assert plan is not None
+    assert plan.junior_liens_stripped_total == Decimal("65000.00")
+    assert plan.cramdown_savings_total == Decimal("9000.00")
+    # Secured cure = $13,000 car cramdown + $0 stripped 2nd + $0 1st arrears; Atty fee = $4,000 -> base $17,000 * 1.08 = $18,360
+    assert plan.secured_arrears_total == Decimal("13000.00")
+    assert plan.attorney_fee_in_plan == Decimal("4000.00")
+    assert plan.trustee_fee_total == Decimal("1360.00")
+    assert plan.total_minimum_plan_funding == Decimal("18360.00")
+    assert plan.estimated_monthly_plan_payment == Decimal("510.00")
+    # Schedule I-J net = $200/mo < $510/mo -> infeasible with $310/mo shortfall!
+    assert plan.plan_is_feasible is False
+    assert plan.feasibility_shortfall_monthly == Decimal("310.00")

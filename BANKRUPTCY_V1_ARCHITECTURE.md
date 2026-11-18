@@ -1,8 +1,8 @@
 # Bankruptcy v1 Application & Platform Architecture (`BANKRUPTCY_V1_ARCHITECTURE.md`)
 
 - **Repository:** `~/restructure/jd_screen`
-- **Status:** Revised Draft for Review (Step 3)
-- **Target Scope (v1):** Personal & Small-Business Individual Bankruptcy (Chapter 7 & Chapter 13) across two distinct California federal court filing paths (**`CACB`** NextGen CM/ECF Case Upload and **`CAEB`** Custom e-Filing Portal), built on a generalized entity/ledger graph forward-compatible with **Chapter 11 / Subchapter V**.
+- **Status:** Implemented & Verified (v1.1 Design-Partner Upgrade — `73 passed, 2 skipped`)
+- **Target Scope (v1.1):** Personal & Small-Business Individual Bankruptcy (Chapter 7 & Chapter 13) across two distinct California federal court filing paths (**`CACB`** NextGen CM/ECF Case Upload and **`CAEB`** Custom e-Filing Portal), built on a generalized entity/ledger graph forward-compatible with **Chapter 11 / Subchapter V**.
 - **Deployment Model:** Standalone **Bankruptcy Case Workbench Webapp** (`bankruptcy_main.py`) running completely separately from the **Broadsheet Research Webapp** (`main.py`), while sharing the underlying verification core (`app/core/`) and the `L0 → L1 → L2+` SVG Bezier traceability interaction model.
 
 ---
@@ -78,30 +78,31 @@ The two webapps run as **completely separate processes and UIs** with zero cross
 │   │   ├── __init__.py
 │   │   ├── ocr.py                           # Pluggable OCRProvider (Modal GPU / Local ONNX-Tesseract / Mock)
 │   │   ├── pii.py                           # Deterministic PII tokenizer & local re-hydration vault
-│   │   └── tables.py                        # Effective-dated JSON statutory table loader & verifier
+│   │   ├── tables.py                        # Effective-dated JSON statutory table loader, staleness gate & SHA-256 sync
 │   └── bankruptcy/
 │       ├── __init__.py
-│       ├── models.py                        # Generalized CanonicalCaseGraph, ProvenanceField, FilingPacket
-│       ├── extractor.py                     # Constrained LLM document-to-observation harvester
+│       ├── models.py                        # Generalized CanonicalCaseGraph, 53-line AssetItem, ProvenanceField
+│       ├── extractor.py                     # Constrained LLM + deterministic harvester ("Unknown" FMV & trauma creditor tags)
 │       ├── verifier.py                      # Deterministic SourceLocator & numeric/date verifier
 │       ├── calculators/
 │       │   ├── eligibility.py               # Ch. 7, Ch. 13 (§ 109(e) $2.75M), SubV (§ 1182 $7.5M)
-│       │   ├── means_test.py                # 6-mo CMI lookback, Form 122A-1/2 & 122C-1/2 (USTP tables)
-│       │   ├── exemptions.py                # Universal multi-regime ExemptionOptimizer (CA § 704 / § 703.140 / Fed § 522(d))
-│       │   └── ch13_plan.py                 # Ch. 13 disposable income, liquidation floor, plan math
-│       ├── audit.py                         # Declarative Dependency Graph, Forensic Outflow/Plausibility Audit, & Gate
-│       ├── bundle_compiler.py               # Compiles CaseGraph + Calculators into L0->L1->L2+ CompiledBundle
-│       ├── pdf_engine.py                    # PyMuPDF AcroForm filler, .bake() flattener, overflow sheets
+│       │   ├── means_test.py                # 6-mo CMI, MFS Column B Spouse CMI & Marital Adjustment (Form 122A-2 Line 3)
+│       │   ├── exemptions.py                # Universal ExemptionOptimizer (CA § 704 / § 703.140 / Fed § 522(d), Schwab 100% FMV, §§ 522(p)/(n)/(o), § 541(b))
+│       │   └── ch13_plan.py                 # Ch. 13 910-day cramdown, Zimmer/Lam lien strip, trustee/RARA fees, § 1325(a)(6) feasibility
+│       ├── audit.py                         # 22 Declarative Rules, Trauma/SOFA/60d-Paystub Forensics, Plausibility, & Readiness Gate
+│       ├── bundle_compiler.py               # Compiles CaseGraph + Calculators into official-form-aligned L0->L1->L2+ CompiledBundle
+│       ├── pdf_engine.py                    # PyMuPDF AcroForm filler (form_field_maps.json), .bake() flattener, overflow sheets
 │       ├── districts/
 │       │   ├── base.py                      # DistrictAdapter & CourtSubmissionDriver interfaces
 │       │   ├── cacb.py                      # Central District (NextGen Case Upload + F 3015-1.01 + F 1007-1)
 │       │   └── caeb.py                      # Eastern District (CAEB e-Filing + 8MB splitter + EDC 3-080)
 │       ├── vault.py                         # Encrypted Credential + TOTP Vault & Rule 9011 Sign-off Gate
-│       └── routes.py                        # Standalone Bankruptcy FastAPI app & routes
+│       └── routes.py                        # Standalone Bankruptcy FastAPI app & routes (incl. /tables/sync & /tables/taxonomy)
 ├── canonical/
-│   ├── legal/                               # [AUTH:...] statutes (11 U.S.C., CA CCP, LBRs)
+│   ├── bankruptcy/                          # 14 official [AUTH:...] CACB LBR, CAEB LBR, U.S. Courts & CA CCP statutes
+│   ├── legal/                               # [AUTH:...] federal statutes
 │   └── tables/
-│       └── bankruptcy/                      # Versioned, effective-dated JSON reference tables & PDF templates
+│       └── bankruptcy/                      # Versioned JSON tables (exemptions, USTP, federal thresholds, taxonomy, form_field_maps) & 25 fillable PDF templates (gitignored)
 ├── templates/
 │   ├── index.html                           # Broadsheet Research Webapp shell
 │   └── bankruptcy.html                      # Standalone Bankruptcy Workbench Webapp shell
@@ -172,10 +173,10 @@ class ProvenanceField(BaseModel, Generic[T]):
 
 #### Generalized Entities (Ch. 7 & 13 Now -> Ch. 11 / Subchapter V Ready)
 * **`PartyEntity`:** `party_id`, `role` (`"debtor_1"`, `"debtor_2_spouse"`, `"non_filing_spouse"`, `"business_entity"`, `"insider_affiliate"`, `"codebtor"`), `entity_type` (`"individual"`, `"llc"`, `"corporation"`, `"partnership"`), `full_name`, `ssn_token_or_ein`, `county_of_residence`, `ca_domicile_days_continuous: ProvenanceField[int]`, `household_size: ProvenanceField[int]`.
-* **`AssetItem` (`Schedule A/B` & `Schedule C`):** `asset_id`, `category`, `description`, `ownership`, `current_value: ProvenanceField[Decimal]`, `acquisition_date: Optional[ProvenanceField[datetime.date]]` (for the **1,215-day `11 U.S.C. § 522(p)`** homestead cap check).
-* **`ClaimItem` (`Schedule D` & `Schedule E/F`):** `claim_id`, `creditor_name`, `creditor_address_lines`, `city`, `state`, `zip_code`, `account_token`, `priority_type`, `total_claim_amount: ProvenanceField[Decimal]`, `arrears_amount: Optional[ProvenanceField[Decimal]]`, `collateral_asset_id: Optional[str]`, plus Ch. 13 / Subchapter V eligibility flags (`contingent`, `unliquidated`, `disputed`, `is_insider_or_affiliate`, `commercial_business_pct`).
-* **`CashFlowSeries`:** `PaystubRecord`, `BankStatementPeriod`, `TaxReturnSummary`, `MonthlyBudgetScheduleIJ`.
-* **`HistoricalTransaction` (`Form 107` SOFA):** Pre-petition payments, lawsuits/garnishments, repossessions, transfers within 2 years.
+* **`AssetItem` (`Schedule A/B` & `Schedule C`):** `asset_id`, granular 53-line `category` + auto-populated `schedule_ab_line` (`1.1`–`53`), `best_case_alias` (Items 1–35 from `schedule_ab_taxonomy.json`), orthogonal `exemption_pool`, `ownership`, `current_value: ProvenanceField[Decimal]`, `valuation_state` (`"certain" | "estimated" | "unknown"`), `claim_100pct_fmv_exemption` (*Schwab v. Reilly*), `acquisition_date` (`11 U.S.C. § 522(p)` 1,215-day check), `prior_state_residence_rollover_amount` (`§ 522(p)(2)(B)`), `fraudulent_addition_522o_amount` (`§ 522(o)`), and `contributions_within_365_days` / `contributions_365_to_720_days` (529 lookbacks under `§ 541(b)(5)–(6)`).
+* **`ClaimItem` (`Schedule D` & `Schedule E/F`):** `claim_id`, `creditor_name`, `creditor_address_lines`, `city`, `state`, `zip_code`, `account_token`, `priority_type`, `total_claim_amount: ProvenanceField[Decimal]`, `arrears_amount: Optional[ProvenanceField[Decimal]]`, `collateral_asset_id: Optional[str]`, `origination_date` (910-day cramdown test), `lien_rank` (junior lien strip check), `is_trauma_or_medical_creditor` (hidden injury claim detector), plus Ch. 13 / Subchapter V flags (`contingent`, `unliquidated`, `disputed`, `is_insider_or_affiliate`, `commercial_business_pct`).
+* **`CashFlowSeries`:** `PaystubRecord` (with `party_id` partitioning Debtor 1 vs. Non-Filing Spouse), `BankStatementPeriod`, `TaxReturnSummary`, `MonthlyBudgetScheduleIJ`, and `marital_adjustment_deductions`.
+* **`HistoricalTransaction` (`Form 107` SOFA):** Pre-petition payments, `lawsuit_garnishment` (with bidirectional `party_role="plaintiff"|"defendant"` and `linked_asset_id`/`linked_claim_id`), `closed_account`, `business_interest`, and `windfall_180_day` (`11 U.S.C. § 541(a)(5)`).
 
 ### Layer 4: Pure-Python Deterministic Statutory Engines & `CompiledBundle` Graph Compiler
 
@@ -185,35 +186,17 @@ All calculations run in pure Python (`Decimal` arithmetic with `ROUND_HALF_UP` t
    - **Chapter 13 (`11 U.S.C. § 109(e)` per H.R. 7730, effective Nov 10, 2026):** Verifies combined noncontingent, liquidated secured + unsecured debts `< $2,750,000`.
    - **Subchapter V (`11 U.S.C. § 1182` per H.R. 7730):** Verifies non-insider/affiliate noncontingent, liquidated debt `<= $7,500,000` and `>= 50%` commercial/business debt.
 2. **`CMIAndMeansTestEngine` (`means_test.py`):**
-   - Computes the strict **6 full calendar months lookback window** prior to `expected_filing_date`, averages verified gross income (`CMI`), compares annualized CMI against `ustp_ca_means_test_2026.json` state median for `household_size`, and—if Above Median—applies IRS National & California county Local Standards (`Form 122A-2` / `122C-2`) to test against `11 U.S.C. § 707(b)`.
+   - Computes the strict **6 full calendar months lookback window** prior to `expected_filing_date`, partitions `debtor_1_cmi` vs. `spouse_cmi` (`Column B` on Form 122A-1), applies the **Marital Adjustment Deduction** (`marital_adjustment_deduction` on Form 122A-2 Line 3 / 122C-1) for `married_filing_separately_together` (or excludes spouse CMI entirely when `married_filing_separately_apart`), compares annualized adjusted CMI against `ustp_ca_means_test_2026.json`, and tests IRS National/Local Standards against `11 U.S.C. § 707(b)`.
 3. **`ExemptionOptimizer` — Universal Multi-State & Federal Regime Engine (`exemptions.py`):**
-   - Rather than hardcoding California logic, the optimizer evaluates a declarative **`ExemptionRegimeSpec` JSON schema** (`canonical/tables/bankruptcy/exemptions_2026.json`) that generalizes across all 50 states and Federal `11 U.S.C. § 522(d)`:
-     - **Jurisdiction & Domicile Routing (`11 U.S.C. § 522(b)(3)(A)`):** Checks whether the debtor meets the 730-day continuous domicile requirement; if `< 730 days`, routes to the prior state from the 180-day lookback window or the Federal `§ 522(d)` fallback.
-     - **Regime Election (`§ 522(b)(2)`):** Each state defines its selectable regimes (e.g., `CA` is an opt-out state offering `["CA_CCP_704", "CA_CCP_703_140"]`; a dual-election state like `NY` or `TX` offers `["<STATE>_DEFAULT", "FEDERAL_522D"]`; single-regime opt-out states offer `["<STATE>_DEFAULT"]`).
-     - **Five Universal Rule Primitives per Exemption Cap:**
-       1. `fixed_dollar` (e.g., CA `§ 703.140(b)(2)` vehicle `$8,625`; Federal `§ 522(d)(2)` `$5,025`).
-       2. `locality_lookup` (e.g., CA `§ 704.730` 58-county homestead `$371,547`–`$743,681`; NY county tiers).
-       3. `unlimited_with_conditions` (e.g., ERISA retirement `§ 522(b)(3)(C)`, or acreage-limited homesteads).
-       4. `wildcard_with_spillover` (base wildcard + configurable `%` or cap of unused residence exemption, such as CA `§ 703.140(b)(5)` `$1,950 + 100% unused $36,750 residence` or Federal `§ 522(d)(5)` `$1,675 + up to $15,800 unused homestead`).
-       5. `marital_doubling_and_tbe` (`allow_joint_doubling: bool` per `11 U.S.C. § 522(m)`—`False` in CA, `True` under Federal `§ 522(d)`—plus Tenancy by the Entireties flags).
-     - **Federal Statutory Clamps:** Automatically enforces the **1,215-day `11 U.S.C. § 522(p)` homestead acquisition cap** across all regimes.
-     - **Optimization Output:** Evaluates every eligible regime for the debtor, greedily allocates wildcard spillover to highest non-exempt liquid/personal assets, and returns a side-by-side comparison (`RegimeEvaluationResult`) recommending the regime that minimizes `total_non_exempt_equity`.
+   - Evaluates `exemptions_2026.json` (`CA_CCP_704`, `CA_CCP_703_140`, `FEDERAL_522D`) with **730-day domicile routing** (`11 U.S.C. § 522(b)(3)(A)`) and orthogonal `exemption_pool` resolution across six rule primitives (`fixed_dollar`, `locality_lookup`, `unlimited_with_conditions` for `workers_comp`/`personal_injury` under `CCP §§ 704.140, 704.160`, `percentage_of_value` `75%` for `unpaid_wages` under `CCP § 704.070`, `wildcard_with_spillover`, and `allow_joint_doubling`).
+   - Enforces federal caps on state exemptions: **1,215-day `11 U.S.C. § 522(p)` `$214,000` homestead cap** + **`§ 522(p)(2)(B)` same-state rollover**, **`§ 522(o)` reduction**, **`§ 522(n)` `$1,711,975` aggregate non-rollover IRA cap**, and **`§ 541(b)(5)–(6)` 529 education lookbacks** (`0%` within 365 days; `$7,575` cap for 365–720 days).
+   - Supports `"Unknown"` asset valuations & ***Schwab v. Reilly* (`560 U.S. 770`) `"100% of FMV"`**: sets `unknown_value_exposed_risk` / `has_unbounded_unknown_exposure` on dollar-capped regimes (`CA_CCP_703_140` `$36,750` PI cap) and prefers unlimited statutory regimes (`CA_CCP_704`) on numeric ties.
 4. **`Chapter13PlanCalculator` (`ch13_plan.py`):**
-   - Computes 36- vs. 60-month commitment period, priority claims, secured arrears, best-interests-of-creditors liquidation floor (from `ExemptionOptimizer`), and monthly plan payment.
+   - Computes `36`- vs. `60`-month commitment period, priority claims, `910-day` PMSI vehicle cramdown (`11 U.S.C. § 1325(a)` hanging paragraph), *Lam/Zimmer* wholly-unsecured junior mortgage lien strip (`lien_rank >= 2`), best-interests liquidation floor, `ch13_trustee_fee_pct` (`28 U.S.C. § 586(e)`) & `ch13_attorney_fee_in_plan` gross-up (`gross_monthly_payment_with_8pct_trustee_fee`), and **`11 U.S.C. § 1325(a)(6)` feasibility checking** (`plan_is_feasible`, `feasibility_shortfall_monthly`).
 5. **Systematic Dependency Graph, Quantitative Forensics, & Qualitative Plausibility Audit (`audit.py`):**
-   - **A. Systematic Cross-Schedule Dependency Graph (`canonical/tables/bankruptcy/dependency_rules.json`):**
-     - Rather than relying on an ad-hoc list of 6 checks, completeness dependencies are defined declaratively by mapping every cross-reference across the Official Bankruptcy Forms (`B 101`, `A/B`, `C`, `D`, `E/F`, `G`, `H`, `I`, `J`, `107 SOFA`, `108`, `122A/C`):
-       1. *Asset ↔ Secured Claim ↔ Budget ↔ Intention (`A/B` ↔ `D` ↔ `J` ↔ `108`):* Real property (`A/B Part 1`) or Vehicles (`A/B Part 2`) must either link to a secured claim on `D` or carry an explicit `owned_free_and_clear` attestation; every secured claim on `D` must link to a valued collateral asset on `A/B`, a `Form 108` intention (in Ch. 7), and corresponding tax/insurance/operating expenses on `Schedule J`.
-       2. *Joint Ownership / Co-Signed Debt ↔ Codebtor (`A/B` or `D/E/F` ↔ `Schedule H`):* Any jointly owned asset (with a non-filing person) or co-signed liability requires a `Schedule H` codebtor entry.
-       3. *Housing / Lease Expense ↔ Executory Contracts (`Schedule J` ↔ `Schedule A/B` ↔ `Schedule G`):* If `Schedule A/B` has no real property and `Schedule J Line 4a` has rent `> $0` (or `J Line 17` has a vehicle lease), requires a residential/vehicle lease entry on `Schedule G` (or month-to-month attestation).
-       4. *Paystub Line Items ↔ Assets, Priority Claims, & Garnishments (`Paystub` ↔ `A/B`, `E/F`, `I/J`, `SOFA`):*
-          - Paystub **401(k)/403(b)/Pension/HSA deduction** `> $0` -> requires matching retirement/HSA account on `Schedule A/B (Line 21 / 17)`.
-          - Paystub **Wage Garnishment / Support deduction** `> $0` -> requires creditor on `Schedule E/F` + lawsuit/garnishment disclosure on `SOFA Line 9` (or DSO on `Schedule E/F` + `Schedule J Line 18`).
-       5. *Tax Return (`1040`) Schedules ↔ Assets, Claims, & Business Disclosures:*
-          - `1040 Schedule B` (interest/dividends) -> requires matching bank/brokerage accounts on `Schedule A/B`.
-          - `1040 Schedule C / E / K-1` (business/rental/entity income) -> requires business interest on `Schedule A/B Part 4`, `SOFA Line 27`, and 6-month P&L attachment on `Schedule I Line 8a`.
-          - `1040` refund owed -> `Schedule A/B Line 28` asset; `1040` tax balance due -> `Schedule E/F` priority tax claim.
-       6. *Temporal Lookback Coverage:* Mandatory 6-calendar-month CMI income coverage (`Form 122A-1/C-1`) and 2-calendar-year `SOFA Part 2` income history.
+   - **A. Systematic Cross-Schedule Dependency Graph (22 Rules in `canonical/tables/bankruptcy/dependency_rules.json`):**
+     - Core cross-form checks (`A/B ↔ D ↔ J ↔ Form 108`, `Schedule H` codebtors, `Schedule G` leases, Paystub `401(k)`/garnishment/direct-deposit, `1040 Schedule B/C/E/K-1`, `6-mo CMI` window gaps, homestead domicile).
+     - **Design-Partner Additions:** `POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM` (trauma/medical creditor detector), bidirectional `SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB` & `SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF` (`SOFA Line 9 ↔ A/B ↔ E/F`), `RENTER_MISSING_SECURITY_DEPOSIT_LINE_28`, `PAYSTUB_60_DAY_CONTINUITY_GAP` (`11 U.S.C. § 521(a)(1)(B)(iv)`), `HOMESTEAD_522P_ROLLOVER_INQUIRY`, `MARRIED_SEPARATE_703_SPOUSAL_WAIVER` (`CCP § 703.140(a)(2)`), `UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK` (*Schwab v. Reilly*), `CH13_FOUR_YEAR_TAX_RETURN_MISSING` (`11 U.S.C. § 1308`), and Tier-2 grouped `MANDATORY_ASSET_AND_WINDFALL_SWEEP` (`11 U.S.C. § 541(a)(5)`).
    - **B. Quantitative Ledger Forensics (Detecting Unlisted Accounts & Missing Debt From Cash Flows):**
      - **Bank Statement Debt-Service Outflow Matcher:** Scans 6 months of bank statement debits/ACH outflows for recurring payments to lenders, credit cards, auto finance, BNPL, or collection agencies. Any payee receiving debt-like outflows in bank statements that has no matching creditor on `Schedule D` or `E/F` triggers a critical `UNLISTED_CREDITOR_FROM_BANK_OUTFLOW` prompt (*"Bank statement shows $340/mo ACH to 'SYNCHRONY BANK', which is missing from Schedules D/E/F"*).
      - **Inter-Account Transfer Tracer:** Flags bank transfers (`Zelle`, `Venmo`, `ACH Transfer to Acct ...XXXX`) where the destination account is not listed on `Schedule A/B` or `SOFA` (`UNDISCLOSED_ACCOUNT_TRANSFER`).
@@ -233,8 +216,9 @@ All calculations run in pure Python (`Decimal` arithmetic with `ROUND_HALF_UP` t
 1. Any populated `ProvenanceField` has `verification_status in ("unverified", "contradicted")` without a valid `HumanOverrideRecord`.
 2. Any `EmergingQuestionItem` (missing relational/completeness check) or `TensionObject` (cross-document contradiction) with `severity == "critical"` is unresolved.
 3. Any required document (determined by `FormPacketPlanner`) is missing, unbaked, oversized (`> 50 MB` in CACB or `> 8 MB` in CAEB), fails to isolate `Form B 121`, or violates creditor matrix `.txt` line/character/exclusion rules.
+4. Any statutory table (`ustp_ca_means_test_2026.json`, `exemptions_2026.json`, `federal_thresholds_2026.json`, `schedule_ab_taxonomy.json`) has passed its `stale_after` effective date relative to `expected_filing_date` (`StatutoryTableRegistry.check_staleness`).
 
-Every compiled packet includes `field_lineage.json`, mapping every filled PDF widget (`form_id`, `pdf_field_name`, `rendered_value`) back to its `L0/L1` node ID, formula, and `SourceLocator` bounding box.
+Every compiled packet maps semantic values directly onto official fillable U.S. Courts, CACB, and CAEB templates via `canonical/tables/bankruptcy/form_field_maps.json` (including `B106C` `check 2.1..2.3` `'fair#20market'`, `check 3` / `check 3-1`, `B122A1` `Debto2.Quest2.0`, and `B122A2` `Quest3`) and emits `field_lineage.json` with `form_line_ref`, formula, and `SourceLocator` bounding boxes.
 
 ---
 
@@ -262,6 +246,7 @@ Every compiled packet includes `field_lineage.json`, mapping every filled PDF wi
 ### 5.1 REST API (`bankruptcy_main.py`)
 * `GET /` — Serves the standalone Bankruptcy Case Workbench (`templates/bankruptcy.html` + `static/bankruptcy.js`).
 * `GET /api/v1/bankruptcy/tables` — Lists loaded effective-dated statutory reference tables and SHA-256 checksums.
+* `POST /api/v1/bankruptcy/tables/sync` & `GET /api/v1/bankruptcy/tables/taxonomy` — Verifies SHA-256 digests and `stale_after` dates across statutory tables (also available via `uv run python bankruptcy_main.py --sync-statutory-tables`) and serves the 53-line Form 106A/B taxonomy.
 * `POST /api/v1/bankruptcy/matters` & `GET /api/v1/bankruptcy/matters` — Creates and lists bankruptcy case matters.
 * `POST /api/v1/bankruptcy/matters/{matter_id}/upload` — Uploads client PDFs/spreadsheets, runs `MatterIngestor` (with `OCRProvider` + `PIITokenizer`), and indexes coordinates.
 * `POST /api/v1/bankruptcy/matters/{matter_id}/extract` — Harvests verified observations into `CanonicalCaseGraph`, runs all deterministic calculators (`Eligibility`, `MeansTest`, `ExemptionOptimizer`, `Ch13Plan`), `CaseCompletenessEngine`, and `ContradictionAuditEngine`, and compiles the `L0 → L1 → L2+` `CompiledBundle`.
@@ -273,17 +258,12 @@ Every compiled packet includes `field_lineage.json`, mapping every filled PDF wi
 * `GET /api/v1/bankruptcy/matters/{matter_id}/packet/files/{filename}` — Serves generated PDFs, `.txt` files, and `field_lineage.json`.
 * `POST /api/v1/bankruptcy/matters/{matter_id}/submit` — Validates `Rule9011SignOffPayload` and executes `CACB` or `CAEB` submission driver, returning `CourtFilingReceipt`.
 
-### 5.2 Bankruptcy UI: `L0 → L1 → L2+` Bezier Traceability Canvas + Filing Drawer (`static/bankruptcy.js`)
-Instead of inventing a disconnected provenance table, the Bankruptcy Workbench directly uses the **3-Column Progressive Bounded Broadsheet + SVG Cubic Bezier Traceability Canvas**:
-1. **Column 1 (`L0 · Case Schedules, Calculators, & Contradictions`):**
-   - Renders the case’s active **Contradiction Callouts** (at top in Editorial Crimson `#991B1B`), followed by structured **Swiss Quantitative Broadsheet Tables** for `Voluntary Petition & Eligibility`, `Schedule A/B (Assets)`, `Schedule C (Dual-System Exemption Optimizer: § 704 vs § 703.140)`, `Schedules D & E/F (Secured & Unsecured Claims)`, `Schedules I & J (Monthly Budget)`, and `Form 122A/C (6-Month CMI & Means Test)`.
-   - Every dollar value, asset row, claim row, and statutory verdict in `L0` is a clickable `<ref>` clause badge (`#EDF2F8` Oxford Navy tint, or `#FFFBEB` Warm Ochre dashed underline if overridden/unverified).
-2. **Column 2 (`L1 · Primary Support: Math & Client Evidence`):**
-   - Clicking any number or row in `L0` draws **1.5px Oxford Navy SVG cubic Bezier curves** to Column 2 (`L1`), displaying:
-     - `FIG. 1.1 · CALCULATION`: The exact deterministic formula and line-item inputs (e.g., `6-Month CMI = ($5,200 + $5,200 + ...) / 6 = $5,420.00` or `§ 703.140(b)(5) Wildcard Allocation`).
-     - `FIG. 1.2+ · EVIDENCE · PDF`: The exact client paystubs, bank statements, tax returns, or bills with verbatim quotes and `Inspect Source` buttons, plus an inline **`Override / Edit Value`** control.
-3. **Column 3 (`L2+ · Backing Statutory Authorities & Reference Tables`):**
-   - Clicking a statutory rule or table reference inside `L1` draws secondary Bezier curves to Column 3 (`L2+`), displaying the controlling statute (`[AUTH:11_USC_109_E]`, `[AUTH:CA_CCP_704_730]`) or exact row from the effective-dated JSON reference table (`ustp_ca_means_test_2026.json`, `ca_exemptions_ej156_2026.json`).
-4. **Slide-Over `SourceInspectorDrawer` & `FilingPacketDrawer`:**
-   - Clicking **`Inspect Source`** on any `L1`/`L2+` plate opens `SourceInspectorDrawer` to the client PDF page with `[x1, y1, x2, y2]` bounding-box highlighting.
-   - Clicking **`Filing Gate & Packet (`CACB` / `CAEB`)`** in the top bar opens the **Strict Zero-Doubt Filing Readiness Checklist**, PDF/Matrix previewer, and **Rule 9011 Attorney Sign-Off & Submit** modal.
+### 5.2 Bankruptcy UI: `L0 → L1 → L2+` Bezier Traceability Canvas + `NextBlockerStepper` + Filing Drawer (`static/bankruptcy.js`)
+The Bankruptcy Workbench pairs official-form-aligned `L0` Broadsheet tables with a focused right-hand **`NextBlockerStepper`** queue and 3-column SVG cubic Bezier drilldown:
+1. **Column 1 (`L0 · Official Forms & Schedules Broadsheet`):**
+   - Renders `RichRefBlock` tables directly mirroring `Form B 101`, `Form B 106Sum` (`1a`, `1b`, `1c`, `2`, `3a`, `3b`, `3c`, `4`, `5`, `8`), `Schedule A/B` (53-line labels + Best Case aliases + `"Unknown"` FMV badges), `Schedule C` (`100% of FMV (Schwab v. Reilly)` + regime comparison cards), `Schedules D & E/F`, `Schedules I & J`, `Form 122A/C` (`Marital Adjustment` & `Spouse CMI` rows), and Chapter 13 Plan cramdown/lien-strip/feasibility rows.
+2. **Column 2 (`NextBlockerStepper` by default, switching to `L1 · Source Proof & Math Trace` on `<ref>` click):**
+   - Shows one filing blocker, emerging question, or advisory check at a time with Prev/Next navigation and purpose-built inputs (zero pre-filled defaults, persistent `<label>`s) for collateral values, `"Unknown"` FMV toggles, `SOFA Line 9` lawsuit sync, `§ 522(p)(2)(B)` rollover amounts, `CCP § 703.140(a)(2)` spousal waivers, and Tier-2 asset/windfall attestations.
+   - Clicking any `<ref>` cell draws **1.5px SVG cubic Bezier curves** to `L1` `calculation` / `evidence` cards and allows drilling into Column 3 (`L2+ · Controlling Law & Tables`).
+3. **Header Sync, `SourceInspectorDrawer` & `FilingPacketDrawer`:**
+   - Top bar includes **Sync Statutory Tables** (`POST /api/v1/bankruptcy/tables/sync`) alongside **New Case & Upload PDFs** and the **Filing Gate** trigger opening `FilingPacketDrawer` (defaulting `attested = false` and clearing attorney name/bar defaults).

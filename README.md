@@ -23,6 +23,16 @@ An agentic question-answering and verification workspace that synthesizes ground
 4. **Frontend (`static/app.js`, `static/styles.css` — Preact + HTM, zero build step):**
    - Implements the **Swiss Quantitative Broadsheet + Archival Press** aesthetic (`L0` → `L1` → `L2+`), dynamic SVG cubic Bezier connectors, slide-over **Source Inspector Drawer**, **Ask Question** pipeline modal, and **Inline Commenting + Sticky Batch Review Queue** across `L0` claims and `L1`/`L2+` plates.
 
+5. **Standalone Bankruptcy Case Workbench (`bankruptcy_main.py`, Port 8001 — `app/bankruptcy/`):**
+   - **Entity-First Multi-Form Routing & 53-Line Taxonomy:** Maps uncategorized PDFs onto `CanonicalCaseGraph` with [schedule_ab_taxonomy.json](file:///home/ben/restructure/jd_screen/canonical/tables/bankruptcy/schedule_ab_taxonomy.json) (all 53 Official Form 106A/B lines paired with Best Case 35-item aliases and orthogonal `exemption_pool`s).
+   - **Deterministic Calculators (`app/bankruptcy/calculators/`):**
+     - **Exemptions (`exemptions.py`):** Evaluates `CA_CCP_704`, `CA_CCP_703_140`, and `FEDERAL_522D`, including `"Unknown"` valuations & *Schwab v. Reilly* (`560 U.S. 770`) `"100% of FMV"` Schedule C elections (`workers_comp`, `personal_injury`, `75%` `unpaid_wages`), `11 U.S.C. § 522(p)` `$214,000` / `1,215-day` homestead cap with `§ 522(p)(2)(B)` same-state rollover and `§ 522(o)` reduction, `§ 522(n)` `$1,711,975` non-rollover IRA cap, and `§ 541(b)(5)–(6)` 529 education lookbacks (`0%` within 365 days; `$7,575` cap for 365–720 days).
+     - **Means Test (`means_test.py`):** Strict 6-calendar-month CMI lookback with **Married Filing Separately** `Column B` non-filing spouse CMI, `marital_adjustment_deduction` (`Form 122A-2 Line 3`), and separate-and-apart exclusion.
+     - **Chapter 13 Plan (`ch13_plan.py`):** `910-day` PMSI vehicle cramdown (`11 U.S.C. § 1325(a)`), *Lam/Zimmer* wholly-unsecured junior mortgage lien strip, trustee percentage fee & RARA attorney fee plan math, and `11 U.S.C. § 1325(a)(6)` `Schedule I - J` feasibility gating.
+   - **Cross-Schedule Auditors & Statutory Sync (`app/bankruptcy/audit.py`, `app/core/tables.py`):** Includes trauma/medical personal injury & workers' comp claim detection, bidirectional `SOFA Line 9 ↔ Schedule A/B ↔ Schedule E/F` lawsuit sync, 60-day paystub continuity checking, `CCP § 703.140(a)(2)` spousal waiver gate, `11 U.S.C. § 1308` 4-year tax return compliance, Tier-2 negative confirmation (`MANDATORY_ASSET_AND_WINDFALL_SWEEP` covering `11 U.S.C. § 541(a)(5)`), and effective-dated table staleness & SHA-256 sync (`--sync-statutory-tables`).
+   - **Official PDF Filling & Baking (`app/bankruptcy/pdf_engine.py`, `form_field_maps.json`):** Maps values and checkboxes directly onto 25 official U.S. Courts, CACB, and CAEB fillable PDFs under `canonical/tables/bankruptcy/templates/`, flattens with `pymupdf.Document.bake(annots=True, widgets=True)`, isolates full SSNs in `Form_B121_RESTRICTED.pdf`, and emits `field_lineage.json`.
+   - **Workbench UI (`templates/bankruptcy.html`, `static/bankruptcy.js`):** Official-form-aligned `L0` broadsheet tables, right-hand `NextBlockerStepper` resolution queue, `SourceInspectorDrawer`, `FilingPacketDrawer`, and header statutory table sync.
+
 ## WSL2 Execution & Testing Commands
 
 ### 0. Configure `.env` (Optional, for Live Gemini Calls)
@@ -70,6 +80,11 @@ Then open `http://127.0.0.1:8000` in your browser.
 ### 5. Start the Standalone Bankruptcy Case Workbench Webapp (Port 8001)
 ```bash
 cd ~/restructure/jd_screen
+
+# Verify SHA-256 integrity and effective-date freshness of canonical statutory tables:
+uv run python bankruptcy_main.py --sync-statutory-tables
+
+# Start the standalone Bankruptcy Case Workbench server:
 uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001 --name bk_workbench
 ```
 

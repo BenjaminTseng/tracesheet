@@ -179,3 +179,14 @@ uv run python main.py --host 127.0.0.1 --port 8000 --name jd_screen --provider g
 1. **Matter & Canonical Ingestion Harness (`app/ingest.py`):** Deterministic parsers for `matters/<matter_id>/inputs/` (PDF bounding-box extraction via `pdfplumber`, Excel/CSV formula/value indexing via `openpyxl`, Markdown block locators) and `canonical/INDEX.md` loader.
 2. **Four-Stage Agentic Runner (`app/pipeline.py`):** Full 4-stage pipeline via `LLMProvider` (defaulting to the Gemini Interactions API) runnable via CLI or the UI's **Ask Question** modal.
 3. **Antigravity-Style Inline Review & Batch Regeneration:** Reviewers can queue comments and optional status overrides on any `L0` claim or `L1`/`L2+` plate, inspect the batch queue, and click **Apply Feedback & Re-compile** to incrementally regenerate affected sections.
+
+---
+
+## 6. Standalone Bankruptcy Case Workbench UI (`templates/bankruptcy.html`, `static/bankruptcy.js`)
+
+Launched independently on port `8001` via `uv run python bankruptcy_main.py`, the Bankruptcy Workbench reuses the exact same `Swiss Quantitative Broadsheet + Archival Press` tokens (`static/styles.css`) and SVG cubic Bezier `L0 → L1 → L2+` interaction pattern while adapting the right-hand lane to deterministic filing preparation:
+
+- **Official-Form-Aligned `L0` Broadsheet (`RichRefBlock`):** Renders markdown tables mapped directly to Official Form line numbers (`B 101`, `106Sum`, `Schedule A/B` 53 lines + Best Case aliases, `Schedule C` `"100% of FMV (Schwab v. Reilly)"`, `Schedules D/E/F/I/J`, `Form 122A/C` Marital Adjustment, and Chapter 13 Plan cramdown/feasibility summaries), plus side-by-side Exemption Regime Comparison cards (`bk-opt-grid`) with `Unknown Cap Risk` indicators.
+- **`NextBlockerStepper` Resolution Queue (Column 2 Default):** Replaces unstructured banner stacks with a single-item Prev/Next triage workflow enforcing zero pre-filled defaults, persistent `<label htmlFor>` associations, and specialized handlers for collateral valuation, `"Unknown"` FMV toggles, bidirectional `SOFA Line 9` lawsuit sync, `§ 522(p)(2)(B)` rollover amounts, `CCP § 703.140(a)(2)` spousal waivers, and Tier-2 asset/180-day windfall confirmations. Clicking any `<ref>` cell switches Column 2 into `L1 · Source Proof & Math Trace` with SVG Bezier curves.
+- **Header Table Sync & Drawers:** Includes **Sync Statutory Tables** (`POST /api/v1/bankruptcy/tables/sync`), `SourceInspectorDrawer` (coordinate bbox PDF highlighter), and `FilingPacketDrawer` (baked Official PDFs + `Form_B121_RESTRICTED.pdf`, wet-signed declaration upload, and Rule 9011 `attested = false` sign-off gate).
+- **UI Craft Verification:** Audited with `impeccable detect --json static/bankruptcy.js templates/bankruptcy.html` (`[]`, zero P0/P1 violations) and `node --check static/bankruptcy.js`.

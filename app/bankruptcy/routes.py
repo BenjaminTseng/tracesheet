@@ -141,6 +141,16 @@ def create_bankruptcy_app(
         """Lists loaded effective-dated statutory reference tables and SHA-256 checksums."""
         return {"tables": service.registry.list_metadata()}
 
+    @router.post("/api/v1/bankruptcy/tables/sync")
+    async def sync_statutory_tables() -> Dict[str, Any]:
+        """Refreshes, SHA-256 verifies, and checks staleness across statutory reference tables."""
+        return service.registry.sync_statutory_tables()
+
+    @router.get("/api/v1/bankruptcy/tables/taxonomy")
+    async def get_schedule_ab_taxonomy() -> Dict[str, Any]:
+        """Returns Official Form 106A/B 53-line taxonomy mapped to Best Case 35 categories."""
+        return service.registry.get_schedule_ab_taxonomy()
+
     @router.get("/api/v1/bankruptcy/matters")
     async def list_bankruptcy_matters() -> Dict[str, Any]:
         """Lists all initialized bankruptcy matters."""

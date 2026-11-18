@@ -78,7 +78,7 @@ class BankruptcyCaseService:
         self.dep_auditor = DeclarativeDependencyAuditor(self.registry)
         self.forensic_auditor = QuantitativeForensicAuditor()
         self.plaus_auditor = PlausibilityAuditEngine()
-        self.gate = FilingReadinessGate()
+        self.gate = FilingReadinessGate(self.registry)
         self.planner = FormPacketPlanner()
         self.bundle_compiler = BankruptcyBundleCompiler(self.registry)
         self.pdf_baker = AcroFormFillerAndBaker(self.templates_dir, self.tokenizer)
@@ -508,6 +508,118 @@ class BankruptcyCaseService:
                 for p in graph.parties
             ]
             graph = graph.model_copy(update={"assets": new_assets, "parties": new_parties})
+        elif selected_option == "add_unliquidated_claim_asset":
+            claim_cat = str(payload.get("category", "personal_injury"))
+            is_unk = str(payload.get("valuation_state", "unknown")).lower() == "unknown" or str(payload.get("current_value", "")).strip().lower() in ("", "unknown")
+            val = Decimal("0.00") if is_unk else Decimal(str(payload.get("current_value", "0.00"))).quantize(Decimal("0.01"))
+            desc = str(payload.get("description", f"Unliquidated Injury / Workers Comp Claim ({q.entity_id or 'Schedule A/B Line 33'})"))
+            new_asset = AssetItem(
+                asset_id=f"asset_claim_{len(graph.assets) + 1}",
+                category=claim_cat,  # type: ignore[arg-type]
+                description=desc,
+                valuation_state="unknown" if is_unk else "estimated",
+                claim_100pct_fmv_exemption=True,
+                current_value=ProvenanceField[Decimal](
+                    value=val,
+                    verification_status="human_overridden",
+                    override=override,
+                ),
+            )
+            graph = graph.model_copy(update={"assets": list(graph.assets) + [new_asset]})
+        elif selected_option == "confirm_no_injury_claim":
+            graph = graph.model_copy(update={"no_injury_or_wc_claim_attested": True})
+        elif selected_option == "sync_lawsuit_to_schedule_ab":
+            tx = next((h for h in graph.historical_transactions if h.tx_id == q.entity_id), None)
+            claim_cat = str(payload.get("category", "legal_claims"))
+            aid = f"asset_sofa_{len(graph.assets) + 1}"
+            is_unk = str(payload.get("valuation_state", "unknown")).lower() == "unknown"
+            val = Decimal("0.00") if is_unk else Decimal(str(payload.get("current_value", "0.00"))).quantize(Decimal("0.01"))
+            new_asset = AssetItem(
+                asset_id=aid,
+                category=claim_cat,  # type: ignore[arg-type]
+                description=str(payload.get("description") or (tx.description if tx else "SOFA Plaintiff Action")),
+                valuation_state="unknown" if is_unk else "estimated",
+                claim_100pct_fmv_exemption=True,
+                current_value=ProvenanceField[Decimal](
+                    value=val,
+                    verification_status="human_overridden",
+                    override=override,
+                ),
+            )
+            new_hist = [
+                h.model_copy(update={"linked_asset_id": aid}) if h.tx_id == q.entity_id else h
+                for h in graph.historical_transactions
+            ]
+            graph = graph.model_copy(
+                update={"assets": list(graph.assets) + [new_asset], "historical_transactions": new_hist}
+            )
+        elif selected_option == "sync_lawsuit_to_schedule_ef":
+            tx = next((h for h in graph.historical_transactions if h.tx_id == q.entity_id), None)
+            cid = f"claim_sofa_{len(graph.claims) + 1}"
+            amt = Decimal(
+                str(payload.get("total_claim_amount") or (tx.amount.value if tx and tx.amount else "0.00"))
+            ).quantize(Decimal("0.01"))
+            new_claim = ClaimItem(
+                claim_id=cid,
+                creditor_name=str(payload.get("creditor_name") or (tx.description if tx else "Lawsuit Plaintiff")),
+                priority_type="general_unsecured",
+                disputed=True,
+                contingent=bool(payload.get("contingent", True)),
+                unliquidated=bool(payload.get("unliquidated", True)),
+                total_claim_amount=ProvenanceField[Decimal](
+                    value=amt,
+                    verification_status="human_overridden",
+                    override=override,
+                ),
+            )
+            new_hist = [
+                h.model_copy(update={"linked_claim_id": cid}) if h.tx_id == q.entity_id else h
+                for h in graph.historical_transactions
+            ]
+            graph = graph.model_copy(
+                update={"claims": list(graph.claims) + [new_claim], "historical_transactions": new_hist}
+            )
+        elif selected_option == "add_security_deposit_asset":
+            val = Decimal(str(payload.get("current_value", "1500.00"))).quantize(Decimal("0.01"))
+            new_asset = AssetItem(
+                asset_id=f"asset_dep_{len(graph.assets) + 1}",
+                category="security_deposit",
+                description=str(payload.get("description", "Residential Landlord / Utility Security Deposit")),
+                current_value=ProvenanceField[Decimal](
+                    value=val,
+                    verification_status="human_overridden",
+                    override=override,
+                ),
+            )
+            graph = graph.model_copy(update={"assets": list(graph.assets) + [new_asset]})
+        elif selected_option == "confirm_no_security_deposit":
+            graph = graph.model_copy(update={"no_security_deposit_attested": True})
+        elif selected_option == "attest_payment_advices_exception":
+            graph = graph.model_copy(update={"payment_advices_exception_attested": True})
+        elif selected_option == "apply_522p_rollover":
+            roll_amt = Decimal(str(payload.get("rollover_amount", "0.00"))).quantize(Decimal("0.01"))
+            new_assets = [
+                a.model_copy(update={"prior_state_residence_rollover_amount": roll_amt})
+                if a.asset_id == q.entity_id
+                else a
+                for a in graph.assets
+            ]
+            graph = graph.model_copy(update={"assets": new_assets, "homestead_rollover_reviewed": True})
+        elif selected_option == "confirm_no_rollover":
+            graph = graph.model_copy(update={"homestead_rollover_reviewed": True})
+        elif selected_option == "confirm_spousal_waiver_signed":
+            graph = graph.model_copy(update={"spousal_703_waiver_signed": True})
+        elif selected_option == "switch_to_704_regime":
+            graph = graph.model_copy(update={"selected_exemption_regime": "CA_CCP_704"})
+        elif selected_option == "confirm_unknown_within_cap":
+            graph = graph.model_copy(update={"unknown_valuation_cap_reviewed": True})
+        elif selected_option == "confirm_mandatory_asset_and_windfall_sweep":
+            graph = graph.model_copy(
+                update={"mandatory_asset_sweep_attested": True, "windfall_180_day_attested": True}
+            )
+        elif selected_option == "confirm_4yr_tax_returns":
+            years = [graph.expected_filing_date.year - i for i in range(1, 5)]
+            graph = graph.model_copy(update={"tax_years_filed_4yr": years})
 
         # Mark question answered with audit record (preserves decision even for attestations).
         updated_qs = [

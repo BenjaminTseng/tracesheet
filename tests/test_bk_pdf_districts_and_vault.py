@@ -17,11 +17,13 @@ from app.bankruptcy.districts import CACBDistrictAdapter, CAEBDistrictAdapter
 from app.bankruptcy.models import (
     AssetItem,
     BankruptcyCaseState,
+    BudgetLineItem,
     CanonicalCaseGraph,
     ClaimItem,
     FilingReadinessReport,
     HumanOverrideRecord,
     PartyEntity,
+    PaystubRecord,
     ProvenanceField,
 )
 from app.bankruptcy.pdf_engine import AcroFormFillerAndBaker
@@ -404,3 +406,139 @@ def test_real_official_pdf_templates_and_canonical_corpus(tmp_path: Path) -> Non
         for e in lineage
         if e.form_id != "B121"
     )
+
+
+def test_b106c_schwab_100pct_fmv_and_line3_homestead_checkboxes_in_pdf(tmp_path: Path) -> None:
+    """Verifies Official B106C 100% FMV & Line 3 checkboxes plus B122A spouse/marital adjustment widgets."""
+    matters_root = tmp_path / "matters_schwab"
+    tokenizer = PIITokenizer(matters_root)
+    ssn_token = tokenizer.register_raw_value("bk_schwab_1", "ssn", "222-33-4444")
+
+    paystubs = []
+    for m in range(5, 11):
+        paystubs.append(
+            PaystubRecord(
+                paystub_id=f"d1_{m}",
+                party_id="d1",
+                employer="NorthStar Inc",
+                pay_period_start=datetime.date(2026, m, 1),
+                pay_period_end=datetime.date(2026, m, 28),
+                pay_date=datetime.date(2026, m, 28),
+                gross_pay=_ov(Decimal("5000.00")),
+                net_pay=_ov(Decimal("3800.00")),
+                tax_withheld=_ov(Decimal("900.00")),
+            )
+        )
+        paystubs.append(
+            PaystubRecord(
+                paystub_id=f"sp_{m}",
+                party_id="non_filing_spouse",
+                employer="Spouse LLC",
+                pay_period_start=datetime.date(2026, m, 1),
+                pay_period_end=datetime.date(2026, m, 28),
+                pay_date=datetime.date(2026, m, 28),
+                gross_pay=_ov(Decimal("4500.00")),
+                net_pay=_ov(Decimal("3400.00")),
+                tax_withheld=_ov(Decimal("800.00")),
+            )
+        )
+
+    graph = CanonicalCaseGraph(
+        matter_id="bk_schwab_1",
+        chapter="7",
+        district="CACB",
+        marital_status="married_filing_separately_together",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=[
+            PartyEntity(
+                party_id="d1",
+                role="debtor_1",
+                full_name=_ov("Jordan Case"),
+                ssn_token_or_ein=ssn_token,
+                street_address="777 Main St",
+                city="Los Angeles",
+                state="CA",
+                zip_code="90012",
+                county_of_residence="Los Angeles",
+                ca_domicile_days_continuous=_ov(2000),
+                household_size=_ov(2),
+            ),
+            PartyEntity(
+                party_id="non_filing_spouse",
+                role="non_filing_spouse",
+                full_name=_ov("Alex Case"),
+                ca_domicile_days_continuous=_ov(2000),
+                household_size=_ov(2),
+            ),
+        ],
+        assets=[
+            AssetItem(
+                asset_id="home_roll",
+                category="real_property",
+                description="777 Main St Residence",
+                current_value=_ov(Decimal("600000.00")),
+                acquisition_date=_ov(datetime.date(2025, 4, 1)),  # < 1215 days
+                prior_state_residence_rollover_amount=Decimal("100000.00"),  # > $214k exempt
+                owned_free_and_clear=True,
+            ),
+            AssetItem(
+                asset_id="pi_1",
+                category="personal_injury",
+                description="Auto Accident Claim",
+                valuation_state="unknown",
+                current_value=_ov(Decimal("0.00")),
+            ),
+        ],
+        paystubs=paystubs,
+        marital_adjustment_deductions=[
+            BudgetLineItem(
+                item_id="ma_1",
+                category="vehicle_payment",
+                description="Spouse Car Note",
+                monthly_amount=_ov(Decimal("750.00")),
+            )
+        ],
+    )
+    reg = StatutoryTableRegistry(Path("canonical/tables/bankruptcy"))
+    calcs = compute_case_calculations(graph, reg)
+    state = BankruptcyCaseState(
+        case_graph=graph,
+        calculations=calcs,
+        readiness=FilingReadinessReport(status="READY"),
+    )
+
+    real_templates_dir = Path("canonical/tables/bankruptcy/templates")
+    packet_dir = tmp_path / "packet_schwab"
+    baker = AcroFormFillerAndBaker(templates_dir=real_templates_dir, tokenizer=tokenizer)
+    _pdfs, _lineage_path, lineage = baker.compile_forms(state, packet_dir)
+
+    # Verify B106C 100% of FMV checkbox and Line 3 (>214k + <1215d) checkboxes fired in lineage & PDF!
+    assert any(
+        e.form_id == "B106C" and e.pdf_field_name == "check 2.2" and "100% of FMV" in (e.form_line_ref or "")
+        for e in lineage
+    )
+    assert any(
+        e.form_id == "B106C" and e.pdf_field_name == "check 3" and "Yes" in (e.form_line_ref or "")
+        for e in lineage
+    )
+    assert any(
+        e.form_id == "B106C" and e.pdf_field_name == "check 3-1" and "Yes" in (e.form_line_ref or "")
+        for e in lineage
+    )
+    assert any(
+        e.form_id == "B122A1" and e.pdf_field_name == "Debto2.Quest2.0" and e.rendered_value == "$4,500.00"
+        for e in lineage
+    )
+    assert any(
+        e.form_id == "B122A2" and e.pdf_field_name == "Quest3" and e.rendered_value == "$750.00"
+        for e in lineage
+    )
+    with pymupdf.open(str(packet_dir / "B106C.pdf")) as doc:
+        assert all(list(pg.widgets() or []) == [] for pg in doc)
+        c_txt = "\n".join(pg.get_text() or "" for pg in doc)
+        assert "777 Main St" in c_txt
+        assert "Auto Accident Claim" in c_txt
+        assert "Unknown" in c_txt
+        assert "704.730" in c_txt
+        assert "704.140" in c_txt
+        assert "100% of fair market value" in c_txt

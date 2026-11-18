@@ -31,11 +31,43 @@ from app.models import (
 )
 
 ASSET_CATEGORY_LINE_MAP: Dict[str, tuple[str, str]] = {
+    "real_property": ("106A/B Pt. 1 · 1.1", "Real Estate"),
     "real_estate": ("106A/B Pt. 1 · 1.1", "Real Estate"),
     "vehicle": ("106A/B Pt. 2 · 3.1", "Vehicle"),
+    "watercraft_aircraft": ("106A/B Pt. 2 · 4.1", "Watercraft / Aircraft"),
+    "household_goods": ("106A/B Pt. 3 · 6", "Household Goods"),
+    "electronics": ("106A/B Pt. 3 · 7", "Electronics"),
+    "collectibles": ("106A/B Pt. 3 · 8", "Collectibles"),
+    "sports_hobby": ("106A/B Pt. 3 · 9", "Sports / Hobby"),
+    "firearms": ("106A/B Pt. 3 · 10", "Firearms"),
+    "apparel": ("106A/B Pt. 3 · 11", "Apparel"),
+    "jewelry": ("106A/B Pt. 3 · 12", "Jewelry"),
+    "pets_non_farm": ("106A/B Pt. 3 · 13", "Pets"),
+    "cash": ("106A/B Pt. 4 · 16", "Cash on Hand"),
     "bank_account": ("106A/B Pt. 4 · 17", "Financial Account"),
+    "social_security_deposit": ("106A/B Pt. 4 · 17", "Social Security Direct Deposit"),
+    "brokerage_stocks": ("106A/B Pt. 4 · 18", "Stocks / Brokerage"),
     "retirement": ("106A/B Pt. 4 · 21", "Retirement Plan"),
-    "other": ("106A/B Pt. 3/7", "Personal Property"),
+    "retirement_erisa_ira": ("106A/B Pt. 4 · 21", "Retirement Plan"),
+    "ira_non_rollover": ("106A/B Pt. 4 · 21", "IRA (Non-Rollover 522(n))"),
+    "education_529": ("106A/B Pt. 4 · 24", "529 Education Account"),
+    "trust_inheritance": ("106A/B Pt. 4 · 25", "Trust / Inheritance"),
+    "intellectual_property": ("106A/B Pt. 4 · 26", "Intellectual Property"),
+    "licenses_franchises": ("106A/B Pt. 4 · 27", "Intangibles / Crypto"),
+    "security_deposit": ("106A/B Pt. 4 · 28", "Security Deposit"),
+    "tax_refund": ("106A/B Pt. 4 · 28", "Tax Refund"),
+    "receivable": ("106A/B Pt. 4 · 28", "Tax Refund / Receivable"),
+    "annuities": ("106A/B Pt. 4 · 29", "Annuities"),
+    "unpaid_wages": ("106A/B Pt. 4 · 30", "Unpaid Wages / Commissions"),
+    "life_insurance_csv": ("106A/B Pt. 4 · 31", "Life Insurance CSV"),
+    "personal_injury": ("106A/B Pt. 4 · 33", "Personal Injury Claim"),
+    "workers_comp": ("106A/B Pt. 4 · 33", "Workers' Compensation Claim"),
+    "legal_claims": ("106A/B Pt. 4 · 34", "Legal Claim / Counterclaim"),
+    "tools_of_trade": ("106A/B Pt. 5 · 40", "Tools of Trade"),
+    "business_interest": ("106A/B Pt. 5 · 42", "Business Interest"),
+    "business_equity": ("106A/B Pt. 5 · 42", "Business Equity"),
+    "wildcard_only": ("106A/B Pt. 7 · 53", "Other Personal Property"),
+    "other": ("106A/B Pt. 7 · 53", "Personal Property"),
 }
 
 CLAIM_PRIORITY_LINE_MAP: Dict[str, tuple[str, str]] = {
@@ -332,7 +364,7 @@ class BankruptcyBundleCompiler:
             sec2,
         )
         re_sum = sum(
-            (a.current_value.value for a in graph.assets if a.category == "real_estate"),
+            (a.current_value.value for a in graph.assets if a.category in ("real_property", "real_estate")),
             Decimal("0.00"),
         )
         tot_assets = calcs.total_assets if calcs else sum((a.current_value.value for a in graph.assets), Decimal("0.00"))
@@ -502,17 +534,23 @@ class BankruptcyBundleCompiler:
             for idx, asset in enumerate(graph.assets, start=1):
                 cid = f"claim_sec03_asset_{idx}"
                 alloc = alloc_map.get(asset.asset_id)
-                net_eq_str = f"${alloc.net_equity:,.2f}" if alloc else f"${asset.current_value.value:,.2f}"
-                ex_str = f"${alloc.total_exempt:,.2f}" if alloc else "$0.00"
+                is_unknown = asset.valuation_state == "unknown"
+                val_display = "Unknown" if is_unknown else f"${asset.current_value.value:,.2f}"
+                net_eq_str = "Unknown" if is_unknown else (f"${alloc.net_equity:,.2f}" if alloc else f"${asset.current_value.value:,.2f}")
+                ex_str = (
+                    "100% of FMV (Schwab v. Reilly)"
+                    if (alloc and (alloc.claim_100pct_fmv or is_unknown)) or asset.claim_100pct_fmv_exemption
+                    else (f"${alloc.total_exempt:,.2f}" if alloc else "$0.00")
+                )
                 statute_str = alloc.statute_cited if alloc else "Pending"
-                form_line, cat_label = ASSET_CATEGORY_LINE_MAP.get(asset.category, ("106A/B", "Property"))
+                form_line, cat_label = ASSET_CATEGORY_LINE_MAP.get(asset.category, (f"106A/B · {asset.schedule_ab_line or '53'}", "Property"))
 
                 nodes[cid] = GraphNode(
                     id=cid,
                     type="claim",
                     title=f"{form_line} · {asset.description}",
                     section_id=sec3,
-                    clause_text=f"${asset.current_value.value:,.2f}",
+                    clause_text=val_display,
                     direct_child_ids=[],
                     audit=_audit_for_field(asset.current_value, asset.description),
                 )
@@ -524,9 +562,10 @@ class BankruptcyBundleCompiler:
                     asset.current_value,
                     [auth_ex],
                 )
+                bc_note = f" [{asset.best_case_alias}]" if asset.best_case_alias else ""
                 sec3_lines.append(
-                    f"| {form_line} | {asset.description} ({cat_label}) | "
-                    f"<ref id='{cid}'>${asset.current_value.value:,.2f}</ref> | "
+                    f"| {form_line} | {asset.description} ({cat_label}){bc_note} | "
+                    f"<ref id='{cid}'>{val_display}</ref> | "
                     f"{net_eq_str} | {ex_str} | {statute_str} |"
                 )
 
@@ -717,6 +756,13 @@ class BankruptcyBundleCompiler:
                 "| Form Line | Means Test & Budget Item | Statutory Benchmark | Computed Value |",
                 "| :--- | :--- | :--- | ---: |",
                 f"| {form_prefix}-1 · 11 | 6-Month Average CMI ({mt.lookback_start} to {mt.lookback_end}) | 11 U.S.C. § 101(10A) | <ref id='{c_cmi}'>${mt.current_monthly_income:,.2f}</ref> |",
+            ])
+            if mt.spouse_cmi > Decimal("0.00") or mt.marital_adjustment_deduction > Decimal("0.00"):
+                sec5_lines.extend([
+                    f"| {form_prefix}-1 · Col B | Spouse Gross CMI (Debtor 1 ${mt.debtor_1_cmi:,.2f} + Spouse ${mt.spouse_cmi:,.2f}) | Marital Status: {graph.marital_status} | ${mt.spouse_cmi:,.2f} |",
+                    f"| {form_prefix}-2 · 3 | Marital Adjustment Deduction & Adjusted CMI | Non-Debtor Separate Expenses | -${mt.marital_adjustment_deduction:,.2f} (Adj: ${mt.adjusted_cmi:,.2f}) |",
+                ])
+            sec5_lines.extend([
                 f"| {form_prefix}-1 · 15–16 | Annualized CMI vs. CA {mt.household_size}-Person Median | {median_verdict} (${mt.california_median_income:,.2f}) | ${mt.annualized_cmi:,.2f} |",
                 f"| {form_prefix}-2 · 24 | IRS Standards + Taxes + Secured Debt Deductions | Form {form_prefix}-2 Pt. 2 | ${mt.total_allowed_deductions:,.2f} |",
                 f"| {form_prefix}-2 · 39c | Monthly Disposable Income | 60-Mo Pool: ${mt.sixty_month_disposable_income:,.2f} | <ref id='{c_disp}'>${mt.monthly_disposable_income:,.2f}</ref> |",
@@ -726,8 +772,9 @@ class BankruptcyBundleCompiler:
             if calcs and calcs.ch13_plan:
                 plan = calcs.ch13_plan
                 plan_form = "F 3015-1.01" if graph.district == "CACB" else "EDC 3-080"
+                feas_lbl = "FEASIBLE" if plan.plan_is_feasible else f"INFEASIBLE (-${plan.feasibility_shortfall_monthly:,.2f}/mo)"
                 sec5_lines.append(
-                    f"| {plan_form} · Plan | Ch. 13 Plan ({plan.applicable_commitment_months} mos) · Floor ${plan.best_interests_liquidation_floor:,.2f} | Priority ${plan.priority_claims_total:,.2f} + Arrears ${plan.secured_arrears_total:,.2f} | ${plan.estimated_monthly_plan_payment:,.2f} |"
+                    f"| {plan_form} · Plan | Ch. 13 Plan ({plan.applicable_commitment_months} mos · {feas_lbl}) · Floor ${plan.best_interests_liquidation_floor:,.2f} | Priority ${plan.priority_claims_total:,.2f} + Cure ${plan.secured_arrears_total:,.2f} · Cramdown Saved ${plan.cramdown_savings_total:,.2f} · Lien Strip ${plan.junior_liens_stripped_total:,.2f} | ${plan.estimated_monthly_plan_payment:,.2f} (w/ 8% Fee: ${plan.gross_monthly_payment_with_8pct_trustee_fee:,.2f}) |"
                 )
 
             if graph.historical_transactions:

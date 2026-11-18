@@ -80,6 +80,7 @@ class ExtractedAssetDraft(BaseModel):
     category: str
     description: str
     current_value: str
+    valuation_state: str = "certain"
     value_ref: ExtractedLocatorRef
     account_last4: Optional[str] = None
     acquisition_date: Optional[str] = None
@@ -501,8 +502,8 @@ class BankruptcyCaseExtractor:
                             )
                         )
 
-            # 4. Unsecured Credit Card / Collection Statement
-            if ("credit card statement" in low or "unsecured claim" in low or "collection notice" in low) and "balance due:" in low:
+            # 4. Unsecured Credit Card / Collection / Medical Notice
+            if ("credit card statement" in low or "unsecured claim" in low or "collection notice" in low or "medical bill" in low) and "balance due:" in low:
                 cred_hit = _locate(r"Creditor:\s*(.+)")
                 bal_hit = _locate(r"Balance Due:\s*\$?([0-9,]+\.[0-9]{2})")
                 addr_hit = _locate(r"Creditor Address:\s*(.+)")
@@ -514,6 +515,11 @@ class BankruptcyCaseExtractor:
                         street = addr_parts[0] if len(addr_parts) >= 1 else "PO Box 2000"
                         city = addr_parts[1] if len(addr_parts) >= 2 else "Phoenix"
                         st_zip = addr_parts[2].split() if len(addr_parts) >= 3 else ["AZ", "85001"]
+                        cname_low = cred_hit[0].lower()
+                        is_trauma = any(
+                            kw in cname_low or kw in low
+                            for kw in ("trauma", "emergency", "radiology", "orthopedic", "ambulance", "chiropract", "accident", "surgical", "hospital")
+                        )
                         claims.append(
                             ClaimItem(
                                 claim_id=cid,
@@ -525,25 +531,31 @@ class BankruptcyCaseExtractor:
                                 priority_type="general_unsecured",
                                 total_claim_amount=self._field_from_block(_parse_dec(bal_hit[0]), bal_hit[2], bal_hit[1]),
                                 commercial_business_pct=float(biz_hit[0]) if biz_hit else 0.0,
+                                is_trauma_or_medical_creditor=is_trauma,
                             )
                         )
 
-            # 5. Property / Vehicle Valuation or Appraisal
+            # 5. Property / Vehicle / Unliquidated Claim Valuation or Appraisal
             if ("valuation" in low or "appraisal" in low or "asset schedule" in low) and "fair market value:" in low:
                 id_hit = _locate(r"Asset ID:\s*(.+)")
                 cat_hit = _locate(r"Category:\s*(.+)")
                 desc_hit = _locate(r"Description:\s*(.+)")
-                val_hit = _locate(r"Fair Market Value:\s*\$?([0-9,]+\.[0-9]{2})")
+                val_hit = _locate(r"Fair Market Value:\s*(Unknown|TBD|Unliquidated|\$?[0-9,]+\.[0-9]{2})")
                 acq_hit = _locate(r"Acquisition Date:\s*([0-9/-]+)")
                 if desc_hit and val_hit:
                     aid = id_hit[0].strip() if id_hit else f"asset_{re.sub(r'[^a-z0-9]+', '_', fname.lower())}"
                     if not any(a.asset_id == aid for a in assets):
+                        raw_val_str = val_hit[0].strip()
+                        is_unk = raw_val_str.lower() in ("unknown", "tbd", "unliquidated")
+                        parsed_val = Decimal("0.00") if is_unk else _parse_dec(raw_val_str)
                         assets.append(
                             AssetItem(
                                 asset_id=aid,
                                 category=cat_hit[0].strip() if cat_hit else "other",  # type: ignore[arg-type]
                                 description=desc_hit[0],
-                                current_value=self._field_from_block(_parse_dec(val_hit[0]), val_hit[2], val_hit[1]),
+                                current_value=self._field_from_block(parsed_val, val_hit[2], val_hit[1]),
+                                valuation_state="unknown" if is_unk else "certain",
+                                claim_100pct_fmv_exemption=is_unk,
                                 acquisition_date=(
                                     self._field_from_block(
                                         _parse_date_str(acq_hit[0], datetime.date(2020, 1, 1)),
@@ -771,13 +783,17 @@ class BankruptcyCaseExtractor:
 
         assets = list(base_graph.assets)
         for idx, a in enumerate(draft.assets, start=1):
+            is_unk = a.valuation_state.lower() == "unknown" or a.current_value.strip().lower() in ("unknown", "tbd", "unliquidated")
+            parsed_val = Decimal("0.00") if is_unk else _parse_dec(a.current_value)
             assets.append(
                 AssetItem(
                     asset_id=a.asset_id or f"asset_{idx}",
                     category=a.category,  # type: ignore[arg-type]
                     description=a.description,
                     account_last4=a.account_last4,
-                    current_value=_make_pf(_parse_dec(a.current_value), a.value_ref),
+                    current_value=_make_pf(parsed_val, a.value_ref),
+                    valuation_state="unknown" if is_unk else "certain",
+                    claim_100pct_fmv_exemption=is_unk,
                 )
             )
 

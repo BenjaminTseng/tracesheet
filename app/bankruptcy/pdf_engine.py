@@ -448,18 +448,21 @@ class AcroFormFillerAndBaker:
         # B106Sum
         cmi_str = f"${calcs.means_test.current_monthly_income:,.2f}" if calcs else "$0.00"
         real_estate_sum = sum(
-            (a.current_value.value for a in graph.assets if a.category == "real_estate"),
+            (a.current_value.value for a in graph.assets if a.category in ("real_property", "real_estate")),
             Decimal("0.00"),
         )
         personal_prop_sum = (calcs.total_assets - real_estate_sum) if calcs else Decimal("0.00")
         tot_re_str = f"${real_estate_sum:,.2f}"
         tot_pp_str = f"${personal_prop_sum:,.2f}"
+        has_unknown_assets = any(a.valuation_state == "unknown" for a in graph.assets)
+        sum_pp_label = f"{tot_pp_str} (+ Unknown)" if has_unknown_assets else tot_pp_str
+        sum_tot_label = f"{tot_assets} (+ Unknown)" if has_unknown_assets else tot_assets
         bindings["B106Sum"] = {
             "Debtor1_Name": _entry(d_name, "direct_provenance", "$.parties[0].full_name", None, d_name_locs, d_name_ov),
             "District_Combo": _entry(dist_full, "system_constant", "$.district"),
             "Total_RealEstate_AB": _entry(tot_re_str, "deterministic_calculation", "$.calculations.total_real_estate", "=SUM(Schedule A/B Part 1)"),
-            "Total_PersonalProp_AB": _entry(tot_pp_str, "deterministic_calculation", "$.calculations.total_personal_property", "=SUM(Schedule A/B Parts 2-7)"),
-            "Total_Assets_AB": _entry(tot_assets, "deterministic_calculation", "$.calculations.total_assets", "=SUM(Schedule A/B)"),
+            "Total_PersonalProp_AB": _entry(sum_pp_label, "deterministic_calculation", "$.calculations.total_personal_property", "=SUM(Schedule A/B Parts 2-7)"),
+            "Total_Assets_AB": _entry(sum_tot_label, "deterministic_calculation", "$.calculations.total_assets", "=SUM(Schedule A/B)"),
             "Total_Secured_D": _entry(tot_sec, "deterministic_calculation", "$.calculations.total_secured_debt", "=SUM(Schedule D)"),
             "Total_Priority_E": _entry(tot_pri, "deterministic_calculation", "$.calculations.total_priority_debt", "=SUM(Schedule E)"),
             "Total_Unsecured_F": _entry(tot_unsec, "deterministic_calculation", "$.calculations.total_general_unsecured_debt", "=SUM(Schedule F)"),
@@ -470,6 +473,9 @@ class AcroFormFillerAndBaker:
         }
 
         # B106AB (first 6 in synthetic widgets + real Part 1/2/4 rows & line 55-63 totals + continuation)
+        def _fmt_asset_val(asset_item: AssetItem) -> str:
+            return "Unknown" if asset_item.valuation_state == "unknown" else f"${asset_item.current_value.value:,.2f}"
+
         ab_fields: Dict[str, Any] = {
             "Debtor1_Name": _entry(d_name, "direct_provenance", "$.parties[0].full_name", None, d_name_locs, d_name_ov),
             "District_Combo": _entry(dist_full, "system_constant", "$.district"),
@@ -481,7 +487,7 @@ class AcroFormFillerAndBaker:
                 "=SUM(Part 2)",
             ),
             "Total_Financial_AB": _entry(
-                f"${sum((a.current_value.value for a in graph.assets if a.category in ('bank_account', 'retirement', 'other')), Decimal('0.00')):,.2f}",
+                f"${sum((a.current_value.value for a in graph.assets if a.category in ('bank_account', 'retirement', 'retirement_erisa_ira', 'ira_non_rollover', 'education_529', 'other', 'personal_injury', 'workers_comp', 'legal_claims', 'security_deposit')), Decimal('0.00')):,.2f}",
                 "deterministic_calculation",
                 "$.calculations.total_financial",
                 "=SUM(Part 4)",
@@ -489,28 +495,28 @@ class AcroFormFillerAndBaker:
             "Total_PersonalProp_AB": _entry(tot_pp_str, "deterministic_calculation", "$.calculations.total_personal_property", "=Lines 56-61"),
             "Total_Assets_AB": _entry(tot_assets, "deterministic_calculation", "$.calculations.total_assets", "=SUM(Schedule A/B)"),
         }
-        re_assets = [a for a in graph.assets if a.category == "real_estate"]
+        re_assets = [a for a in graph.assets if a.category in ("real_property", "real_estate")]
         veh_assets = [a for a in graph.assets if a.category == "vehicle"]
-        fin_assets = [a for a in graph.assets if a.category in ("bank_account", "other")]
-        ret_assets = [a for a in graph.assets if a.category == "retirement"]
+        fin_assets = [a for a in graph.assets if a.category in ("bank_account", "social_security_deposit", "cash", "security_deposit", "other")]
+        ret_assets = [a for a in graph.assets if a.category in ("retirement", "retirement_erisa_ira", "ira_non_rollover")]
         if re_assets:
             ab_fields["RE_Row_1_Desc"] = _entry(re_assets[0].description, "direct_provenance", "$.assets[real_estate:0]", None, self._first_locator(re_assets[0].current_value), self._override(re_assets[0].current_value))
-            ab_fields["RE_Row_1_Val"] = _entry(f"${re_assets[0].current_value.value:,.2f}", "direct_provenance", "$.assets[real_estate:0].current_value", None, self._first_locator(re_assets[0].current_value), self._override(re_assets[0].current_value))
+            ab_fields["RE_Row_1_Val"] = _entry(_fmt_asset_val(re_assets[0]), "direct_provenance", "$.assets[real_estate:0].current_value", None, self._first_locator(re_assets[0].current_value), self._override(re_assets[0].current_value))
         if veh_assets:
             ab_fields["Veh_Row_1_Make"] = _entry(veh_assets[0].description, "direct_provenance", "$.assets[vehicle:0]", None, self._first_locator(veh_assets[0].current_value), self._override(veh_assets[0].current_value))
             ab_fields["Veh_Row_1_Model"] = _entry(veh_assets[0].asset_id, "direct_provenance", "$.assets[vehicle:0].asset_id")
-            ab_fields["Veh_Row_1_Val"] = _entry(f"${veh_assets[0].current_value.value:,.2f}", "direct_provenance", "$.assets[vehicle:0].current_value", None, self._first_locator(veh_assets[0].current_value), self._override(veh_assets[0].current_value))
+            ab_fields["Veh_Row_1_Val"] = _entry(_fmt_asset_val(veh_assets[0]), "direct_provenance", "$.assets[vehicle:0].current_value", None, self._first_locator(veh_assets[0].current_value), self._override(veh_assets[0].current_value))
         for idx_f, fa in enumerate(fin_assets[:3], start=1):
             ab_fields[f"Fin_Row_{idx_f}_Desc"] = _entry(fa.description, "direct_provenance", f"$.assets[fin:{idx_f - 1}]", None, self._first_locator(fa.current_value), self._override(fa.current_value))
-            ab_fields[f"Fin_Row_{idx_f}_Val"] = _entry(f"${fa.current_value.value:,.2f}", "direct_provenance", f"$.assets[fin:{idx_f - 1}].current_value", None, self._first_locator(fa.current_value), self._override(fa.current_value))
+            ab_fields[f"Fin_Row_{idx_f}_Val"] = _entry(_fmt_asset_val(fa), "direct_provenance", f"$.assets[fin:{idx_f - 1}].current_value", None, self._first_locator(fa.current_value), self._override(fa.current_value))
         if ret_assets:
             ab_fields["Ret_Row_1_Desc"] = _entry(ret_assets[0].description, "direct_provenance", "$.assets[retirement:0]", None, self._first_locator(ret_assets[0].current_value), self._override(ret_assets[0].current_value))
-            ab_fields["Ret_Row_1_Val"] = _entry(f"${ret_assets[0].current_value.value:,.2f}", "direct_provenance", "$.assets[retirement:0].current_value", None, self._first_locator(ret_assets[0].current_value), self._override(ret_assets[0].current_value))
+            ab_fields["Ret_Row_1_Val"] = _entry(_fmt_asset_val(ret_assets[0]), "direct_provenance", "$.assets[retirement:0].current_value", None, self._first_locator(ret_assets[0].current_value), self._override(ret_assets[0].current_value))
         for i in range(1, 7):
             if i <= len(graph.assets):
                 a = graph.assets[i - 1]
                 ab_fields[f"Asset_Row_{i}"] = _entry(
-                    f"[{a.category}] {a.description} — ${a.current_value.value:,.2f}",
+                    f"[Line {a.schedule_ab_line or '?'} · {a.category}] {a.description} — {_fmt_asset_val(a)}",
                     "direct_provenance",
                     f"$.assets[{i - 1}].current_value",
                     None,
@@ -522,7 +528,7 @@ class AcroFormFillerAndBaker:
         bindings["B106AB"] = ab_fields
         if len(graph.assets) > 6:
             overflow_lines["B106AB"] = [
-                f"Row {idx}: [{a.category}] {self.tokenizer.redact_for_public_form(a.description)} — ${a.current_value.value:,.2f}"
+                f"Row {idx}: [Line {a.schedule_ab_line or '?'} · {a.category}] {self.tokenizer.redact_for_public_form(a.description)} — {_fmt_asset_val(a)}"
                 for idx, a in enumerate(graph.assets[6:], start=7)
             ]
 
@@ -530,11 +536,25 @@ class AcroFormFillerAndBaker:
         c_fields: Dict[str, Any] = {
             "Debtor1_Name": _entry(d_name, "direct_provenance", "$.parties[0].full_name", None, d_name_locs, d_name_ov),
             "District_Combo": _entry(dist_full, "system_constant", "$.district"),
-            "Check_State_Exemptions": _entry("Yes", "system_constant", "$.calculations.exemptions.recommended_regime_id"),
         }
         if calcs:
             ex = calcs.exemptions
             rec = next((e for e in ex.evaluations if e.regime_id == ex.recommended_regime_id), ex.evaluations[0])
+            if ex.recommended_regime_id == "FEDERAL_522D":
+                c_fields["Check_Federal_Exemptions"] = _entry("federal", "system_constant", "$.calculations.exemptions.recommended_regime_id")
+            else:
+                c_fields["Check_State_Exemptions"] = _entry("state#20and#20federal", "system_constant", "$.calculations.exemptions.recommended_regime_id")
+
+            if rec.homestead_exceeds_522p_cap:
+                c_fields["Check_Homestead_Over_214k_Yes"] = _entry("yes", "deterministic_calculation", "$.calculations.exemptions.homestead_exceeds_522p_cap")
+            else:
+                c_fields["Check_Homestead_Over_214k_No"] = _entry("no", "deterministic_calculation", "$.calculations.exemptions.homestead_exceeds_522p_cap")
+
+            if rec.homestead_acquired_within_1215_days:
+                c_fields["Check_Homestead_Within_1215d_Yes"] = _entry("yes", "deterministic_calculation", "$.calculations.exemptions.homestead_acquired_within_1215_days")
+            else:
+                c_fields["Check_Homestead_Within_1215d_No"] = _entry("no", "deterministic_calculation", "$.calculations.exemptions.homestead_acquired_within_1215_days")
+
             c_fields["Exemption_Regime_Selected"] = _entry(
                 ex.recommended_display_name,
                 "deterministic_calculation",
@@ -542,16 +562,21 @@ class AcroFormFillerAndBaker:
                 f"MIN(non_exempt_equity across {[e.regime_id for e in ex.evaluations]})",
             )
             for idx_ex, al in enumerate(rec.allocations[:4], start=1):
+                val_txt = "Unknown" if al.valuation_state == "unknown" else f"${al.net_equity:,.2f}"
+                amt_txt = "100% of FMV" if (al.valuation_state == "unknown" or al.claim_100pct_fmv) else f"${al.total_exempt:,.2f}"
                 c_fields[f"Ex_{idx_ex}_Desc"] = _entry(al.asset_description, "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}]")
-                c_fields[f"Ex_{idx_ex}_Val"] = _entry(f"${al.net_equity:,.2f}", "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].net_equity")
-                c_fields[f"Ex_{idx_ex}_Amt"] = _entry(f"${al.total_exempt:,.2f}", "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].total_exempt")
+                c_fields[f"Ex_{idx_ex}_Val"] = _entry(val_txt, "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].net_equity")
+                c_fields[f"Ex_{idx_ex}_Amt"] = _entry(amt_txt, "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].total_exempt")
+                if al.valuation_state == "unknown" or al.claim_100pct_fmv:
+                    c_fields[f"Ex_{idx_ex}_100PctFMV"] = _entry("fair#20market", "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].claim_100pct_fmv")
                 c_fields[f"Ex_{idx_ex}_Law"] = _entry(al.statute_cited, "deterministic_calculation", f"$.calculations.exemptions.allocations[{idx_ex - 1}].statute_cited")
-                c_fields[f"Ex_{idx_ex}_Line"] = _entry(al.asset_id, "system_constant", f"$.assets.{al.asset_id}")
+                c_fields[f"Ex_{idx_ex}_Line"] = _entry(al.schedule_ab_line or al.asset_id, "system_constant", f"$.assets.{al.asset_id}")
             for i in range(1, 7):
                 if i <= len(rec.allocations):
                     al = rec.allocations[i - 1]
+                    ex_lbl = "100% of FMV" if (al.valuation_state == "unknown" or al.claim_100pct_fmv) else f"${al.total_exempt:,.2f}"
                     c_fields[f"Exemption_Row_{i}"] = _entry(
-                        f"{al.asset_description} | Exempt: ${al.total_exempt:,.2f} ({al.statute_cited})",
+                        f"{al.asset_description} | Exempt: {ex_lbl} ({al.statute_cited})",
                         "deterministic_calculation",
                         f"$.calculations.exemptions.allocations[{i - 1}]",
                         f"MIN(net_equity ${al.net_equity:,.2f}, cap+wildcard)",
@@ -562,7 +587,7 @@ class AcroFormFillerAndBaker:
             c_fields["Total_Non_Exempt_Equity"] = _entry(f"${rec.total_non_exempt_equity:,.2f}", "deterministic_calculation", "$.calculations.exemptions.total_non_exempt_equity", "=SUM(allocations.non_exempt_equity)")
             if len(rec.allocations) > 6:
                 overflow_lines["B106C"] = [
-                    f"Row {idx}: {al.asset_description} | Exempt ${al.total_exempt:,.2f} ({al.statute_cited})"
+                    f"Row {idx}: {al.asset_description} | Exempt {'100% of FMV' if (al.valuation_state == 'unknown' or al.claim_100pct_fmv) else f'${al.total_exempt:,.2f}'} ({al.statute_cited})"
                     for idx, al in enumerate(rec.allocations[6:], start=7)
                 ]
         bindings["B106C"] = c_fields
@@ -755,11 +780,14 @@ class AcroFormFillerAndBaker:
                 "Household_Size": _entry(str(mt.household_size), "direct_provenance", "$.parties[0].household_size"),
                 "CA_Median_Income": _entry(f"${mt.california_median_income:,.2f}", "system_constant", f"$.tables.{mt.table_version_id}"),
             }
+            if mt.spouse_cmi > Decimal("0.00"):
+                common_mt_1["Spouse_Gross_CMI"] = _entry(f"${mt.spouse_cmi:,.2f}", "deterministic_calculation", "$.calculations.means_test.spouse_cmi")
             bindings["B122A1"] = {**common_mt_1, "Median_Verdict": _entry(verdict_str, "deterministic_calculation", "$.calculations.means_test.is_above_median")}
             bindings["B122C1"] = {**common_mt_1, "Commitment_Period_Months": _entry(f"{mt.applicable_commitment_months} months", "deterministic_calculation", "$.calculations.means_test.applicable_commitment_months")}
             common_mt_2 = {
                 "Debtor1_Name": _entry(d_name, "direct_provenance", "$.parties[0].full_name", None, d_name_locs, d_name_ov),
                 "Current_Monthly_Income": common_mt_1["Current_Monthly_Income"],
+                "Marital_Adjustment_Total": _entry(f"${mt.marital_adjustment_deduction:,.2f}", "deterministic_calculation", "$.calculations.means_test.marital_adjustment_deduction"),
                 "IRS_Food_Clothing": _entry(f"${mt.irs_food_clothing_allowance:,.2f}", "deterministic_calculation", "$.calculations.means_test.irs_food_clothing_allowance"),
                 "IRS_Healthcare": _entry(f"${mt.irs_healthcare_allowance:,.2f}", "deterministic_calculation", "$.calculations.means_test.irs_healthcare_allowance"),
                 "IRS_Housing_Utilities": _entry(f"${mt.irs_housing_utilities_allowance:,.2f}", "deterministic_calculation", "$.calculations.means_test.irs_housing_utilities_allowance"),

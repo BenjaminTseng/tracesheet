@@ -62,6 +62,19 @@ DEBT_PAYEE_KEYWORDS = (
     "credit",
 )
 
+TRAUMA_MEDICAL_KEYWORDS = (
+    "trauma",
+    "emergency",
+    "radiology",
+    "orthopedic",
+    "chiropract",
+    "ambulance",
+    "surgical",
+    "accident",
+    "medical center",
+    "hospital",
+)
+
 
 def _slug(val: str) -> str:
     """Normalizes a label into a safe deterministic identifier slug."""
@@ -347,6 +360,172 @@ class DeclarativeDependencyAuditor:
                     entity_id=asset.asset_id,
                 )
 
+        # 9. Hidden personal injury / workers' comp detector from trauma creditors.
+        has_injury_asset = any(
+            a.category in ("personal_injury", "workers_comp", "legal_claims")
+            for a in graph.assets
+        )
+        if not has_injury_asset and not graph.no_injury_or_wc_claim_attested:
+            for claim in graph.claims:
+                cname_low = claim.creditor_name.lower()
+                if claim.is_trauma_or_medical_creditor or any(
+                    kw in cname_low for kw in TRAUMA_MEDICAL_KEYWORDS
+                ):
+                    _add_question(
+                        question_id=f"q_injury_wc_{claim.claim_id}",
+                        rule_id="POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM",
+                        prompt_kwargs={"creditor_name": claim.creditor_name},
+                        entity_id=claim.claim_id,
+                    )
+                    break
+
+        # 10. Bidirectional SOFA Line 9 <-> Schedule A/B <-> Schedule E/F lawsuit sync.
+        claims_by_id = {c.claim_id: c for c in graph.claims}
+        all_claim_names_low = " ".join(c.creditor_name.lower() for c in graph.claims)
+        for tx in graph.historical_transactions:
+            if tx.sofa_part != "lawsuit_garnishment":
+                continue
+            if tx.party_role == "plaintiff":
+                linked_ok = bool(tx.linked_asset_id and tx.linked_asset_id in assets_by_id)
+                desc_tokens = [w for w in re.split(r"\W+", tx.description.lower()) if len(w) >= 4]
+                text_match = has_injury_asset and any(tok in asset_descs_lower for tok in desc_tokens)
+                if not linked_ok and not text_match:
+                    _add_question(
+                        question_id=f"q_sofa_plaintiff_{tx.tx_id}",
+                        rule_id="SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB",
+                        prompt_kwargs={"description": tx.description},
+                        entity_id=tx.tx_id,
+                    )
+            elif tx.party_role == "defendant":
+                linked_ok = bool(tx.linked_claim_id and tx.linked_claim_id in claims_by_id)
+                desc_tokens = [w for w in re.split(r"\W+", tx.description.lower()) if len(w) >= 4]
+                text_match = any(tok in all_claim_names_low for tok in desc_tokens)
+                if not linked_ok and not text_match:
+                    _add_question(
+                        question_id=f"q_sofa_def_{tx.tx_id}",
+                        rule_id="SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF",
+                        prompt_kwargs={"description": tx.description},
+                        entity_id=tx.tx_id,
+                    )
+
+        # 11. Renter missing security deposit (Line 22/28, warning tier).
+        has_sec_dep = any(a.category == "security_deposit" for a in graph.assets)
+        if not has_real_prop and rent_amt > Decimal("0.00") and not has_sec_dep and not graph.no_security_deposit_attested:
+            _add_question(
+                question_id="q_renter_sec_dep",
+                rule_id="RENTER_MISSING_SECURITY_DEPOSIT_LINE_28",
+                prompt_kwargs={"amount": f"{rent_amt:,.2f}"},
+                entity_id="security_deposit",
+            )
+
+        # 12. 60-day pre-petition paystub continuity gap (11 U.S.C. § 521(a)(1)(B)(iv)).
+        if graph.paystubs and not graph.payment_advices_exception_attested:
+            win60_start = graph.expected_filing_date - datetime.timedelta(days=60)
+            sorted_all = sorted(graph.paystubs, key=lambda p: p.pay_date)
+            latest_stub_date = sorted_all[-1].pay_date
+            days_since_latest = (graph.expected_filing_date - latest_stub_date).days
+            in_60d = [p for p in sorted_all if win60_start <= p.pay_date <= graph.expected_filing_date]
+            gap_detail: Optional[str] = None
+            if not in_60d or days_since_latest > 45:
+                gap_detail = f"no paystub within 45 days before {graph.expected_filing_date.isoformat()} (latest: {latest_stub_date.isoformat()})"
+            else:
+                for idx in range(len(in_60d) - 1):
+                    delta_days = (in_60d[idx + 1].pay_date - in_60d[idx].pay_date).days
+                    if delta_days > 35:
+                        gap_detail = f"{delta_days}-day gap between {in_60d[idx].pay_date.isoformat()} and {in_60d[idx + 1].pay_date.isoformat()}"
+                        break
+            if gap_detail is not None:
+                _add_question(
+                    question_id="q_paystub_60d_gap",
+                    rule_id="PAYSTUB_60_DAY_CONTINUITY_GAP",
+                    prompt_kwargs={"detail": gap_detail},
+                    entity_id="paystubs_60d",
+                )
+
+        # 13. 11 U.S.C. § 522(p)(2)(B) same-state rollover inquiry on recent homestead > $214,000.
+        if not graph.homestead_rollover_reviewed:
+            for asset in graph.assets:
+                if asset.category != "real_property" or asset.acquisition_date is None:
+                    continue
+                held_days = (graph.expected_filing_date - asset.acquisition_date.value).days
+                liens = sum(
+                    (
+                        c.total_claim_amount.value
+                        for c in graph.claims
+                        if c.priority_type == "secured" and c.collateral_asset_id == asset.asset_id
+                    ),
+                    Decimal("0.00"),
+                )
+                equity = max(Decimal("0.00"), asset.current_value.value - liens)
+                if (
+                    held_days < 1215
+                    and equity > Decimal("214000.00")
+                    and asset.prior_state_residence_rollover_amount == Decimal("0.00")
+                ):
+                    _add_question(
+                        question_id=f"q_522p_rollover_{asset.asset_id}",
+                        rule_id="HOMESTEAD_522P_ROLLOVER_INQUIRY",
+                        prompt_kwargs={
+                            "description": asset.description,
+                            "equity": f"{equity:,.2f}",
+                        },
+                        entity_id=asset.asset_id,
+                    )
+
+        # 14. Married filing separately CCP § 703.140(a)(2) written spousal waiver check.
+        ex_opt = calculations.exemptions
+        rec_eval = next(
+            (e for e in ex_opt.evaluations if e.regime_id == ex_opt.recommended_regime_id),
+            ex_opt.evaluations[0],
+        )
+        if (
+            graph.marital_status in ("married_filing_separately_together", "married_filing_separately_apart")
+            and rec_eval.regime_id == "CA_CCP_703_140"
+            and not graph.spousal_703_waiver_signed
+        ):
+            _add_question(
+                question_id="q_spousal_703_waiver",
+                rule_id="MARRIED_SEPARATE_703_SPOUSAL_WAIVER",
+                prompt_kwargs={},
+                entity_id="CA_CCP_703_140",
+            )
+
+        # 15. Unknown valuation under capped exemption regime (Schwab v. Reilly windfall trap).
+        if not graph.unknown_valuation_cap_reviewed:
+            for alloc in rec_eval.allocations:
+                if alloc.unknown_value_exposed_risk:
+                    _add_question(
+                        question_id=f"q_unknown_cap_{alloc.asset_id}",
+                        rule_id="UNKNOWN_VALUATION_CAPPED_EXEMPTION_RISK",
+                        prompt_kwargs={
+                            "description": alloc.asset_description,
+                            "regime": rec_eval.display_name,
+                        },
+                        entity_id=alloc.asset_id,
+                    )
+
+        # 16. Chapter 13 four-year tax return compliance (11 U.S.C. § 1308).
+        if graph.chapter == "13" and (graph.tax_returns or graph.tax_years_filed_4yr):
+            req_years = [graph.expected_filing_date.year - i for i in range(1, 5)]
+            confirmed_years = {t.tax_year for t in graph.tax_returns} | set(graph.tax_years_filed_4yr)
+            missing_years = [y for y in req_years if y not in confirmed_years]
+            if missing_years:
+                _add_question(
+                    question_id="q_ch13_4yr_tax",
+                    rule_id="CH13_FOUR_YEAR_TAX_RETURN_MISSING",
+                    prompt_kwargs={"missing_years": ", ".join(str(y) for y in missing_years)},
+                    entity_id="tax_returns",
+                )
+
+        # 17. Tier-2 grouped mandatory asset & 180-day windfall sweep (warning tier).
+        if not graph.mandatory_asset_sweep_attested or not graph.windfall_180_day_attested:
+            _add_question(
+                question_id="q_mandatory_sweep_and_windfall",
+                rule_id="MANDATORY_ASSET_AND_WINDFALL_SWEEP",
+                prompt_kwargs={},
+                entity_id="case_sweep",
+            )
+
         return emitted
 
 
@@ -597,6 +776,43 @@ class QuantitativeForensicAuditor:
                 )
             )
 
+        # 7. Chapter 13 feasibility gate (11 U.S.C. § 1325(a)(6)).
+        if (
+            graph.chapter == "13"
+            and calculations.ch13_plan is not None
+            and not calculations.ch13_plan.plan_is_feasible
+        ):
+            tensions.append(
+                TensionObject(
+                    tension_id="tension_ch13_plan_infeasible",
+                    involved_claim_ids=["schedule_ij", "ch13_plan"],
+                    severity="blocker",
+                    description=(
+                        f"Chapter 13 Plan infeasible under 11 U.S.C. § 1325(a)(6): minimum monthly "
+                        f"plan payment (${calculations.ch13_plan.estimated_monthly_plan_payment:,.2f}) "
+                        f"exceeds Schedule I - J net income (${calculations.ch13_plan.schedule_ij_monthly_net:,.2f}) "
+                        f"by ${calculations.ch13_plan.feasibility_shortfall_monthly:,.2f}/mo."
+                    ),
+                )
+            )
+
+        # 8. 180-day windfall check (11 U.S.C. § 541(a)(5)).
+        for hist in graph.historical_transactions:
+            if hist.sofa_part == "windfall_180_day" and not hist.linked_asset_id and not any(
+                a.category in ("trust_inheritance", "life_insurance_csv") for a in graph.assets
+            ):
+                tensions.append(
+                    TensionObject(
+                        tension_id=f"tension_180_day_windfall_{hist.tx_id}",
+                        involved_claim_ids=[hist.tx_id],
+                        severity="warning",
+                        description=(
+                            f"180-day post-petition windfall item ('{hist.description}') may become "
+                            "estate property under 11 U.S.C. § 541(a)(5) unless scheduled and exempted."
+                        ),
+                    )
+                )
+
         return forensic_questions, tensions
 
 
@@ -721,6 +937,14 @@ class PlausibilityAuditEngine:
 class FilingReadinessGate:
     """Enforces the strict zero-doubt compiler gate (`READY` vs `BLOCKED`)."""
 
+    def __init__(self, registry: Optional[StatutoryTableRegistry] = None) -> None:
+        """Initializes the readiness gate with optional statutory table staleness checks.
+
+        Args:
+            registry: Optional `StatutoryTableRegistry` for effective-date staleness enforcement.
+        """
+        self.registry = registry
+
     @staticmethod
     def find_unverified_field_paths(graph: CanonicalCaseGraph) -> List[str]:
         """Recursively locates all `ProvenanceField` paths lacking verified or overridden status.
@@ -808,6 +1032,10 @@ class FilingReadinessGate:
             blocking_reasons.append(
                 f"{len(pkt_errors)} district packet validation error(s) detected."
             )
+        if self.registry is not None:
+            stale_warnings = self.registry.check_staleness(state.case_graph.expected_filing_date)
+            for sw in stale_warnings:
+                blocking_reasons.append(sw)
 
         status = "READY" if not blocking_reasons else "BLOCKED"
         return FilingReadinessReport(

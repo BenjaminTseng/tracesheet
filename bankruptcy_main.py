@@ -54,13 +54,26 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--api-key", default=None, help="Optional API key override")
     parser.add_argument("--model", default=None, help="Optional LLM model override")
+    parser.add_argument(
+        "--sync-statutory-tables",
+        action="store_true",
+        help="Verify SHA-256 integrity and effective-date staleness across statutory tables, print JSON summary, and exit",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    """Launches the standalone Bankruptcy Case Workbench Uvicorn server."""
+    """Launches the standalone Bankruptcy Case Workbench Uvicorn server or runs table sync."""
     load_dotenv(Path(__file__).resolve().parent / ".env")
     args = parse_args(argv)
+    if args.sync_statutory_tables:
+        import json
+        from app.core.tables import StatutoryTableRegistry
+
+        reg = StatutoryTableRegistry(Path(__file__).resolve().parent / "canonical" / "tables" / "bankruptcy")
+        print(json.dumps(reg.sync_statutory_tables(), indent=2))
+        return
+
     configure_logging(args.name)
     llm_provider = create_llm_provider(
         provider_name=args.provider,

@@ -22,12 +22,14 @@ from app.bankruptcy.models import (
     BudgetLineItem,
     CanonicalCaseGraph,
     ClaimItem,
+    HistoricalTransaction,
     HumanOverrideRecord,
     MonthlyBudgetScheduleIJ,
     PartyEntity,
     PaystubRecord,
     ProvenanceField,
 )
+from app.bankruptcy.service import BankruptcyCaseService
 from app.core.tables import StatutoryTableRegistry
 
 
@@ -288,3 +290,162 @@ def test_forensic_bank_outflow_matcher_ytd_mismatch_and_strict_gate() -> None:
     assert any("unverified_watch" in p or "assets[1].current_value" in p for p in report.unverified_field_paths)
     assert len(report.unresolved_critical_questions) >= 2
     assert len(report.unresolved_critical_tensions) >= 2
+
+
+def test_hidden_injury_claim_and_bidirectional_sofa_sync_and_paystub_gap(tmp_path: Path) -> None:
+    """Verifies trauma PI detector, bidirectional SOFA Line 9 sync, 60d paystub gap, spousal waiver, and resolutions."""
+    import shutil
+
+    ws = tmp_path / "ws_audit"
+    shutil.copytree(Path("canonical/tables/bankruptcy"), ws / "canonical" / "tables" / "bankruptcy")
+    svc = BankruptcyCaseService(base_dir=ws)
+
+    graph = CanonicalCaseGraph(
+        matter_id="audit_partner_1",
+        chapter="7",
+        marital_status="married_filing_separately_together",
+        expected_filing_date=datetime.date(2026, 11, 16),
+        parties=[
+            PartyEntity(
+                party_id="d1",
+                role="debtor_1",
+                full_name=_ov("Jordan Lane"),
+                ca_domicile_days_continuous=_ov(2000),
+                household_size=_ov(1),
+            )
+        ],
+        assets=[
+            AssetItem(
+                asset_id="cash_1",
+                category="bank_account",
+                description="Checking Account",
+                current_value=_ov(Decimal("5000.00")),
+            )
+        ],
+        claims=[
+            ClaimItem(
+                claim_id="med_trauma",
+                creditor_name="Riverside Trauma & Emergency Physicians",
+                priority_type="general_unsecured",
+                total_claim_amount=_ov(Decimal("4200.00")),
+                is_trauma_or_medical_creditor=True,
+            )
+        ],
+        # Latest paystub is Sept 25 -> > 45 days before Nov 16 -> 60-day payment advice gap!
+        paystubs=[
+            PaystubRecord(
+                paystub_id=f"ps_{m}",
+                employer="Pacific Co",
+                pay_period_start=datetime.date(2026, m, 1),
+                pay_period_end=datetime.date(2026, m, 25),
+                pay_date=datetime.date(2026, m, 25),
+                gross_pay=_ov(Decimal("3000.00")),
+                net_pay=_ov(Decimal("2400.00")),
+                tax_withheld=_ov(Decimal("500.00")),
+            )
+            for m in range(5, 10)
+        ],
+        budget=MonthlyBudgetScheduleIJ(
+            expense_items=[
+                BudgetLineItem(
+                    item_id="rent_1",
+                    category="rent_or_mortgage",
+                    description="Apartment Rent",
+                    monthly_amount=_ov(Decimal("2000.00")),
+                )
+            ]
+        ),
+        historical_transactions=[
+            HistoricalTransaction(
+                tx_id="tx_pl",
+                sofa_part="lawsuit_garnishment",
+                description="Slip and fall claim v. Retail Store",
+                party_role="plaintiff",
+                amount=_ov(Decimal("0.00")),
+            ),
+            HistoricalTransaction(
+                tx_id="tx_def",
+                sofa_part="lawsuit_garnishment",
+                description="Portfolio Recovery Collection Action",
+                party_role="defendant",
+                amount=_ov(Decimal("3100.00")),
+            ),
+        ],
+    )
+    state = svc.recompute_state(BankruptcyCaseState(case_graph=graph))
+    fired_rules = {q.rule_id for q in state.emerging_questions if q.status == "open"}
+    assert "POTENTIAL_PERSONAL_INJURY_OR_WORKERS_COMP_CLAIM" in fired_rules
+    assert "SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB" in fired_rules
+    assert "SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF" in fired_rules
+    assert "RENTER_MISSING_SECURITY_DEPOSIT_LINE_28" in fired_rules
+    assert "PAYSTUB_60_DAY_CONTINUITY_GAP" in fired_rules
+    assert "MARRIED_SEPARATE_703_SPOUSAL_WAIVER" in fired_rules
+    assert "MANDATORY_ASSET_AND_WINDFALL_SWEEP" in fired_rules
+
+    # Resolve SOFA plaintiff sync -> creates Schedule A/B Unknown claim asset & re-audits cleanly.
+    q_pl = next(q for q in state.emerging_questions if q.rule_id == "SOFA_LAWSUIT_PLAINTIFF_MISSING_ON_AB")
+    state = svc.answer_question(
+        "audit_partner_1",
+        q_pl.question_id,
+        "sync_lawsuit_to_schedule_ab",
+        "Paralegal Test",
+        "paralegal",
+        "Synced SOFA plaintiff suit as Unknown FMV asset on Line 33.",
+        {"category": "personal_injury", "description": "Slip and fall bodily injury claim", "valuation_state": "unknown"},
+    )
+    assert any(a.category == "personal_injury" and a.valuation_state == "unknown" for a in state.case_graph.assets)
+
+    # Resolve SOFA defendant sync -> adds disputed claim on Schedule E/F for automatic stay notice.
+    q_def = next(q for q in state.emerging_questions if q.rule_id == "SOFA_LAWSUIT_DEFENDANT_MISSING_ON_EF")
+    state = svc.answer_question(
+        "audit_partner_1",
+        q_def.question_id,
+        "sync_lawsuit_to_schedule_ef",
+        "Paralegal Test",
+        "paralegal",
+        "Scheduled disputed collection defendant action for automatic stay notice.",
+        {"creditor_name": "Portfolio Recovery Associates", "total_claim_amount": "3100.00"},
+    )
+    assert any(c.creditor_name == "Portfolio Recovery Associates" and c.disputed for c in state.case_graph.claims)
+
+
+def test_statutory_table_staleness_and_sync(tmp_path: Path) -> None:
+    """Verifies StatutoryTableRegistry staleness detection, CLI/API table sync, and gate blocking."""
+    import shutil
+    from app.bankruptcy.routes import create_bankruptcy_app
+    from fastapi.testclient import TestClient
+
+    ws = tmp_path / "ws_sync"
+    shutil.copytree(Path("canonical/tables/bankruptcy"), ws / "canonical" / "tables" / "bankruptcy")
+    (ws / "templates").mkdir(parents=True)
+    (ws / "templates" / "bankruptcy.html").write_text("<html></html>", encoding="utf-8")
+    (ws / "static").mkdir(parents=True)
+
+    reg = StatutoryTableRegistry(ws / "canonical" / "tables" / "bankruptcy")
+    assert reg.check_staleness(datetime.date(2026, 11, 16)) == []
+    stale_msgs = reg.check_staleness(datetime.date(2029, 1, 1))
+    assert len(stale_msgs) >= 3
+
+    sync_res = reg.sync_statutory_tables(reference_date=datetime.date(2026, 11, 16))
+    assert len(sync_res["tables_verified"]) >= 5
+    assert (ws / "canonical" / "tables" / "bankruptcy" / ".sync_status.json").exists()
+
+    # Gate MUST block when expected_filing_date is past stale_after!
+    gate = FilingReadinessGate(reg)
+    stale_graph = CanonicalCaseGraph(
+        matter_id="stale_case",
+        chapter="7",
+        expected_filing_date=datetime.date(2029, 1, 1),
+    )
+    stale_rep = gate.evaluate(BankruptcyCaseState(case_graph=stale_graph))
+    assert stale_rep.status == "BLOCKED"
+    assert any("expired after" in r for r in stale_rep.blocking_reasons)
+
+    app = create_bankruptcy_app(base_dir=ws, seed_samples=False)
+    client = TestClient(app)
+    api_sync = client.post("/api/v1/bankruptcy/tables/sync")
+    assert api_sync.status_code == 200
+    assert len(api_sync.json()["tables_verified"]) >= 5
+    tax_res = client.get("/api/v1/bankruptcy/tables/taxonomy")
+    assert tax_res.status_code == 200
+    assert len(tax_res.json()["lines"]) >= 45

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import shutil
 from pathlib import Path
@@ -14,12 +15,12 @@ from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
 from app.compilers.bankruptcy.extractor import BankruptcyCaseExtractor
-from app.compilers.bankruptcy.sample_cases import seed_bankruptcy_sample_cases
 from app.compilers.bankruptcy.service import BankruptcyCaseService
 from app.compilers.research.pipeline import AuditPipelineRunner
 from app.core.bundle import CompiledBundle, ReviewComment, SectionOutput, SectionValidator
 from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.core.llm import create_llm_provider
+from app.core.pii import PIITokenizer
 
 dotenv_path = find_dotenv(usecwd=True)
 if dotenv_path:
@@ -137,8 +138,8 @@ def test_live_02_bankruptcy_extractor_and_verifier(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    ingestor = MatterIngestor(matters_root)
-    ingestor.ingest_matter("live_bk_case", mask_pii=True)
+    ingestor = MatterIngestor(matters_root, pii_tokenizer=PIITokenizer(matters_root))
+    ingestor.ingest_matter("live_bk_case")
 
     intake_indexed = (matters_root / "live_bk_case" / "inputs" / "indexed" / "debtor_intake.md.indexed.md").read_text(
         encoding="utf-8"
@@ -254,30 +255,73 @@ def test_live_05_hybrid_ledger_citation(tmp_path: Path) -> None:
     llm = create_llm_provider("gemini")
     canonical_dir = _prepare_canonical_workspace(tmp_path, llm)
 
-    # Create isolated bankruptcy workspace containing tables + seeded Ch. 7 Martinez matter.
+    # Build one focused Chapter 7 CACB matter and publish its deterministic `ledgers/bankruptcy.json`.
     bk_base = tmp_path / "bk_workspace"
     shutil.copytree(canonical_dir, bk_base / "canonical")
     bk_service = BankruptcyCaseService(base_dir=bk_base)
-    seed_bankruptcy_sample_cases(bk_service)
+    bk_service.init_case(
+        matter_id="live_hybrid_ch7_case",
+        chapter="7",
+        district="CACB",
+        expected_filing_date=datetime.date(2026, 11, 16),
+    )
 
-    ledger_file = bk_base / "matters" / "bk_ch7_cacb_martinez" / "ledgers" / "bankruptcy.json"
-    assert ledger_file.exists(), "Expected seeded bankruptcy case to publish ledgers/bankruptcy.json"
+    raw_dir = bk_base / "matters" / "live_hybrid_ch7_case" / "inputs" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "debtor_intake.md").write_text(
+        "# Client Bankruptcy Intake\n\n"
+        "- Debtor Name: Jordan Vance\n"
+        "- Street Address: 742 Harbor View Ave\n"
+        "- City/State/Zip: Los Angeles, CA 90017\n"
+        "- County of Residence: Los Angeles\n"
+        "- Household Size: 1\n"
+        "- CA Domicile Days: 1500\n"
+        "- Asset ID: veh_1 | Category: vehicle | Description: 2020 Honda Civic EX | "
+        "Fair Market Value: $14,500.00 | Acquisition Date: 2020-05-10\n",
+        encoding="utf-8",
+    )
+    (raw_dir / "paystub_2026_10.md").write_text(
+        "# Earnings Statement\n\n"
+        "- Employer: Pacific Grid Logistics Inc\n"
+        "- Period Start: 2026-10-01 | Period End: 2026-10-31 | Pay Date: 2026-10-31\n"
+        "- Gross Pay: $4,200.00 | Net Pay: $3,150.00 | Taxes Withheld: $850.00\n"
+        "- Direct Deposit Account: ...4829\n",
+        encoding="utf-8",
+    )
 
-    ingestor = MatterIngestor(bk_base / "matters")
-    ingestor.ingest_matter("bk_ch7_cacb_martinez")
-    indexed_ledger = bk_base / "matters" / "bk_ch7_cacb_martinez" / "inputs" / "indexed" / "ledger__bankruptcy.indexed.md"
+    ingestor = MatterIngestor(bk_base / "matters", pii_tokenizer=PIITokenizer(bk_base / "matters"))
+    ingestor.ingest_matter("live_hybrid_ch7_case")
+    bk_service.extract_matter(
+        "live_hybrid_ch7_case",
+        chapter="7",
+        district="CACB",
+        expected_filing_date=datetime.date(2026, 11, 16),
+    )
+
+    ledger_file = bk_base / "matters" / "live_hybrid_ch7_case" / "ledgers" / "bankruptcy.json"
+    assert ledger_file.exists(), "Expected BankruptcyCaseService to publish ledgers/bankruptcy.json"
+
+    ingestor.ingest_matter("live_hybrid_ch7_case")
+    indexed_ledger = (
+        bk_base
+        / "matters"
+        / "live_hybrid_ch7_case"
+        / "inputs"
+        / "indexed"
+        / "ledger__bankruptcy.indexed.md"
+    )
     assert indexed_ledger.exists()
 
     runner = AuditPipelineRunner(llm, CanonicalRouter(canonical_dir), ingestor)
     bundle = runner.run_full_pipeline(
-        matter_id="bk_ch7_cacb_martinez",
+        matter_id="live_hybrid_ch7_case",
         question=(
-            "Using the verified calculation ledger `ledgers/bankruptcy.json`, summarize the debtor's "
-            "6-month Current Monthly Income (cmi), readiness_status, and recommended California exemption regime. "
-            "Cite `ledgers/bankruptcy.json` (`source_type='calculation_ledger'`) directly as evidence."
+            "Write a concise 1-section summary reporting ONLY from the verified bankruptcy calculation ledger "
+            "`ledgers/bankruptcy.json`: the debtor's 6-month Current Monthly Income (cmi), total_assets, "
+            "readiness_status, and recommended California exemption regime. "
+            "Cite `ledgers/bankruptcy.json` (`source_type='calculation_ledger'`) directly as `type='evidence'`."
         ),
-        bundle_id="live_hybrid_ledger_martinez",
-        canonical_domains=["bankruptcy"],
+        bundle_id="live_hybrid_ledger_test",
         progress_callback=lambda st, msg: print(f"[LIVE_05:{st}] {msg}"),
     )
 

@@ -305,27 +305,14 @@ def create_bankruptcy_app(
     llm_provider: Optional[LLMProvider] = None,
     seed_samples: bool = True,
 ) -> FastAPI:
-    """Creates a FastAPI app serving Bankruptcy Workbench routes (replaced by `app.server` in Commit 4)."""
+    """Creates a FastAPI platform instance scoped solely to the Bankruptcy Case Workbench."""
+    from app.server import create_platform_app
+
     root_dir = base_dir or Path(__file__).resolve().parent.parent.parent.parent
-    templates = Jinja2Templates(directory=str(root_dir / "templates"))
-    service = BankruptcyCaseService(base_dir=root_dir, llm_provider=llm_provider)
-    if seed_samples:
-        seed_bankruptcy_sample_cases(service)
-
-    api = FastAPI(
-        title="Bankruptcy Case Workbench (v1)",
-        description="Standalone audit-grounded personal & small-business bankruptcy filing workbench.",
-        version="1.0.0",
+    return create_platform_app(
+        base_dir=root_dir,
+        enabled_apps=["bankruptcy"],
+        default_app="bankruptcy",
+        llm_provider=llm_provider,
+        seed_samples=seed_samples,
     )
-    api.state.bankruptcy_service = service
-
-    static_dir = root_dir / "static"
-    if static_dir.exists():
-        api.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-    @api.get("/", response_class=HTMLResponse)
-    async def bankruptcy_index(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(request, "bankruptcy.html")
-
-    api.include_router(build_bankruptcy_router(service))
-    return api

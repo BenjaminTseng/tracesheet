@@ -1,9 +1,15 @@
-"""Application entry point and CLI runner for the Audit-Grounded Document Platform.
+"""Unified application entrypoint & CLI runner for the Audit-Grounded Verification Platform.
 
-Follows the configuration and logging protocol:
-- Web UI Server: `uv run python main.py --host 127.0.0.1 --port 8000 --name jd_screen`
-- CLI Ingestion: `uv run python main.py --ingest-matter legal_motion_1332`
-- CLI Agentic Q&A: `uv run python main.py --matter legal_motion_1332 --ask "Evaluate diversity"`
+Examples:
+- Web UI Server (Bankruptcy default + Research co-mounted):
+    uv run python main.py --host 127.0.0.1 --port 8000 --apps all --default-app bankruptcy
+- Bankruptcy-only partner launch:
+    uv run python main.py --host 127.0.0.1 --port 8000 --apps bankruptcy
+- Verify reference tables:
+    uv run python main.py --sync-tables bankruptcy
+- CLI Ingestion / Research Q&A:
+    uv run python main.py --ingest-matter legal_motion_1332
+    uv run python main.py --matter legal_motion_1332 --ask "Evaluate diversity"
 """
 
 from __future__ import annotations
@@ -16,15 +22,15 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from dotenv import find_dotenv, load_dotenv
+from fastapi import FastAPI
 import uvicorn
 
+from app.compilers.research.pipeline import AuditPipelineRunner
 from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.core.llm import create_llm_provider
-from app.compilers.research.pipeline import AuditPipelineRunner
-from app.routes import router
+from app.core.tables import ReferenceTableRegistry, StatutoryTableRegistry
+from app.server import create_platform_app, parse_enabled_apps
 
 load_dotenv(dotenv_path=find_dotenv(usecwd=True), override=False)
 
@@ -32,14 +38,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 def configure_logging(prefix: str = "log") -> Path:
-    """Configures file and console logging following `[prefix-]YYYYMMDDHHmm.log`.
-
-    Args:
-        prefix: Filename prefix specified via CLI `--name` argument.
-
-    Returns:
-        Path to the created log file.
-    """
+    """Configures file and console logging following `[prefix-]YYYYMMDDHHmm.log`."""
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
     log_dir = BASE_DIR / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -60,66 +59,50 @@ def create_app(
     provider: str = "gemini",
     model: Optional[str] = None,
     api_key: Optional[str] = None,
+    apps: Optional[str] = None,
+    default_app: Optional[str] = None,
+    seed_samples: bool = True,
 ) -> FastAPI:
-    """Creates and configures the FastAPI application instance.
-
-    Args:
-        provider: Default LLM backend name (`gemini`, `anthropic`, `openai`, `mock`).
-        model: Optional model identifier override.
-        api_key: Optional API key override.
-
-    Returns:
-        Configured `FastAPI` application with mounted static assets and routes.
-    """
-    application = FastAPI(
-        title="Audit-Grounded Spatial Document Canvas",
-        version="0.2.0",
-        description="Bounded spatial canvas and agentic Q&A pipeline with full citation traceability.",
+    """Creates the unified FastAPI platform application."""
+    raw_apps = apps if apps is not None else os.getenv("JD_SCREEN_APPS", "all")
+    resolved_default = default_app or os.getenv("JD_SCREEN_DEFAULT_APP", "bankruptcy")
+    return create_platform_app(
+        base_dir=BASE_DIR,
+        enabled_apps=parse_enabled_apps(raw_apps),
+        default_app=resolved_default,
+        llm_config={"provider": provider, "model": model, "api_key": api_key},
+        seed_samples=seed_samples,
     )
-    application.state.llm_config = {
-        "provider": provider,
-        "model": model,
-        "api_key": api_key,
-    }
-    static_dir = BASE_DIR / "static"
-    static_dir.mkdir(parents=True, exist_ok=True)
-    application.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    application.include_router(router)
-    return application
 
 
 app = create_app()
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parses command-line arguments for server, provider, ingestion, and CLI Q&A.
-
-    Args:
-        argv: Optional list of CLI argument strings.
-
-    Returns:
-        Parsed `argparse.Namespace` object.
-    """
+    """Parses CLI flags for unified server, app selection, table sync, ingest, and Q&A."""
     parser = argparse.ArgumentParser(
-        description="Run the Audit-Grounded Spatial Document Canvas server or CLI pipeline."
+        description="Run the unified Audit-Grounded Verification Platform server or CLI tools."
     )
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface to bind.")
+    parser.add_argument("--port", type=int, default=8000, help="TCP port to bind (default: 8000).")
+    parser.add_argument("--name", type=str, default="jd_screen", help="Log filename prefix.")
     parser.add_argument(
-        "--host",
+        "--apps",
         type=str,
-        default="127.0.0.1",
-        help="Host interface to bind (default: 127.0.0.1).",
+        default="all",
+        help="Enabled compiler apps (`all`, `bankruptcy`, `research`, or comma-separated list).",
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="TCP port to bind (default: 8000).",
-    )
-    parser.add_argument(
-        "--name",
+        "--default-app",
         type=str,
-        default="jd_screen",
-        help="Prefix for generated log files (default: jd_screen).",
+        default="bankruptcy",
+        help="Default UI compiler route redirected from `/` (default: bankruptcy).",
+    )
+    parser.add_argument(
+        "--sync-tables",
+        type=str,
+        default=None,
+        help="Verify SHA-256 checksums and staleness for `canonical/tables/<domain>/`, print JSON, and exit.",
     )
     parser.add_argument(
         "--provider",
@@ -128,18 +111,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["gemini", "anthropic", "openai", "mock"],
         help="LLM backend provider for agentic stages (default: gemini).",
     )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=None,
-        help="Model identifier override (e.g., gemini-4-argon, gemini-4-carbon, gemini-3.8-flash).",
-    )
-    parser.add_argument(
-        "--api-key",
-        type=str,
-        default=None,
-        help="Optional API key override (defaults to GEMINI_API_KEY / provider env var).",
-    )
+    parser.add_argument("--model", type=str, default=None, help="Model identifier override.")
+    parser.add_argument("--api-key", type=str, default=None, help="Optional API key override.")
     parser.add_argument(
         "--ingest-matter",
         type=str,
@@ -154,26 +127,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--purge-canonical",
         action="store_true",
-        help="Combined with --ingest-canonical, remove old encoded canonical .md files and INDEX.md before rebuilding.",
+        help="Combined with --ingest-canonical, purge old encoded canonical artifacts before rebuilding.",
     )
-    parser.add_argument(
-        "--matter",
-        type=str,
-        default=None,
-        help="Project matter ID to query when running `--ask`.",
-    )
-    parser.add_argument(
-        "--ask",
-        type=str,
-        default=None,
-        help="Run the 4-stage agentic pipeline for a question `(c)` from CLI and exit.",
-    )
-    parser.add_argument(
-        "--output-bundle",
-        type=str,
-        default=None,
-        help="Optional bundle slug when saving `--ask` output.",
-    )
+    parser.add_argument("--matter", type=str, default=None, help="Matter ID for `--ask`.")
+    parser.add_argument("--ask", type=str, default=None, help="Run the 4-stage research pipeline from CLI.")
+    parser.add_argument("--output-bundle", type=str, default=None, help="Optional bundle slug for `--ask`.")
     return parser.parse_args(argv)
 
 
@@ -186,7 +144,16 @@ if __name__ == "__main__":
     canonical_router = CanonicalRouter(BASE_DIR / "canonical")
     canonical_ingestor = CanonicalIngestor(BASE_DIR / "canonical")
 
-    if args.ingest_canonical:
+    if args.sync_tables:
+        domain = args.sync_tables.strip().lower()
+        tdir = BASE_DIR / "canonical" / "tables" / domain
+        reg = (
+            StatutoryTableRegistry(tdir)
+            if domain == "bankruptcy"
+            else ReferenceTableRegistry(tdir)
+        )
+        print(json.dumps(reg.sync_tables(), indent=2))
+    elif args.ingest_canonical:
         optional_llm = None
         if args.provider != "mock" and (
             args.api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
@@ -235,17 +202,23 @@ if __name__ == "__main__":
             )
         )
     else:
-        app.state.llm_config = {
-            "provider": args.provider,
-            "model": args.model,
-            "api_key": args.api_key,
-        }
+        os.environ["JD_SCREEN_APPS"] = args.apps
+        os.environ["JD_SCREEN_DEFAULT_APP"] = args.default_app
+        app = create_app(
+            provider=args.provider,
+            model=args.model,
+            api_key=args.api_key,
+            apps=args.apps,
+            default_app=args.default_app,
+        )
         logger.info(
-            "Starting server on %s:%d provider=%s model=%s (log=%s)",
+            "Starting unified server on %s:%d apps=%s default=%s provider=%s model=%s (log=%s)",
             args.host,
             args.port,
+            args.apps,
+            args.default_app,
             args.provider,
             args.model or "default",
             log_path,
         )
-        uvicorn.run("main:app", host=args.host, port=args.port, reload=False)
+        uvicorn.run(app, host=args.host, port=args.port, reload=False)

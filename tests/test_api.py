@@ -4,31 +4,41 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
 from app.core.llm import MockLLMProvider
 from app.compilers.research.pipeline import CrossSectionAuditOutput, FeedbackTriageDecision, StitchedDocumentOutput
-from app.routes import BUNDLE_STORE
+from app.server import create_platform_app
 from main import app, parse_args
 
 client = TestClient(app)
 
 
 def test_index_renders_html() -> None:
-    """Verifies that GET / and static vendor ESM modules return 200 OK."""
-    response = client.get("/")
-    assert response.status_code == 200
-    assert "Audit-Grounded Spatial Document Canvas" in response.text
-    assert "/static/vendor/preact.mjs" in response.text
-    assert "/static/app.js" in response.text
+    """Verifies root redirect -> /bankruptcy, /research shell, and static ESM vendor assets."""
+    redir = client.get("/", follow_redirects=False)
+    assert redir.status_code == 307
+    assert redir.headers.get("location") == "/bankruptcy"
+
+    bk_res = client.get("/bankruptcy")
+    assert bk_res.status_code == 200
+    assert "/static/bankruptcy.js" in bk_res.text
+
+    rs_res = client.get("/research")
+    assert rs_res.status_code == 200
+    assert "Audit-Grounded Spatial Document Canvas" in rs_res.text
+    assert "/static/vendor/preact.mjs" in rs_res.text
+    assert "/static/app.js" in rs_res.text
 
     for asset in (
         "/static/vendor/preact.mjs",
         "/static/vendor/hooks.mjs",
         "/static/vendor/htm.mjs",
         "/static/app.js",
+        "/static/bankruptcy.js",
         "/static/styles.css",
     ):
         asset_res = client.get(asset)
@@ -36,8 +46,8 @@ def test_index_renders_html() -> None:
 
 
 def test_list_and_fetch_bundles() -> None:
-    """Verifies that GET /api/bundles and GET /api/bundles/{id} return valid data."""
-    list_res = client.get("/api/bundles")
+    """Verifies GET /api/v1/research/bundles and GET /api/v1/research/bundles/{id}."""
+    list_res = client.get("/api/v1/research/bundles")
     assert list_res.status_code == 200
     bundles = list_res.json()
     assert len(bundles) >= 2
@@ -45,7 +55,7 @@ def test_list_and_fetch_bundles() -> None:
     assert "legal_motion_1332" in bundle_ids
     assert "candidate_exec_screen" in bundle_ids
 
-    detail_res = client.get("/api/bundles/legal_motion_1332")
+    detail_res = client.get("/api/v1/research/bundles/legal_motion_1332")
     assert detail_res.status_code == 200
     payload = detail_res.json()
     assert payload["artifact"]["title"].startswith("Motion to Dismiss")
@@ -53,7 +63,7 @@ def test_list_and_fetch_bundles() -> None:
 
 
 def test_compile_endpoint_validates_and_registers_bundle() -> None:
-    """Verifies that POST /api/compile compiles Tier-1 sections into a Tier-2 bundle."""
+    """Verifies POST /api/v1/research/compile validates Tier-1 sections into a Tier-2 bundle."""
     compile_req = {
         "bundle_id": "test_compiled_api",
         "title": "API Compilation Test Artifact",
@@ -90,18 +100,19 @@ def test_compile_endpoint_validates_and_registers_bundle() -> None:
         ),
     }
 
-    res = client.post("/api/compile", json=compile_req)
+    res = client.post("/api/v1/research/compile", json=compile_req)
     assert res.status_code == 200
     compiled = res.json()
     assert compiled["bundle_id"] == "test_compiled_api"
     assert "claim_sec_01_1" in compiled["nodes"]
     assert "evi_sec_01_1_1" in compiled["nodes"]
 
-    # Confirm it rejecting broken stitch invariants (e.g. missing <ref n='1'>)
+    # Confirm rejecting broken stitch invariants (e.g. missing <ref n='1'>)
     bad_req = dict(compile_req)
     bad_req["smoothed_text"] = "Following the Q3 rollout, system latency dropped."
-    bad_res = client.post("/api/compile", json=bad_req)
+    bad_res = client.post("/api/v1/research/compile", json=bad_req)
     assert bad_res.status_code == 422
+    app.state.research_service.bundle_store.pop("test_compiled_api", None)
 
 
 def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path) -> None:
@@ -242,23 +253,23 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
 
     try:
         # 1. Create matter & upload a markdown file
-        create_res = client.post("/api/matters", json={"matter_id": "notice_case"})
+        create_res = client.post("/api/v1/matters", json={"matter_id": "notice_case"})
         assert create_res.status_code == 200
 
         upload_res = client.post(
-            "/api/matters/notice_case/upload",
+            "/api/v1/matters/notice_case/upload",
             files={"file": ("Notice.md", b"Written notice delivered October 12, 2026.\n", "text/markdown")},
         )
         assert upload_res.status_code == 200
         assert upload_res.json()["manifest"]["files_processed"] == 1
 
-        matters_res = client.get("/api/matters")
+        matters_res = client.get("/api/v1/matters")
         assert matters_res.status_code == 200
         assert any(m["matter_id"] == "notice_case" for m in matters_res.json()["matters"])
 
         # 2. Ask a question -> runs 4-stage pipeline
         ask_res = client.post(
-            "/api/matters/notice_case/ask",
+            "/api/v1/research/matters/notice_case/ask",
             json={"question": "Was written notice satisfied?", "bundle_id": "notice_bundle_api"},
         )
         assert ask_res.status_code == 200
@@ -266,9 +277,9 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert bundle_json["bundle_id"] == "notice_bundle_api"
         assert "claim_sec_01_notice_1" in bundle_json["nodes"]
 
-        # 3. Queue an inline claim comment, a logical-link comment, a section comment, and an overall document comment
+        # 3. Queue inline node, logical-link, and document comments
         cmt_res = client.post(
-            "/api/bundles/notice_bundle_api/comments",
+            "/api/v1/research/bundles/notice_bundle_api/comments",
             json={
                 "scope": "node",
                 "node_id": "claim_sec_01_notice_1",
@@ -279,7 +290,7 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert cmt_res.status_code == 200
 
         link_cmt_res = client.post(
-            "/api/bundles/notice_bundle_api/comments",
+            "/api/v1/research/bundles/notice_bundle_api/comments",
             json={
                 "scope": "link",
                 "node_id": "evi_sec_01_notice_1_1",
@@ -290,7 +301,7 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert link_cmt_res.status_code == 200
 
         doc_cmt_res = client.post(
-            "/api/bundles/notice_bundle_api/comments",
+            "/api/v1/research/bundles/notice_bundle_api/comments",
             json={
                 "scope": "document",
                 "comment_text": "Keep conclusion direct and state October 12, 2026 clearly.",
@@ -305,7 +316,7 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert doc_comment["section_id"] == "__document__"
 
         regen_res = client.post(
-            "/api/bundles/notice_bundle_api/regenerate",
+            "/api/v1/research/bundles/notice_bundle_api/regenerate",
             json={"smooth_transitions": False},
         )
         assert regen_res.status_code == 200
@@ -313,16 +324,22 @@ def test_matters_upload_ingest_ask_and_comment_regeneration_flow(tmp_path: Path)
         assert "October 12, 2026" in regen_json["artifact"]["sections"][0]["content"]
         assert all(c["resolved"] is True for c in regen_json["comments"])
     finally:
-        BUNDLE_STORE.pop("notice_bundle_api", None)
+        app.state.research_service.bundle_store.pop("notice_bundle_api", None)
         app.state.canonical_router = None
         app.state.matter_ingestor = None
         app.state.llm_provider = None
 
 
 def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
-    """Verifies CLI flags for `--provider`, `--model`, `--ingest-matter`, `--ingest-canonical`, and `--ask`."""
+    """Verifies CLI flags for `--apps`, `--default-app`, `--sync-tables`, `--provider`, `--ingest`, and `--ask`."""
     ns = parse_args(
         [
+            "--apps",
+            "bankruptcy",
+            "--default-app",
+            "bankruptcy",
+            "--sync-tables",
+            "bankruptcy",
             "--provider",
             "gemini",
             "--model",
@@ -335,6 +352,9 @@ def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
             "--purge-canonical",
         ]
     )
+    assert ns.apps == "bankruptcy"
+    assert ns.default_app == "bankruptcy"
+    assert ns.sync_tables == "bankruptcy"
     assert ns.provider == "gemini"
     assert ns.model == "gemini-4-argon"
     assert ns.matter == "legal_motion_1332"
@@ -344,7 +364,7 @@ def test_cli_parse_args_supports_provider_ingest_and_ask() -> None:
 
 
 def test_canonical_upload_and_rebuild_endpoints(tmp_path: Path) -> None:
-    """Verifies `GET /api/canonical`, `POST /api/canonical/upload`, and `POST /api/canonical/ingest`."""
+    """Verifies `GET /api/v1/canonical`, `POST /api/v1/canonical/upload`, and `POST /api/v1/canonical/ingest`."""
     canonical_dir = tmp_path / "canonical"
     canonical_dir.mkdir(parents=True)
     app.state.canonical_router = CanonicalRouter(canonical_dir)
@@ -352,7 +372,7 @@ def test_canonical_upload_and_rebuild_endpoints(tmp_path: Path) -> None:
 
     try:
         upload_res = client.post(
-            "/api/canonical/upload",
+            "/api/v1/canonical/upload",
             data={"domain": "compliance"},
             files={
                 "file": (
@@ -369,11 +389,11 @@ def test_canonical_upload_and_rebuild_endpoints(tmp_path: Path) -> None:
         assert "compliance" in payload["raw_domains"]
         assert "Quarterly privileged access reviews" in payload["authorities"][0]["verbatim_quote"]
 
-        status_res = client.get("/api/canonical")
+        status_res = client.get("/api/v1/canonical")
         assert status_res.status_code == 200
         assert status_res.json()["total_authorities"] == 1
 
-        rebuild_res = client.post("/api/canonical/ingest", json={"purge_encoded": True})
+        rebuild_res = client.post("/api/v1/canonical/ingest", json={"purge_encoded": True})
         assert rebuild_res.status_code == 200
         assert rebuild_res.json()["total_authorities"] == 1
         assert (canonical_dir / "INDEX.md").exists()
@@ -494,7 +514,7 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
     try:
         # 1. Stream canonical upload, inspect detail, upload + delete a temp rule file
         stream_up = client.post(
-            "/api/canonical/upload/stream",
+            "/api/v1/canonical/upload/stream",
             data={"domain": "legal"},
             files={
                 "file": (
@@ -510,40 +530,40 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
         assert up_events[-1]["event"] == "complete"
         assert up_events[-1]["total_authorities"] == 1
 
-        detail_res = client.get("/api/canonical/documents/legal/statutes.md")
+        detail_res = client.get("/api/v1/canonical/documents/legal/statutes.md")
         assert detail_res.status_code == 200
         assert len(detail_res.json()["authorities"]) == 1
         assert "Written notice is mandatory" in detail_res.json()["toc_markdown"]
 
         extra_up = client.post(
-            "/api/canonical/upload",
+            "/api/v1/canonical/upload",
             data={"domain": "legal"},
             files={"file": ("temp_rule.md", b"# Temp\n\n## Rule\nTemporary.\n", "text/markdown")},
         )
         assert extra_up.status_code == 200
-        del_can = client.delete("/api/canonical/files/legal/temp_rule.md")
+        del_can = client.delete("/api/v1/canonical/files/legal/temp_rule.md")
         assert del_can.status_code == 200
         assert del_can.json()["total_authorities"] == 1
 
         # 2. Matter upload, file listing, delete, and streaming ingest
-        client.post("/api/matters", json={"matter_id": "m_api_ckpt"})
+        client.post("/api/v1/matters", json={"matter_id": "m_api_ckpt"})
         client.post(
-            "/api/matters/m_api_ckpt/upload",
+            "/api/v1/matters/m_api_ckpt/upload",
             files={"file": ("Exhibit_A.md", b"Delivered signed notice on October 12, 2026.\n", "text/markdown")},
         )
         client.post(
-            "/api/matters/m_api_ckpt/upload",
+            "/api/v1/matters/m_api_ckpt/upload",
             files={"file": ("Noise.md", b"Unneeded file.\n", "text/markdown")},
         )
-        files_res = client.get("/api/matters/m_api_ckpt/files")
+        files_res = client.get("/api/v1/matters/m_api_ckpt/files")
         assert files_res.status_code == 200
         assert {f["filename"] for f in files_res.json()["files"]} == {"Exhibit_A.md", "Noise.md"}
 
-        del_matter_res = client.delete("/api/matters/m_api_ckpt/files/Noise.md")
+        del_matter_res = client.delete("/api/v1/matters/m_api_ckpt/files/Noise.md")
         assert del_matter_res.status_code == 200
         assert [f["filename"] for f in del_matter_res.json()["files"]] == ["Exhibit_A.md"]
 
-        ingest_stream_res = client.post("/api/matters/m_api_ckpt/ingest/stream")
+        ingest_stream_res = client.post("/api/v1/matters/m_api_ckpt/ingest/stream")
         assert ingest_stream_res.status_code == 200
         ing_events = _parse_sse_events(ingest_stream_res.text)
         assert any(e.get("event") == "progress" for e in ing_events)
@@ -551,7 +571,7 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
 
         # 3. Start checkpointed streaming run -> Stage 1 pause -> GET /runs/{id}/stream replay
         ask_stream = client.post(
-            "/api/matters/m_api_ckpt/ask/stream",
+            "/api/v1/research/matters/m_api_ckpt/ask/stream",
             json={
                 "question": "Check written notice compliance.",
                 "bundle_id": "api_ckpt_bundle",
@@ -565,29 +585,29 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
         assert s1_events[-1]["event"] == "checkpoint"
         assert s1_events[-1]["run"]["status"] == "awaiting_stage1_approval"
 
-        list_runs_res = client.get("/api/matters/m_api_ckpt/runs")
+        list_runs_res = client.get("/api/v1/research/matters/m_api_ckpt/runs")
         assert list_runs_res.status_code == 200
         assert list_runs_res.json()[0]["run_id"] == run_id
 
-        replay_res = client.get(f"/api/runs/{run_id}/stream")
+        replay_res = client.get(f"/api/v1/research/runs/{run_id}/stream")
         assert replay_res.status_code == 200
         replay_events = _parse_sse_events(replay_res.text)
         assert replay_events[-1]["event"] == "checkpoint"
 
         # 4. Resume Stage 1 -> Stage 2 pause via /resume/stream
-        resume_s2 = client.post(f"/api/runs/{run_id}/resume/stream", json={})
+        resume_s2 = client.post(f"/api/v1/research/runs/{run_id}/resume/stream", json={})
         assert resume_s2.status_code == 200
         s2_events = _parse_sse_events(resume_s2.text)
         assert s2_events[-1]["event"] == "checkpoint"
         assert s2_events[-1]["run"]["status"] == "awaiting_stage2_approval"
 
         # 5. Resume Stage 2 -> Completed bundle via /resume
-        resume_final = client.post(f"/api/runs/{run_id}/resume", json={})
+        resume_final = client.post(f"/api/v1/research/runs/{run_id}/resume", json={})
         assert resume_final.status_code == 200
         assert resume_final.json()["bundle_id"] == "api_ckpt_bundle"
-        assert "api_ckpt_bundle" in BUNDLE_STORE
+        assert "api_ckpt_bundle" in app.state.research_service.bundle_store
     finally:
-        BUNDLE_STORE.pop("api_ckpt_bundle", None)
+        app.state.research_service.bundle_store.pop("api_ckpt_bundle", None)
         app.state.canonical_router = None
         app.state.canonical_ingestor = None
         app.state.matter_ingestor = None
@@ -671,17 +691,17 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
     app.state.blueprint_store = bp_store
 
     try:
-        client = TestClient(app)
+        test_client = TestClient(app)
 
         # 1. Canonical status exposes domain summaries
-        can_res = client.get("/api/canonical")
+        can_res = test_client.get("/api/v1/canonical")
         assert can_res.status_code == 200
         assert [d["domain"] for d in can_res.json()["canonical_domains"]] == ["legal"]
 
         # 2. Upload matter file with reliability_tier & origin_description, then PATCH metadata
-        client.post("/api/matters", json={"matter_id": "m_api_rel"})
-        up_res = client.post(
-            "/api/matters/m_api_rel/upload",
+        test_client.post("/api/v1/matters", json={"matter_id": "m_api_rel"})
+        up_res = test_client.post(
+            "/api/v1/matters/m_api_rel/upload",
             data={
                 "reliability_tier": "self_reported",
                 "origin_description": "Client intake questionnaire",
@@ -692,20 +712,20 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
         assert up_res.json()["files"][0]["reliability_tier"] == "self_reported"
         assert up_res.json()["files"][0]["origin_description"] == "Client intake questionnaire"
 
-        patch_res = client.patch(
-            "/api/matters/m_api_rel/files/Survey.md/metadata",
+        patch_res = test_client.patch(
+            "/api/v1/matters/m_api_rel/files/Survey.md/metadata",
             json={"reliability_tier": "self_reported", "origin_description": "Signed intake PDF"},
         )
         assert patch_res.status_code == 200
         assert patch_res.json()["files"][0]["origin_description"] == "Signed intake PDF"
 
         # 3. Blueprint CRUD + strict ask execution
-        bp_list = client.get("/api/blueprints")
+        bp_list = test_client.get("/api/v1/research/blueprints")
         assert bp_list.status_code == 200
         assert len(bp_list.json()) >= 2
 
-        create_bp = client.post(
-            "/api/blueprints",
+        create_bp = test_client.post(
+            "/api/v1/research/blueprints",
             json={
                 "blueprint_id": "api_custom_bp",
                 "title": "API Custom Blueprint",
@@ -728,8 +748,8 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
         assert create_bp.status_code == 200
         assert create_bp.json()["blueprint_id"] == "api_custom_bp"
 
-        ask_res = client.post(
-            "/api/matters/m_api_rel/ask",
+        ask_res = test_client.post(
+            "/api/v1/research/matters/m_api_rel/ask",
             json={
                 "question": "Check payroll liability.",
                 "bundle_id": "api_bp_bundle",
@@ -744,10 +764,10 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
         # Uncorroborated self_reported survey evidence deterministically downgraded to assumption
         assert claim["audit"]["status"] == "assumption"
 
-        del_bp = client.delete("/api/blueprints/api_custom_bp")
+        del_bp = test_client.delete("/api/v1/research/blueprints/api_custom_bp")
         assert del_bp.status_code == 200
     finally:
-        BUNDLE_STORE.pop("api_bp_bundle", None)
+        app.state.research_service.bundle_store.pop("api_bp_bundle", None)
         app.state.canonical_router = None
         app.state.canonical_ingestor = None
         app.state.matter_ingestor = None
@@ -763,7 +783,7 @@ def test_raw_file_serving_and_bundle_available_files_metadata(tmp_path: Path) ->
 
     canonical_dir = tmp_path / "canonical"
     matters_root = tmp_path / "matters"
-    client = TestClient(app)
+    test_client = TestClient(app)
 
     app.state.canonical_router = CanonicalRouter(canonical_dir)
     app.state.canonical_ingestor = CanonicalIngestor(canonical_dir)
@@ -771,40 +791,40 @@ def test_raw_file_serving_and_bundle_available_files_metadata(tmp_path: Path) ->
     app.state.llm_provider = MockLLMProvider()
 
     try:
-        client.post("/api/matters", json={"matter_id": "m_raw_serve"})
+        test_client.post("/api/v1/matters", json={"matter_id": "m_raw_serve"})
         matter_bytes = b"# Exhibit A\n\nSigned statement from CFO confirming wire amount.\n"
-        up_matter = client.post(
-            "/api/matters/m_raw_serve/upload",
+        up_matter = test_client.post(
+            "/api/v1/matters/m_raw_serve/upload",
             files={"file": ("Exhibit_A.md", matter_bytes, "text/markdown")},
         )
         assert up_matter.status_code == 200
 
-        raw_matter_res = client.get("/api/matters/m_raw_serve/files/Exhibit_A.md/raw")
+        raw_matter_res = test_client.get("/api/v1/matters/m_raw_serve/files/Exhibit_A.md/raw")
         assert raw_matter_res.status_code == 200
         assert "inline" in raw_matter_res.headers.get("content-disposition", "").lower()
         assert raw_matter_res.headers.get("content-type", "").startswith("text/plain")
         assert raw_matter_res.content == matter_bytes
 
-        missing_matter_res = client.get("/api/matters/m_raw_serve/files/Missing.pdf/raw")
+        missing_matter_res = test_client.get("/api/v1/matters/m_raw_serve/files/Missing.pdf/raw")
         assert missing_matter_res.status_code == 404
 
         canonical_bytes = b"# Jurisdiction Statute\n\n## Section 1332\nDiversity threshold applies.\n"
-        up_canonical = client.post(
-            "/api/canonical/upload",
+        up_canonical = test_client.post(
+            "/api/v1/canonical/upload",
             data={"domain": "legal"},
             files={"file": ("statutes.md", canonical_bytes, "text/markdown")},
         )
         assert up_canonical.status_code == 200
 
-        raw_canonical_res = client.get("/api/canonical/files/legal/statutes.md/raw")
+        raw_canonical_res = test_client.get("/api/v1/canonical/files/legal/statutes.md/raw")
         assert raw_canonical_res.status_code == 200
         assert "inline" in raw_canonical_res.headers.get("content-disposition", "").lower()
         assert raw_canonical_res.content == canonical_bytes
 
-        missing_canonical_res = client.get("/api/canonical/files/legal/missing.pdf/raw")
+        missing_canonical_res = test_client.get("/api/v1/canonical/files/legal/missing.pdf/raw")
         assert missing_canonical_res.status_code == 404
 
-        bundle_res = client.get("/api/bundles/legal_motion_1332")
+        bundle_res = test_client.get("/api/v1/research/bundles/legal_motion_1332")
         assert bundle_res.status_code == 200
         available = bundle_res.json()["artifact"]["metadata"].get("available_raw_files")
         assert isinstance(available, list)
@@ -813,4 +833,45 @@ def test_raw_file_serving_and_bundle_available_files_metadata(tmp_path: Path) ->
         app.state.canonical_ingestor = None
         app.state.matter_ingestor = None
         app.state.llm_provider = None
+
+
+def test_unified_platform_apps_isolation_tables_and_ledgers(tmp_path: Path) -> None:
+    """Verifies `/api/v1/apps`, `--apps bankruptcy` hiding `/research`, tables, and ledgers."""
+    ws = tmp_path / "ws"
+    shutil.copytree(Path("canonical/tables/bankruptcy"), ws / "canonical" / "tables" / "bankruptcy")
+    shutil.copytree(Path("templates"), ws / "templates")
+    shutil.copytree(Path("static"), ws / "static")
+
+    # 1. Both apps co-mounted
+    both_app = create_platform_app(base_dir=ws, enabled_apps=["bankruptcy", "research"], seed_samples=True)
+    c_both = TestClient(both_app)
+    apps_res = c_both.get("/api/v1/apps")
+    assert apps_res.status_code == 200
+    assert apps_res.json()["default_app"] == "bankruptcy"
+    assert [a["app_id"] for a in apps_res.json()["apps"]] == ["bankruptcy", "research"]
+
+    cases_res = c_both.get("/api/v1/apps/cases")
+    assert cases_res.status_code == 200
+    assert any(r["app_id"] == "bankruptcy" for r in cases_res.json()["cases"])
+    assert any(r["app_id"] == "research" for r in cases_res.json()["cases"])
+
+    tbl_sync = c_both.post("/api/v1/tables/bankruptcy/sync")
+    assert tbl_sync.status_code == 200
+    assert tbl_sync.json()["domain"] == "bankruptcy"
+    assert len(tbl_sync.json()["tables_verified"]) >= 4
+
+    ledgers_res = c_both.get("/api/v1/matters/bk_ch7_cacb_martinez/ledgers")
+    assert ledgers_res.status_code == 200
+    assert len(ledgers_res.json()["ledgers"]) == 1
+    assert ledgers_res.json()["ledgers"][0]["app_id"] == "bankruptcy"
+
+    # 2. Bankruptcy-only partner launcher hides /research completely
+    bk_only = create_platform_app(base_dir=ws, enabled_apps=["bankruptcy"], seed_samples=True)
+    c_bk = TestClient(bk_only)
+    apps_only = c_bk.get("/api/v1/apps").json()
+    assert [a["app_id"] for a in apps_only["apps"]] == ["bankruptcy"]
+    assert c_bk.get("/bankruptcy").status_code == 200
+    assert c_bk.get("/research").status_code == 404
+    assert c_bk.get("/api/v1/research/bundles").status_code == 404
+
 

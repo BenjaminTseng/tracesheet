@@ -84,22 +84,6 @@ def build_research_router(service: ResearchCompilerService) -> APIRouter:
     """Builds the `/api/v1/research` FastAPI router bound to `service`."""
     router = APIRouter()
 
-    def _state_overrides(request: Request) -> Dict[str, Any]:
-        st = request.app.state
-        return {
-            "llm_override": getattr(st, "llm_provider", None),
-            "canonical_override": getattr(st, "canonical_router", None),
-            "ingestor_override": getattr(st, "matter_ingestor", None),
-            "blueprints_root_override": getattr(st, "blueprints_root", None),
-            "llm_config": getattr(st, "llm_config", None),
-        }
-
-    def _build_runner(request: Request, allow_mock_fallback: bool = False) -> AuditPipelineRunner:
-        return service.make_runner(
-            **_state_overrides(request),
-            allow_mock_fallback=allow_mock_fallback,
-        )
-
     def _get_blueprint_store(request: Request) -> BlueprintStore:
         explicit = getattr(request.app.state, "blueprint_store", None)
         if explicit is not None:
@@ -108,6 +92,23 @@ def build_research_router(service: ResearchCompilerService) -> APIRouter:
         if bp_root is not None:
             return BlueprintStore(Path(bp_root))
         return service.blueprint_store
+
+    def _state_overrides(request: Request) -> Dict[str, Any]:
+        st = request.app.state
+        bp_store = _get_blueprint_store(request)
+        return {
+            "llm_override": getattr(st, "llm_provider", None),
+            "canonical_override": getattr(st, "canonical_router", None),
+            "ingestor_override": getattr(st, "matter_ingestor", None),
+            "blueprints_root_override": bp_store.blueprints_root,
+            "llm_config": getattr(st, "llm_config", None),
+        }
+
+    def _build_runner(request: Request, allow_mock_fallback: bool = False) -> AuditPipelineRunner:
+        return service.make_runner(
+            **_state_overrides(request),
+            allow_mock_fallback=allow_mock_fallback,
+        )
 
     def _launch_run_background(
         runner: AuditPipelineRunner,

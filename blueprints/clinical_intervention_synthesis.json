@@ -1,0 +1,46 @@
+{
+  "blueprint_id": "clinical_intervention_synthesis",
+  "title": "Clinical Intervention Evidence Synthesis",
+  "domain": "medical",
+  "description": "Structured guideline-vs-trial evidence review for therapeutic efficacy & safety.",
+  "default_domains": [
+    "medical"
+  ],
+  "document_title_template": "Clinical Evidence Synthesis — {matter_id}",
+  "executive_summary_intent": "Synthesize consensus guidelines, randomized trial efficacy outcomes, contraindications, and residual uncertainty across provided literature.",
+  "sections": [
+    {
+      "section_id": "sec_01",
+      "section_title": "I. Guideline Standard of Care & Diagnostic Criteria",
+      "stated_intention": "Establish baseline society/government guideline recommendations and patient eligibility.",
+      "routing_rationale": "Anchor recommendations in authoritative clinical guidelines `(b)`.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Target patient population, baseline severity, and exclusion criteria in provided packet"
+      ]
+    },
+    {
+      "section_id": "sec_02",
+      "section_title": "II. Comparative Efficacy From Trials & Observational Studies",
+      "stated_intention": "Quantify effect sizes, confidence intervals, and endpoints across primary studies.",
+      "routing_rationale": "Extract quantitative primary endpoints and distinguish RCTs from observational cohorts.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Primary clinical trial sample sizes, endpoints, and hazard/odds ratios",
+        "Observational cohort outcomes and confounding adjustments"
+      ]
+    },
+    {
+      "section_id": "sec_03",
+      "section_title": "III. Safety Profile, Contraindications & Evidence Gaps",
+      "stated_intention": "Document adverse event rates, conflicting trial results, and methodological limitations.",
+      "routing_rationale": "Surface safety trade-offs and open trial/guideline discrepancies honestly.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Reported severe adverse events, discontinuation rates, and contraindications"
+      ]
+    }
+  ],
+  "created_at": "2026-11-20T18:12:44.924084+00:00",
+  "updated_at": "2026-11-20T18:12:44.924192+00:00"
+}

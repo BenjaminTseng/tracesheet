@@ -1,0 +1,48 @@
+{
+  "blueprint_id": "ch11_wage_motion",
+  "title": "Chapter 11 First-Day Pre-Petition Wage Motion",
+  "domain": "legal",
+  "description": "Structured outline for Ch. 11 first-day employee wage & benefit continuity motions.",
+  "default_domains": [
+    "legal"
+  ],
+  "document_title_template": "Chapter 11 Pre-Petition Wage Motion — {matter_id}",
+  "executive_summary_intent": "Establish statutory priority, payroll liabilities, and operational necessity for paying pre-petition employee wages and withholding obligations.",
+  "sections": [
+    {
+      "section_id": "sec_01",
+      "section_title": "I. Payroll Obligations & Statutory Wage Cap",
+      "stated_intention": "Quantify unpaid pre-petition wages per employee against 11 U.S.C. § 507(a)(4) caps.",
+      "routing_rationale": "Requires statutory priority thresholds and payroll register totals.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Total pre-petition accrued employee wages and pay period dates",
+        "Maximum unpaid wage amount owed to any individual employee"
+      ]
+    },
+    {
+      "section_id": "sec_02",
+      "section_title": "II. Trust-Fund Taxes, Benefits & Lien Priorities",
+      "stated_intention": "Verify payroll taxes, benefit withholdings, and secured lender cash-collateral position.",
+      "routing_rationale": "Checks trust-fund exclusions and secured lender consent or carve-outs.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Unremitted payroll tax withholdings and benefit premiums",
+        "Secured loan / cash collateral restrictions on operational disbursements"
+      ]
+    },
+    {
+      "section_id": "sec_03",
+      "section_title": "III. Cash Liquidity & Doctrine of Necessity",
+      "stated_intention": "Demonstrate post-petition liquidity coverage and going-concern harm if unpaid.",
+      "routing_rationale": "Synthesizes debtor cash runway and workforce retention risks.",
+      "governing_authorities": [],
+      "required_fact_queries": [
+        "Current operating cash balance and 13-week cash forecast",
+        "Operational dependencies and workforce attrition risk disclosures"
+      ]
+    }
+  ],
+  "created_at": "2026-11-20T18:12:44.924028+00:00",
+  "updated_at": "2026-11-20T18:12:44.924103+00:00"
+}

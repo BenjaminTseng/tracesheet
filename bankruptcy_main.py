@@ -1,8 +1,7 @@
-"""Standalone entrypoint for the Bankruptcy Case Workbench Webapp (`bankruptcy_main.py`).
+"""Thin partner-demo launcher running only `/bankruptcy` on port `8001`.
 
-Runs completely independently of the Broadsheet Research Webapp (`main.py`) on
-port `8001` by default, sharing `app/core/` verification primitives while serving
-`templates/bankruptcy.html` and `/api/v1/bankruptcy/*`.
+Delegates to `app.server.create_platform_app(..., enabled_apps=["bankruptcy"])`,
+which hides `/research` and the top-bar app switcher dropdown automatically.
 
 Usage:
     uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001 --name bk_workbench
@@ -12,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import logging
 from pathlib import Path
 from typing import List, Optional
@@ -19,8 +19,9 @@ from typing import List, Optional
 import uvicorn
 from dotenv import load_dotenv
 
-from app.compilers.bankruptcy.routes import create_bankruptcy_app
 from app.core.llm import create_llm_provider
+from app.core.tables import StatutoryTableRegistry
+from app.server import create_platform_app
 
 
 def configure_logging(log_prefix: str = "bk_workbench") -> Path:
@@ -39,9 +40,9 @@ def configure_logging(log_prefix: str = "bk_workbench") -> Path:
 
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    """Parses CLI flags for configuring the standalone bankruptcy workbench server."""
+    """Parses CLI flags for configuring the bankruptcy-only partner launcher."""
     parser = argparse.ArgumentParser(
-        description="Standalone Bankruptcy Case Workbench Webapp (Ch. 7 & 13, CACB/CAEB)"
+        description="Bankruptcy-Only Partner Launcher (Ch. 7 & 13, CACB/CAEB)"
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host address")
     parser.add_argument("--port", type=int, default=8001, help="Bind port (default 8001)")
@@ -63,14 +64,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    """Launches the standalone Bankruptcy Case Workbench Uvicorn server or runs table sync."""
-    load_dotenv(Path(__file__).resolve().parent / ".env")
+    """Launches the bankruptcy-only Uvicorn server or runs table sync."""
+    base_dir = Path(__file__).resolve().parent
+    load_dotenv(base_dir / ".env")
     args = parse_args(argv)
     if args.sync_statutory_tables:
-        import json
-        from app.core.tables import StatutoryTableRegistry
-
-        reg = StatutoryTableRegistry(Path(__file__).resolve().parent / "canonical" / "tables" / "bankruptcy")
+        reg = StatutoryTableRegistry(base_dir / "canonical" / "tables" / "bankruptcy")
         print(json.dumps(reg.sync_statutory_tables(), indent=2))
         return
 
@@ -80,8 +79,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         api_key=args.api_key,
         model=args.model,
     )
-    app = create_bankruptcy_app(
-        base_dir=Path(__file__).resolve().parent,
+    app = create_platform_app(
+        base_dir=base_dir,
+        enabled_apps=["bankruptcy"],
+        default_app="bankruptcy",
         llm_provider=llm_provider,
         seed_samples=True,
     )

@@ -25,20 +25,24 @@ def test_index_renders_html() -> None:
 
     bk_res = client.get("/bankruptcy")
     assert bk_res.status_code == 200
-    assert "/static/bankruptcy.js" in bk_res.text
+    assert "/static/apps/bankruptcy/app.js" in bk_res.text
 
     rs_res = client.get("/research")
     assert rs_res.status_code == 200
     assert "Audit-Grounded Spatial Document Canvas" in rs_res.text
     assert "/static/vendor/preact.mjs" in rs_res.text
-    assert "/static/app.js" in rs_res.text
+    assert "/static/apps/research/app.js" in rs_res.text
 
     for asset in (
         "/static/vendor/preact.mjs",
         "/static/vendor/hooks.mjs",
         "/static/vendor/htm.mjs",
-        "/static/app.js",
-        "/static/bankruptcy.js",
+        "/static/core/shell.js",
+        "/static/core/canvas.js",
+        "/static/core/inspector.js",
+        "/static/core/stepper.js",
+        "/static/apps/research/app.js",
+        "/static/apps/bankruptcy/app.js",
         "/static/styles.css",
     ):
         asset_res = client.get(asset)

@@ -1,254 +1,28 @@
-import { h, render } from 'preact';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks';
-import htm from 'htm';
-
-const html = htm.bind(h);
-
-/**
- * Consistent crisp 1.6px-stroke SVG icon primitives (no raw Unicode/emoji glyphs).
- */
-function Icon({ name, size = 14 }) {
-  const props = {
-    width: size,
-    height: size,
-    viewBox: '0 0 16 16',
-    fill: 'none',
-    stroke: 'currentColor',
-    'stroke-width': '1.5',
-    'stroke-linecap': 'square',
-    'stroke-linejoin': 'miter',
-    'aria-hidden': 'true',
-    style: 'flex-shrink: 0;',
-  };
-  switch (name) {
-    case 'comment':
-      return html`<svg ...${props}><path d="M2.5 3h11v7.5h-6L4.5 13v-2.5h-2V3z" /></svg>`;
-    case 'source':
-      return html`<svg ...${props}><path d="M3 2h7l3 3v9H3V2z" /><path d="M10 2v3h3" /><path d="M5.5 8.5h5M5.5 11h3.5" /></svg>`;
-    case 'link':
-      return html`<svg ...${props}><path d="M3 8h10M9.5 4.5L13 8l-3.5 3.5" /></svg>`;
-    case 'close':
-      return html`<svg ...${props}><path d="M4 4l8 8M12 4l-8 8" /></svg>`;
-    case 'plus':
-      return html`<svg ...${props}><path d="M8 3v10M3 8h10" /></svg>`;
-    case 'more':
-      return html`<svg ...${props}><circle cx="3.5" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r="1" fill="currentColor" stroke="none" /></svg>`;
-    case 'check':
-      return html`<svg ...${props}><path d="M3.5 8.5L6.5 11.5L12.5 4.5" /></svg>`;
-    case 'chevronRight':
-      return html`<svg ...${props}><path d="M6 3.5L10.5 8L6 12.5" /></svg>`;
-    case 'chevronDown':
-      return html`<svg ...${props}><path d="M3.5 6L8 10.5L12.5 6" /></svg>`;
-    case 'trash':
-      return html`<svg ...${props}><path d="M2.5 4.5h11M6 4.5V3h4v1.5M4.5 4.5l.7 8.5h5.6l.7-8.5" /></svg>`;
-    case 'folder':
-      return html`<svg ...${props}><path d="M2.5 3.5h4l1.5 1.5h5.5v7.5h-11V3.5z" /></svg>`;
-    case 'play':
-      return html`<svg ...${props}><path d="M4.5 3.5L12.5 8l-8 4.5V3.5z" /></svg>`;
-    default:
-      return null;
-  }
-}
-
-function formatAuditStatus(status) {
-  const map = {
-    verified: 'Verified',
-    extrapolation: 'Extrapolation',
-    assumption: 'Assumption',
-    disputed: 'Disputed',
-    unverified: 'Unverified',
-  };
-  return map[status] || status;
-}
-
-function isCaveatStatus(status) {
-  return (
-    status === 'extrapolation' ||
-    status === 'assumption' ||
-    status === 'disputed' ||
-    status === 'unverified'
-  );
-}
-
-function formatNodeRole(type) {
-  const map = {
-    claim: 'Claim',
-    evidence: 'Direct Evidence',
-    reasoning: 'Logical Inference',
-    calculation: 'Calculation',
-    assumption: 'Baseline Assumption',
-    authority: 'Controlling Rule',
-  };
-  return map[type] || type;
-}
-
-function getLinkRoleMeta(targetNode) {
-  const status = targetNode?.audit?.status || 'verified';
-  if (isCaveatStatus(status)) {
-    return { label: 'Caveat', toneClass: 'is-caveat', stroke: '#B45309' };
-  }
-  switch (targetNode?.type) {
-    case 'calculation':
-      return { label: 'Math', toneClass: 'is-math', stroke: '#14532D' };
-    case 'authority':
-      return { label: 'Rule', toneClass: 'is-rule', stroke: '#B84A27' };
-    case 'reasoning':
-      return { label: 'Logic', toneClass: '', stroke: '#14284B' };
-    case 'assumption':
-      return { label: 'Caveat', toneClass: 'is-caveat', stroke: '#B45309' };
-    default:
-      return { label: 'Fact', toneClass: '', stroke: '#14284B' };
-  }
-}
-
-function formatScopeTag(comment, nodesMap) {
-  if (comment.scope === 'document' || comment.section_id === '__document__') {
-    return { label: 'Overall Memo', cls: 'is-document' };
-  }
-  if (comment.scope === 'section' || comment.node_id === '__section__') {
-    return { label: 'Section', cls: '' };
-  }
-  if (comment.scope === 'link') {
-    return { label: 'Logical Link', cls: 'is-link' };
-  }
-  const node = nodesMap?.[comment.node_id];
-  return { label: node ? formatNodeRole(node.type) : 'Node', cls: '' };
-}
-
-function formatReliabilityTier(tier) {
-  switch (tier) {
-    case 'primary_record':
-      return { label: 'Primary Record', cls: 'is-primary' };
-    case 'secondary_analysis':
-      return { label: 'Secondary Analysis', cls: 'is-secondary' };
-    case 'self_reported':
-      return { label: 'Self-Reported', cls: 'is-self-reported' };
-    default:
-      return null;
-  }
-}
-
-function formatProvenanceParts(locator) {
-  if (!locator) return { label: '', coord: '' };
-  switch (locator.source_type) {
-    case 'pdf':
-      return {
-        label: locator.file_name || 'Filing.pdf',
-        coord: `p. ${locator.page || 1}`,
-      };
-    case 'spreadsheet':
-      return {
-        label: `${locator.file_name || 'Model.xlsx'} (${locator.sheet || 'Sheet1'})`,
-        coord: locator.cell_range || 'A1',
-      };
-    case 'api':
-      return {
-        label: 'API Telemetry',
-        coord: `${locator.method || 'GET'} ${locator.endpoint || '/api'}`,
-      };
-    case 'internal_db':
-      return {
-        label: 'SQL Verification',
-        coord: `${locator.database || 'db'}.${locator.table || 'table'} [${locator.row_id || 'row'}]`,
-      };
-    case 'web':
-      return {
-        label: 'Archival Snapshot',
-        coord: locator.locator_key || '',
-      };
-    case 'markdown':
-      return {
-        label: locator.file_name || 'Document.md',
-        coord: locator.locator_key || '',
-      };
-    case 'docx':
-      return {
-        label: locator.file_name || 'Document.docx',
-        coord: locator.locator_key || '',
-      };
-    default:
-      return { label: locator.source_type || '', coord: '' };
-  }
-}
-
-function formatApiError(detailOrErr) {
-  if (!detailOrErr) return 'An unexpected error occurred.';
-  if (typeof detailOrErr === 'string') return detailOrErr;
-  const detail = detailOrErr.detail !== undefined ? detailOrErr.detail : detailOrErr;
-  if (typeof detail === 'string') return detail;
-  if (Array.isArray(detail)) {
-    return detail
-      .map((item) => {
-        if (typeof item === 'string') return item;
-        const loc = Array.isArray(item?.loc) ? item.loc.slice(1).join('.') : '';
-        return loc ? `${loc}: ${item.msg || 'invalid value'}` : item?.msg || JSON.stringify(item);
-      })
-      .join('; ');
-  }
-  return detailOrErr.message || JSON.stringify(detail);
-}
-
-function resolveSourceFileUrl(node, bundle, mattersList, canonicalAuths) {
-  if (!node) return null;
-  const loc = node.locator;
-
-  if (node.type === 'authority') {
-    const matchedAuth = (canonicalAuths || []).find(
-      (a) =>
-        (loc?.locator_key && a.auth_id === loc.locator_key) ||
-        (node.title && a.title === node.title)
-    );
-    const docId = matchedAuth?.doc_id || loc?.file_name || '';
-    if (docId && docId.includes('/')) {
-      const parts = docId.split('/');
-      const domain = parts[0];
-      const fileName = parts.slice(1).join('/');
-      return {
-        url: `/api/canonical/files/${encodeURIComponent(domain)}/${encodeURIComponent(fileName)}/raw`,
-        existsOnDisk: true,
-        isSampleFixture: false,
-        label: 'Open Controlling Rule ↗',
-        fileName,
-      };
-    }
-  }
-
-  const fileName = loc?.file_name;
-  if (!fileName) return null;
-
-  const matterId = bundle?.matter_id || null;
-  const metaFiles = Array.isArray(bundle?.artifact?.metadata?.available_raw_files)
-    ? bundle.artifact.metadata.available_raw_files
-    : null;
-  const matterObj = (mattersList || []).find((m) => m.matter_id === matterId);
-  const availableFiles = metaFiles !== null ? metaFiles : matterObj?.raw_files || [];
-  const existsOnDisk = Boolean(matterId && availableFiles.includes(fileName));
-
-  if (existsOnDisk) {
-    const baseUrl = `/api/matters/${encodeURIComponent(matterId)}/files/${encodeURIComponent(fileName)}/raw`;
-    const isPdf = loc.source_type === 'pdf' || fileName.toLowerCase().endsWith('.pdf');
-    const url = isPdf && loc.page ? `${baseUrl}#page=${loc.page}` : baseUrl;
-    const label =
-      isPdf && loc.page
-        ? `Open Original PDF (p. ${loc.page}) ↗`
-        : 'Open / Download Source File ↗';
-    return {
-      url,
-      existsOnDisk: true,
-      isSampleFixture: false,
-      label,
-      fileName,
-    };
-  }
-
-  return {
-    url: null,
-    existsOnDisk: false,
-    isSampleFixture: true,
-    label: 'Sample Fixture (No Raw File on Disk)',
-    fileName,
-  };
-}
+import { render } from '/static/vendor/preact.mjs';
+import { useState, useEffect, useRef, useCallback, useMemo } from '/static/vendor/hooks.mjs';
+import {
+  html,
+  Icon,
+  ExternalIcon,
+  ArrowRightIcon,
+  PlatformShell,
+  formatAuditStatus,
+  isCaveatStatus,
+  formatNodeRole,
+  getLinkRoleMeta,
+  formatScopeTag,
+  formatReliabilityTier,
+  formatProvenanceParts,
+  formatApiError,
+  formatBytes,
+  formatRunStatusLabel,
+  resolveSourceFileUrl,
+} from '../../core/shell.js';
+import {
+  renderAnnotatedText,
+  TraceabilityCanvas,
+} from '../../core/canvas.js';
+import { SourceInspectorDrawer } from '../../core/inspector.js';
 
 const ACTIVE_RUN_STORAGE_KEY = 'jd_screen_active_run_id';
 
@@ -270,25 +44,6 @@ function loadActiveRunId() {
   } catch {
     return null;
   }
-}
-
-function formatBytes(bytes) {
-  if (bytes == null || Number.isNaN(Number(bytes))) return '—';
-  const n = Number(bytes);
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function formatRunStatusLabel(status) {
-  const map = {
-    running: 'Running',
-    awaiting_stage1_approval: 'Paused: Stage 1 Outline',
-    awaiting_stage2_approval: 'Paused: Stage 2 Facts',
-    completed: 'Completed',
-    failed: 'Failed',
-  };
-  return map[status] || status || 'Unknown';
 }
 
 /**
@@ -362,7 +117,7 @@ async function _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint
 }
 
 /**
- * Streams the 4-stage SSE pipeline from `/api/matters/:matter_id/ask/stream`.
+ * Streams the 4-stage SSE pipeline from `/api/v1/research/matters/:matter_id/ask/stream`.
  */
 async function streamAskPipeline({
   matterId,
@@ -376,7 +131,7 @@ async function streamAskPipeline({
   onRunStarted,
   onCheckpoint,
 }) {
-  const res = await fetch(`/api/matters/${matterId}/ask/stream`, {
+  const res = await fetch(`/api/v1/research/matters/${matterId}/ask/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -393,7 +148,7 @@ async function streamAskPipeline({
 }
 
 /**
- * Streams resumption of a persisted/checkpointed run via `/api/runs/:run_id/resume/stream`.
+ * Streams resumption of a persisted/checkpointed run via `/api/v1/research/runs/:run_id/resume/stream`.
  */
 async function resumeRunStream({
   runId,
@@ -409,7 +164,7 @@ async function resumeRunStream({
   if (reharvestSectionIds !== null) payload.reharvest_section_ids = reharvestSectionIds;
   if (checkpointMode !== null) payload.checkpoint_mode = checkpointMode;
 
-  const res = await fetch(`/api/runs/${runId}/resume/stream`, {
+  const res = await fetch(`/api/v1/research/runs/${runId}/resume/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -418,10 +173,10 @@ async function resumeRunStream({
 }
 
 /**
- * Replays recorded events and subscribes to live updates on `GET /api/runs/:run_id/stream`.
+ * Replays recorded events and subscribes to live updates on `GET /api/v1/research/runs/:run_id/stream`.
  */
 async function connectRunStream({ runId, onProgress, onRunStarted, onCheckpoint }) {
-  const res = await fetch(`/api/runs/${runId}/stream`);
+  const res = await fetch(`/api/v1/research/runs/${runId}/stream`);
   return _consumePipelineSSE(res, { onProgress, onRunStarted, onCheckpoint });
 }
 
@@ -439,383 +194,6 @@ async function streamUploadOrIngest(url, fetchInit, onProgress) {
     }
   });
   return completePayload;
-}
-
-/**
- * Parses `<ref id='node_id'>clause</ref>` tags into interactive inline text highlights.
- */
-function renderAnnotatedText({
-  text,
-  nodesMap,
-  activeNodeIds,
-  tensionClaimIds,
-  auditFilter,
-  onHoverRef,
-  onLeaveRef,
-  onClickRef,
-  level = 0,
-}) {
-  if (!text) return null;
-  const regex = /<ref\s+id=['"]([^'"]+)['"]>(.*?)<\/ref>/gs;
-  const parts = [];
-  let lastIndex = 0;
-  let match;
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    const targetId = match[1];
-    const innerText = match[2];
-    const targetNode = nodesMap[targetId];
-    const status = targetNode?.audit?.status || 'verified';
-    const isActive = activeNodeIds.has(targetId);
-    const isTensionPeer = tensionClaimIds.has(targetId);
-    const hasCaveat = isCaveatStatus(status) || isTensionPeer;
-
-    const matchesFilter =
-      auditFilter === 'all' ||
-      (auditFilter === 'caveats' && hasCaveat) ||
-      (auditFilter === 'tension' && isTensionPeer);
-
-    const classNames = [
-      'clause-highlight',
-      isActive ? 'is-active' : '',
-      hasCaveat ? 'is-caveat' : '',
-      !matchesFilter ? 'is-dimmed' : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-
-    parts.push(html`
-      <button
-        type="button"
-        key="${targetId}-${match.index}"
-        class=${classNames}
-        data-ref-node-id=${targetId}
-        data-ref-level=${level}
-        aria-pressed=${isActive}
-        onMouseEnter=${(e) => onHoverRef(targetId, e.currentTarget, level)}
-        onMouseLeave=${onLeaveRef}
-        onFocus=${(e) => onHoverRef(targetId, e.currentTarget, level)}
-        onBlur=${onLeaveRef}
-        onClick=${(e) => {
-          e.stopPropagation();
-          onClickRef(targetId, level);
-        }}
-      >
-        ${innerText}
-      </button>
-    `);
-
-    lastIndex = regex.lastIndex;
-  }
-
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts;
-}
-
-/**
- * Slide-Over Source Inspector Drawer.
- */
-function SourceInspectorDrawer({ node, sourceLink, onClose }) {
-  const closeBtnRef = useRef(null);
-
-  useEffect(() => {
-    if (!node) return undefined;
-    const prevFocus = document.activeElement;
-    requestAnimationFrame(() => closeBtnRef.current?.focus());
-    return () => {
-      if (prevFocus && typeof prevFocus.focus === 'function') {
-        prevFocus.focus();
-      }
-    };
-  }, [node?.id]);
-
-  if (!node) return null;
-  const loc = node.locator || {};
-  const audit = node.audit || {};
-  const status = audit.status || 'verified';
-
-  return html`
-    <div
-      class="inspector-backdrop"
-      onClick=${(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <aside
-        class="source-inspector-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="inspector-drawer-title"
-      >
-        <div class="drawer-header">
-          <h2 id="inspector-drawer-title" class="card-heading" style="font-size: 18px;">
-            ${node.title}
-          </h2>
-          <button
-            ref=${closeBtnRef}
-            type="button"
-            class="btn btn-icon-only"
-            aria-label="Close source inspector"
-            onClick=${onClose}
-          >
-            <${Icon} name="close" />
-          </button>
-        </div>
-
-        <div class="drawer-body">
-          <div class="card-meta-row" style="border-bottom: 1px solid var(--color-border-subtle); padding-bottom: 8px; flex-wrap: wrap;">
-            <span style="display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span class="arch-stamp ${isCaveatStatus(status) ? 'is-caveat' : ''}">
-                ${formatAuditStatus(status)}
-                <span class="font-mono-data">${Math.round((audit.score || 1) * 100)}%</span>
-              </span>
-              <span class="control-label">
-                ${formatNodeRole(node.type)}${loc.source_type ? ` · ${loc.source_type}` : ''}
-              </span>
-            </span>
-            <span class="provenance-caption">
-              Verified by ${audit.evaluator_type || 'deterministic'} check
-            </span>
-          </div>
-
-          ${(loc.reliability_tier || loc.origin_description) && html`
-            <div class="provenance-origin-row">
-              ${formatReliabilityTier(loc.reliability_tier) && html`
-                <span class="reliability-pill ${formatReliabilityTier(loc.reliability_tier).cls}">
-                  ${formatReliabilityTier(loc.reliability_tier).label}
-                </span>
-              `}
-              ${loc.origin_description && html`
-                <span class="provenance-origin-text">${loc.origin_description}</span>
-              `}
-            </div>
-          `}
-
-          ${sourceLink && html`
-            <div class="provenance-origin-row">
-              ${sourceLink.existsOnDisk && sourceLink.url ? html`
-                <a
-                  href=${sourceLink.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="btn btn-compact btn-primary"
-                  style="text-decoration: none;"
-                >
-                  <${Icon} name="source" size=${12} />
-                  <span>${sourceLink.label}</span>
-                </a>
-              ` : html`
-                <span class="sample-fixture-badge" title="Referenced in sample bundle; raw file is not stored on disk">
-                  ${sourceLink.label}
-                </span>
-              `}
-            </div>
-          `}
-
-          ${audit.evaluator_note && html`
-            <p class="card-body-prose">
-              <strong>Audit Record:</strong> ${audit.evaluator_note}
-            </p>
-          `}
-
-          ${loc.source_type === 'pdf' && html`
-            <div class="pdf-page-simulator">
-              <div class="card-meta-row">
-                <span class="control-label">${loc.file_name}</span>
-                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                  PAGE ${loc.page || 1}
-                </span>
-              </div>
-              <p class="provenance-caption">
-                Locator: ${loc.locator_key || 'Verified Excerpt'}
-              </p>
-              <div class="pdf-bbox-highlight">
-                ${loc.bounding_box && html`
-                  <div class="font-mono-data" style="font-size: 10.5px; color: var(--color-accent-primary); margin-bottom: 4px;">
-                    BBOX [${loc.bounding_box.join(', ')}]
-                  </div>
-                `}
-                “${node.quote}”
-              </div>
-              ${loc.payload_hash && html`
-                <p class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                  ${loc.payload_hash}
-                </p>
-              `}
-            </div>
-          `}
-
-          ${loc.source_type === 'spreadsheet' && html`
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="card-meta-row">
-                <span class="control-label">Workbook: ${loc.file_name}</span>
-                <span class="font-mono-data" style="font-size: 11.5px; color: var(--color-text-secondary);">
-                  ${loc.sheet}!${loc.cell_range}
-                </span>
-              </div>
-              ${node.formula && html`
-                <div class="formula-box">
-                  <strong>fx</strong> ${node.formula}
-                </div>
-              `}
-              <table class="sheet-table">
-                <caption class="visually-hidden">
-                  Excerpt from worksheet ${loc.sheet} around cell ${loc.cell_range}
-                </caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Cell</th>
-                    <th scope="col">Line Item</th>
-                    <th scope="col">Reported Display</th>
-                    <th scope="col" class="cell-numeric">Raw Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td class="font-mono-data">${loc.cell_range || 'Target'}</td>
-                    <td>${node.title}</td>
-                    <td class="sheet-cell-active">${node.quote}</td>
-                    <td class="cell-numeric">${JSON.stringify(loc.raw_value)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          `}
-
-          ${loc.source_type === 'api' && html`
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="formula-box">
-                <strong>${loc.method || 'GET'}</strong> ${loc.endpoint}
-              </div>
-              <div class="card-meta-row">
-                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-secondary);">
-                  ${loc.json_path}
-                </span>
-                ${loc.payload_hash && html`
-                  <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                    ${loc.payload_hash}
-                  </span>
-                `}
-              </div>
-              <figure class="evidence-figure">
-                <figcaption class="evidence-figcaption">
-                  <span>Captured API Payload</span>
-                </figcaption>
-                <pre tabindex="0" class="formula-box"><code class="language-json">${JSON.stringify(
-                  {
-                    request_params: loc.query_params || {},
-                    extracted_path: loc.json_path,
-                    verified_raw_value: loc.raw_value,
-                    formatted_quote: node.quote,
-                  },
-                  null,
-                  2
-                )}</code></pre>
-              </figure>
-            </div>
-          `}
-
-          ${loc.source_type === 'internal_db' && html`
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="card-meta-row">
-                <span class="font-mono-data" style="font-size: 11.5px; color: var(--color-text-secondary);">
-                  ${loc.database}.${loc.table}
-                </span>
-                <span class="font-mono-data" style="font-size: 11.5px; color: var(--color-text-muted);">
-                  ROW ${loc.row_id}
-                </span>
-              </div>
-              <figure class="evidence-figure">
-                <figcaption class="evidence-figcaption">Read-Only Verification Query</figcaption>
-                <pre tabindex="0" class="formula-box"><code class="language-sql">${loc.query}</code></pre>
-              </figure>
-              <div class="evidence-figure">
-                <blockquote class="evidence-blockquote">“${node.quote}”</blockquote>
-              </div>
-            </div>
-          `}
-
-          ${loc.source_type === 'web' && html`
-            <div style="display: flex; flex-direction: column; gap: 10px;">
-              <div class="card-meta-row">
-                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                  ${loc.snapshot_timestamp}
-                </span>
-                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-secondary);">
-                  ${loc.locator_key}
-                </span>
-              </div>
-              <figure class="evidence-figure">
-                <blockquote class="evidence-blockquote" cite=${loc.url}>
-                  “${node.quote}”
-                </blockquote>
-                ${loc.url && html`
-                  <figcaption class="evidence-figcaption">
-                    <a
-                      href=${loc.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="external-link"
-                    >
-                      Open Source URL ↗
-                    </a>
-                  </figcaption>
-                `}
-              </figure>
-            </div>
-          `}
-
-          ${(loc.source_type === 'markdown' || loc.source_type === 'docx') && html`
-            <div class="doc-excerpt-frame">
-              <div class="card-meta-row">
-                <span class="control-label">${loc.file_name}</span>
-                <span class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                  ${loc.locator_key || 'EXCERPT'}
-                </span>
-              </div>
-              <blockquote class="evidence-blockquote">
-                “${node.quote}”
-              </blockquote>
-              ${loc.payload_hash && html`
-                <p class="font-mono-data" style="font-size: 11px; color: var(--color-text-muted);">
-                  ${loc.payload_hash}
-                </p>
-              `}
-            </div>
-          `}
-
-          ${!loc.source_type && html`
-            <figure class="evidence-figure">
-              ${node.quote && html`
-                <blockquote class="evidence-blockquote" cite=${node.url || ''}>
-                  “${node.quote}”
-                </blockquote>
-              `}
-              ${node.body && html`<p class="card-body-prose">${node.body}</p>`}
-              ${node.url && html`
-                <figcaption class="evidence-figcaption">
-                  <a
-                    href=${node.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="external-link"
-                  >
-                    Open Controlling Authority ↗
-                  </a>
-                </figcaption>
-              `}
-            </figure>
-          `}
-        </div>
-      </aside>
-    </div>
-  `;
 }
 
 /**
@@ -977,7 +355,7 @@ function LinkCommentPopover({
       scope: 'link',
       node_id: targetNode.id,
       section_id: targetNode.section_id,
-      target_label: `${sourceNode ? sourceNode.title : 'Claim'} → ${targetNode.title}`,
+      target_label: `${sourceNode ? sourceNode.title : 'Claim'} -> ${targetNode.title}`,
       comment_text: draftText.trim(),
       suggested_status: suggestedStatus || null,
     });
@@ -1212,7 +590,7 @@ function SpatialNodeCard({
                   rel="noopener noreferrer"
                   class="external-link"
                 >
-                  Open External Authority ↗
+                  <span>Open External Authority</span> <${ExternalIcon} size=${12} />
                 </a>
               </figcaption>
             `}
@@ -1557,7 +935,7 @@ function CorpusManagerModal({
   }, [activeMatterHint]);
 
   const refreshCanonical = useCallback(async () => {
-    const res = await fetch('/api/canonical');
+    const res = await fetch('/api/v1/canonical');
     if (res.ok) {
       const data = await res.json();
       setCorpusStatus(data);
@@ -1565,7 +943,7 @@ function CorpusManagerModal({
   }, []);
 
   const refreshMatters = useCallback(async () => {
-    const res = await fetch('/api/matters');
+    const res = await fetch('/api/v1/matters');
     if (res.ok) {
       const data = await res.json();
       const list = data.matters || [];
@@ -1578,7 +956,7 @@ function CorpusManagerModal({
 
   const refreshMatterFiles = useCallback(async (matterId) => {
     if (!matterId) return;
-    const res = await fetch(`/api/matters/${matterId}/files`);
+    const res = await fetch(`/api/v1/matters/${matterId}/files`);
     if (res.ok) {
       setMatterFilesData(await res.json());
     }
@@ -1604,7 +982,7 @@ function CorpusManagerModal({
         .split('/')
         .map((seg) => encodeURIComponent(seg))
         .join('/');
-      const res = await fetch(`/api/canonical/documents/${encodedPath}`);
+      const res = await fetch(`/api/v1/canonical/documents/${encodedPath}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || `Failed to load ${docId}`);
@@ -1629,7 +1007,7 @@ function CorpusManagerModal({
       formData.append('domain', canonicalDomain.trim() || 'general');
       formData.append('file', file);
       const data = await streamUploadOrIngest(
-        '/api/canonical/upload/stream',
+        '/api/v1/canonical/upload/stream',
         { method: 'POST', body: formData },
         (ev) => setCanonicalProgress((prev) => [...prev, ev])
       );
@@ -1656,7 +1034,7 @@ function CorpusManagerModal({
     ]);
     try {
       const data = await streamUploadOrIngest(
-        '/api/canonical/ingest/stream',
+        '/api/v1/canonical/ingest/stream',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1686,7 +1064,7 @@ function CorpusManagerModal({
     setErrorMsg(null);
     try {
       const res = await fetch(
-        `/api/canonical/files/${encodeURIComponent(domain)}/${encodeURIComponent(filename)}`,
+        `/api/v1/canonical/files/${encodeURIComponent(domain)}/${encodeURIComponent(filename)}`,
         { method: 'DELETE' }
       );
       if (!res.ok) {
@@ -1710,7 +1088,7 @@ function CorpusManagerModal({
   const handleCreateMatter = async () => {
     if (!newMatterName.trim()) return;
     setErrorMsg(null);
-    const res = await fetch('/api/matters', {
+    const res = await fetch('/api/v1/matters', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ matter_id: newMatterName.trim() }),
@@ -1741,7 +1119,7 @@ function CorpusManagerModal({
         formData.append('origin_description', uploadOriginDescription.trim());
       }
       const data = await streamUploadOrIngest(
-        `/api/matters/${selectedMatter}/upload/stream`,
+        `/api/v1/matters/${selectedMatter}/upload/stream`,
         { method: 'POST', body: formData },
         (ev) => setMatterProgress((prev) => [...prev, ev])
       );
@@ -1767,7 +1145,7 @@ function CorpusManagerModal({
     setErrorMsg(null);
     try {
       const res = await fetch(
-        `/api/matters/${selectedMatter}/files/${encodeURIComponent(filename)}/metadata`,
+        `/api/v1/matters/${selectedMatter}/files/${encodeURIComponent(filename)}/metadata`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -1799,7 +1177,7 @@ function CorpusManagerModal({
     setMatterProgress([{ stage: 'ingest', message: `Indexing coordinates in ${selectedMatter}…` }]);
     try {
       const data = await streamUploadOrIngest(
-        `/api/matters/${selectedMatter}/ingest/stream`,
+        `/api/v1/matters/${selectedMatter}/ingest/stream`,
         { method: 'POST' },
         (ev) => setMatterProgress((prev) => [...prev, ev])
       );
@@ -1823,7 +1201,7 @@ function CorpusManagerModal({
     setErrorMsg(null);
     try {
       const res = await fetch(
-        `/api/matters/${selectedMatter}/files/${encodeURIComponent(filename)}`,
+        `/api/v1/matters/${selectedMatter}/files/${encodeURIComponent(filename)}`,
         { method: 'DELETE' }
       );
       if (!res.ok) {
@@ -2007,14 +1385,14 @@ function CorpusManagerModal({
                                 Inspect
                               </button>
                               <a
-                                href=${`/api/canonical/files/${encodeURIComponent(card.domain)}/${encodeURIComponent(deleteTargetName)}/raw`}
+                                href=${`/api/v1/canonical/files/${encodeURIComponent(card.domain)}/${encodeURIComponent(deleteTargetName)}/raw`}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 class="btn btn-compact"
                                 style="text-decoration: none;"
                                 title="Open raw rule source file in new tab"
                               >
-                                File ↗
+                                <span>File</span> <${ExternalIcon} size=${11} />
                               </a>
                               <button
                                 type="button"
@@ -2197,13 +1575,13 @@ function CorpusManagerModal({
                         <tr key=${f.filename}>
                           <td>
                             <a
-                              href=${`/api/matters/${encodeURIComponent(selectedMatter)}/files/${encodeURIComponent(f.filename)}/raw`}
+                              href=${`/api/v1/matters/${encodeURIComponent(selectedMatter)}/files/${encodeURIComponent(f.filename)}/raw`}
                               target="_blank"
                               rel="noopener noreferrer"
                               class="file-table-link"
                               title="Open or download original file in new tab"
                             >
-                              ${f.filename} ↗
+                              <span>${f.filename}</span> <${ExternalIcon} size=${11} />
                             </a>
                           </td>
                           <td class="font-mono-data">${f.suffix || '—'}</td>
@@ -2377,7 +1755,7 @@ function CheckpointReviewModal({
     try {
       const domainVal = blueprintDomain.trim() || 'general';
       const titleVal = blueprintTitle.trim() || editedPlan.document_title || 'Saved Blueprint';
-      const res = await fetch('/api/blueprints', {
+      const res = await fetch('/api/v1/research/blueprints', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2914,7 +2292,7 @@ function AskPipelineDialog({
   const [errorMsg, setErrorMsg] = useState(null);
 
   const refreshMatters = useCallback(async () => {
-    const res = await fetch('/api/matters');
+    const res = await fetch('/api/v1/matters');
     if (res.ok) {
       const data = await res.json();
       const list = data.matters || [];
@@ -2928,8 +2306,8 @@ function AskPipelineDialog({
   const refreshAskOptions = useCallback(async () => {
     try {
       const [canRes, bpRes] = await Promise.all([
-        fetch('/api/canonical'),
-        fetch('/api/blueprints'),
+        fetch('/api/v1/canonical'),
+        fetch('/api/v1/research/blueprints'),
       ]);
       if (canRes.ok) {
         const canData = await canRes.json();
@@ -2946,7 +2324,7 @@ function AskPipelineDialog({
 
   const refreshRuns = useCallback(async (matterId) => {
     if (!matterId) return;
-    const res = await fetch(`/api/matters/${matterId}/runs`);
+    const res = await fetch(`/api/v1/research/matters/${matterId}/runs`);
     if (res.ok) {
       setRunsList(await res.json());
     }
@@ -3404,7 +2782,7 @@ function App() {
   const [bezierLinks, setBezierLinks] = useState([]);
 
   const fetchBundlesList = useCallback(async () => {
-    const res = await fetch('/api/bundles');
+    const res = await fetch('/api/v1/research/bundles');
     if (res.ok) {
       const data = await res.json();
       setBundlesList(data);
@@ -3412,7 +2790,7 @@ function App() {
   }, []);
 
   const fetchMattersList = useCallback(async () => {
-    const res = await fetch('/api/matters');
+    const res = await fetch('/api/v1/matters');
     if (res.ok) {
       const data = await res.json();
       setMattersList(data.matters || []);
@@ -3423,7 +2801,7 @@ function App() {
   const loadBundle = useCallback(async (bId) => {
     setLoading(true);
     try {
-      const res = await fetch(`/api/bundles/${bId}`);
+      const res = await fetch(`/api/v1/research/bundles/${bId}`);
       if (res.ok) {
         const data = await res.json();
         setBundle(data);
@@ -3502,7 +2880,7 @@ function App() {
 
     const storedRunId = loadActiveRunId();
     if (storedRunId) {
-      fetch(`/api/runs/${storedRunId}`)
+      fetch(`/api/v1/research/runs/${storedRunId}`)
         .then((res) => (res.ok ? res.json() : null))
         .then((runData) => {
           if (!runData) {
@@ -3799,7 +3177,7 @@ function App() {
     try {
       const parsed = JSON.parse(compilerJsonText);
       const endpoint =
-        parsed.sections && Array.isArray(parsed.sections) ? '/api/compile' : '/api/bundles';
+        parsed.sections && Array.isArray(parsed.sections) ? '/api/v1/research/compile' : '/api/v1/research/bundles';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3827,7 +3205,7 @@ function App() {
       setSubmittingComment(true);
       setActionError(null);
       try {
-        const res = await fetch(`/api/bundles/${currentBundleId}/comments`, {
+        const res = await fetch(`/api/v1/research/bundles/${currentBundleId}/comments`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -3856,7 +3234,7 @@ function App() {
   const handleDeleteComment = useCallback(
     async (commentId) => {
       if (!currentBundleId) return;
-      const res = await fetch(`/api/bundles/${currentBundleId}/comments/${commentId}`, {
+      const res = await fetch(`/api/v1/research/bundles/${currentBundleId}/comments/${commentId}`, {
         method: 'DELETE',
       });
       if (res.ok) {
@@ -3874,7 +3252,7 @@ function App() {
     setActionError(null);
     setFollowupStatusMsg('Triaging feedback notes and regenerating affected sections…');
     try {
-      const res = await fetch(`/api/bundles/${currentBundleId}/regenerate`, {
+      const res = await fetch(`/api/v1/research/bundles/${currentBundleId}/regenerate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ smooth_transitions: true }),
@@ -4002,313 +3380,223 @@ function App() {
     (c) => c.scope === 'document' || c.section_id === '__document__'
   ).length;
 
-  return html`
-    <div class="app-shell">
-      <header class="top-bar" inert=${Boolean(inspectorNode || queueDrawerOpen)}>
-        <div class="top-bar-left">
-          <span class="brand-title">Audit Canvas</span>
-          <span class="divider-vertical" aria-hidden="true"></span>
-          <div class="control-group">
-            <label for="bundle-selector" class="visually-hidden">Select Document</label>
-            <select
-              id="bundle-selector"
-              class="select-control"
-              value=${currentBundleId}
-              onChange=${(e) => loadBundle(e.target.value)}
-            >
-              ${bundlesList.map(
-                (b) => html`
-                  <option key=${b.bundle_id} value=${b.bundle_id}>
-                    ${b.title}
-                  </option>
-                `
-              )}
-            </select>
-          </div>
-        </div>
+  const selectorSlot = html`
+    <div class="control-group">
+      <label for="bundle-selector" class="visually-hidden">Select Document</label>
+      <select
+        id="bundle-selector"
+        class="select-control"
+        value=${currentBundleId}
+        onChange=${(e) => loadBundle(e.target.value)}
+      >
+        ${bundlesList.map(
+          (b) => html`
+            <option key=${b.bundle_id} value=${b.bundle_id}>
+              ${b.title}
+            </option>
+          `
+        )}
+      </select>
+    </div>
+  `;
 
-        <div class="top-bar-right">
-          <div class="status-filter-strip" role="group" aria-label="Filter claims by verification status">
-            <button
-              type="button"
-              class="status-filter-btn ${auditFilter === 'all' ? 'is-active' : ''}"
-              aria-pressed=${auditFilter === 'all'}
-              onClick=${() => setAuditFilter('all')}
-            >
-              <span class="status-dot is-verified" aria-hidden="true"></span>
-              <span>All Claims</span>
-              <span class="font-mono-data">(${summary.total_claims || 0})</span>
-            </button>
-            <button
-              type="button"
-              class="status-filter-btn is-caveat ${auditFilter === 'caveats' ? 'is-active' : ''}"
-              aria-pressed=${auditFilter === 'caveats'}
-              onClick=${() => setAuditFilter((f) => (f === 'caveats' ? 'all' : 'caveats'))}
-            >
-              <span class="status-dot is-warning" aria-hidden="true"></span>
-              <span>Caveats</span>
-              <span class="font-mono-data">(${caveatCount})</span>
-            </button>
-            ${tensionCount > 0 && html`
-              <button
-                type="button"
-                class="status-filter-btn is-tension ${auditFilter === 'tension' ? 'is-active' : ''}"
-                aria-pressed=${auditFilter === 'tension'}
-                onClick=${() => setAuditFilter((f) => (f === 'tension' ? 'all' : 'tension'))}
-              >
-                <span class="status-dot is-danger" aria-hidden="true"></span>
-                <span>Tensions</span>
-                <span class="font-mono-data">(${tensionCount})</span>
-              </button>
-            `}
-          </div>
+  const filterSlot = html`
+    <div class="status-filter-strip" role="group" aria-label="Filter claims by verification status">
+      <button
+        type="button"
+        class="status-filter-btn ${auditFilter === 'all' ? 'is-active' : ''}"
+        aria-pressed=${auditFilter === 'all'}
+        onClick=${() => setAuditFilter('all')}
+      >
+        <span class="status-dot is-verified" aria-hidden="true"></span>
+        <span>All Claims</span>
+        <span class="font-mono-data">(${summary.total_claims || 0})</span>
+      </button>
+      <button
+        type="button"
+        class="status-filter-btn is-caveat ${auditFilter === 'caveats' ? 'is-active' : ''}"
+        aria-pressed=${auditFilter === 'caveats'}
+        onClick=${() => setAuditFilter((f) => (f === 'caveats' ? 'all' : 'caveats'))}
+      >
+        <span class="status-dot is-warning" aria-hidden="true"></span>
+        <span>Caveats</span>
+        <span class="font-mono-data">(${caveatCount})</span>
+      </button>
+      ${tensionCount > 0 && html`
+        <button
+          type="button"
+          class="status-filter-btn is-tension ${auditFilter === 'tension' ? 'is-active' : ''}"
+          aria-pressed=${auditFilter === 'tension'}
+          onClick=${() => setAuditFilter((f) => (f === 'tension' ? 'all' : 'tension'))}
+        >
+          <span class="status-dot is-danger" aria-hidden="true"></span>
+          <span>Tensions</span>
+          <span class="font-mono-data">(${tensionCount})</span>
+        </button>
+      `}
+    </div>
+  `;
 
+  const headerActions = html`
+    <button
+      type="button"
+      class="btn"
+      onClick=${() => {
+        setCorpusTabHint('matter');
+        setCorpusMatterHint(activeMatterId);
+        corpusDialogRef.current?.showModal();
+      }}
+    >
+      <${Icon} name="folder" size=${13} />
+      <span>Sources & Rules</span>
+    </button>
+
+    <button
+      type="button"
+      class="btn btn-primary"
+      onClick=${() => askDialogRef.current?.showModal()}
+    >
+      <${Icon} name="plus" size=${13} />
+      <span>New Brief</span>
+    </button>
+
+    <div class="tools-menu-wrap" ref=${toolsMenuRef}>
+      <button
+        type="button"
+        class="btn"
+        aria-label="Pipeline tools and workspace settings"
+        aria-expanded=${toolsMenuOpen}
+        onClick=${() => setToolsMenuOpen((v) => !v)}
+      >
+        <${Icon} name="more" size=${13} />
+        <span>Tools</span>
+      </button>
+
+      ${toolsMenuOpen && html`
+        <div class="tools-popover" role="menu">
           <button
             type="button"
-            class="btn"
+            class="tools-menu-item"
+            role="menuitemcheckbox"
+            aria-checked=${showPipelineTrace}
             onClick=${() => {
-              setCorpusTabHint('matter');
+              setShowPipelineTrace((v) => !v);
+              setToolsMenuOpen(false);
+            }}
+          >
+            <div>
+              <div>Pipeline Reasoning Trace</div>
+              <span class="tools-menu-sub">Show stage 1–4 notes under sections</span>
+            </div>
+            ${showPipelineTrace && html`<${Icon} name="check" size=${14} />`}
+          </button>
+          <button
+            type="button"
+            class="tools-menu-item"
+            role="menuitem"
+            onClick=${() => {
+              setToolsMenuOpen(false);
+              setCorpusTabHint('canonical');
               setCorpusMatterHint(activeMatterId);
               corpusDialogRef.current?.showModal();
             }}
           >
-            <${Icon} name="folder" size=${13} />
-            <span>Sources & Rules</span>
+            <div>
+              <div>Corpus & Rule Library</div>
+              <span class="tools-menu-sub">Inspect, add, or remove rules & matter files</span>
+            </div>
           </button>
-
-          <button
-            type="button"
-            class="btn btn-primary"
-            onClick=${() => askDialogRef.current?.showModal()}
-          >
-            <${Icon} name="plus" size=${13} />
-            <span>New Brief</span>
-          </button>
-
-          <div class="tools-menu-wrap" ref=${toolsMenuRef}>
+          ${activeRun && html`
             <button
               type="button"
-              class="btn"
-              aria-label="Pipeline tools and workspace settings"
-              aria-expanded=${toolsMenuOpen}
-              onClick=${() => setToolsMenuOpen((v) => !v)}
-            >
-              <${Icon} name="more" size=${13} />
-              <span>Tools</span>
-            </button>
-
-            ${toolsMenuOpen && html`
-              <div class="tools-popover" role="menu">
-                <button
-                  type="button"
-                  class="tools-menu-item"
-                  role="menuitemcheckbox"
-                  aria-checked=${showPipelineTrace}
-                  onClick=${() => {
-                    setShowPipelineTrace((v) => !v);
-                    setToolsMenuOpen(false);
-                  }}
-                >
-                  <div>
-                    <div>Pipeline Reasoning Trace</div>
-                    <span class="tools-menu-sub">Show stage 1–4 notes under sections</span>
-                  </div>
-                  ${showPipelineTrace && html`<${Icon} name="check" size=${14} />`}
-                </button>
-                <button
-                  type="button"
-                  class="tools-menu-item"
-                  role="menuitem"
-                  onClick=${() => {
-                    setToolsMenuOpen(false);
-                    setCorpusTabHint('canonical');
-                    setCorpusMatterHint(activeMatterId);
-                    corpusDialogRef.current?.showModal();
-                  }}
-                >
-                  <div>
-                    <div>Corpus & Rule Library</div>
-                    <span class="tools-menu-sub">Inspect, add, or remove rules & matter files</span>
-                  </div>
-                </button>
-                ${activeRun && html`
-                  <button
-                    type="button"
-                    class="tools-menu-item"
-                    role="menuitem"
-                    onClick=${() => {
-                      setToolsMenuOpen(false);
-                      checkpointDialogRef.current?.showModal();
-                    }}
-                  >
-                    <div>
-                      <div>Active Checkpoint Run</div>
-                      <span class="tools-menu-sub">${formatRunStatusLabel(activeRun.status)}</span>
-                    </div>
-                  </button>
-                `}
-                <div class="tools-divider"></div>
-                <button
-                  type="button"
-                  class="tools-menu-item"
-                  role="menuitem"
-                  onClick=${() => {
-                    setToolsMenuOpen(false);
-                    setCompilerError(null);
-                    dialogRef.current?.showModal();
-                  }}
-                >
-                  <div>
-                    <div>Import / Compile JSON</div>
-                    <span class="tools-menu-sub">Load or compile structured bundle JSON</span>
-                  </div>
-                </button>
-              </div>
-            `}
-          </div>
-        </div>
-      </header>
-
-      ${activeRun && activeRun.status !== 'completed' && html`
-        <div
-          class="active-run-banner ${
-            activeRun.status === 'awaiting_stage1_approval' || activeRun.status === 'awaiting_stage2_approval'
-              ? 'is-paused'
-              : ''
-          }"
-        >
-          <span>
-            <strong>${formatRunStatusLabel(activeRun.status)}</strong>
-            ${activeRunLiveMsg
-              ? ` · ${activeRunLiveMsg}`
-              : ` · Run ${activeRun.run_id} (${activeRun.matter_id})`}
-          </span>
-          <div style="display: inline-flex; gap: 8px; align-items: center;">
-            <button
-              type="button"
-              class="btn btn-compact btn-primary"
-              onClick=${() => checkpointDialogRef.current?.showModal()}
-            >
-              <${Icon} name="play" size=${12} />
-              <span>Open Checkpoint Review</span>
-            </button>
-            <button
-              type="button"
-              class="btn btn-compact"
+              class="tools-menu-item"
+              role="menuitem"
               onClick=${() => {
-                setActiveRun(null);
-                setActiveRunLiveMsg(null);
-                saveActiveRunId(null);
+                setToolsMenuOpen(false);
+                checkpointDialogRef.current?.showModal();
               }}
             >
-              Dismiss
+              <div>
+                <div>Active Checkpoint Run</div>
+                <span class="tools-menu-sub">${formatRunStatusLabel(activeRun.status)}</span>
+              </div>
             </button>
-          </div>
+          `}
+          <div class="tools-divider"></div>
+          <button
+            type="button"
+            class="tools-menu-item"
+            role="menuitem"
+            onClick=${() => {
+              setToolsMenuOpen(false);
+              setCompilerError(null);
+              dialogRef.current?.showModal();
+            }}
+          >
+            <div>
+              <div>Import / Compile JSON</div>
+              <span class="tools-menu-sub">Load or compile structured bundle JSON</span>
+            </div>
+          </button>
         </div>
       `}
+    </div>
+  `;
 
-      <main
-        id="workspace-main"
-        tabindex="-1"
-        class="spatial-viewport"
-        ref=${viewportRef}
-        inert=${Boolean(inspectorNode || queueDrawerOpen)}
-      >
-        <svg class="connector-svg-layer" aria-hidden="true">
-          ${bezierLinks.map((link) => {
-            const targetNode = nodesMap[link.targetId];
-            const roleMeta = getLinkRoleMeta(targetNode);
-            const isHovered = hoveredLinkId === link.id || activeLinkPopover?.id === link.id;
-            const strokeColor = link.tier === 1 ? roleMeta.stroke : '#3E4652';
-            return html`
-              <g key=${link.id}>
-                <path
-                  d=${link.d}
-                  fill="none"
-                  stroke="transparent"
-                  stroke-width="14"
-                  class="bezier-hit-path"
-                  onMouseEnter=${() => setHoveredLinkId(link.id)}
-                  onMouseLeave=${() => setHoveredLinkId(null)}
-                  onClick=${(e) => {
-                    e.stopPropagation();
-                    setActiveLinkPopover(link);
-                  }}
-                />
-                <path
-                  d=${link.d}
-                  fill="none"
-                  class="bezier-stroke"
-                  stroke=${strokeColor}
-                  stroke-width=${isHovered ? '2.25' : '1.5'}
-                  opacity=${isHovered ? '1' : '0.68'}
-                />
-                <rect
-                  x=${link.x1 - 2.5}
-                  y=${link.y1 - 2.5}
-                  width="5"
-                  height="5"
-                  fill=${strokeColor}
-                />
-                <rect
-                  x=${link.x2 - 2.5}
-                  y=${link.y2 - 2.5}
-                  width="5"
-                  height="5"
-                  fill=${strokeColor}
-                />
-              </g>
-            `;
-          })}
-        </svg>
+  const bannerSlot = activeRun && activeRun.status !== 'completed' && html`
+    <div
+      class="active-run-banner ${
+        activeRun.status === 'awaiting_stage1_approval' || activeRun.status === 'awaiting_stage2_approval'
+          ? 'is-paused'
+          : ''
+      }"
+    >
+      <span>
+        <strong>${formatRunStatusLabel(activeRun.status)}</strong>
+        ${activeRunLiveMsg
+          ? ` · ${activeRunLiveMsg}`
+          : ` · Run ${activeRun.run_id} (${activeRun.matter_id})`}
+      </span>
+      <div style="display: inline-flex; gap: 8px; align-items: center;">
+        <button
+          type="button"
+          class="btn btn-compact btn-primary"
+          onClick=${() => checkpointDialogRef.current?.showModal()}
+        >
+          <${Icon} name="play" size=${12} />
+          <span>Open Checkpoint Review</span>
+        </button>
+        <button
+          type="button"
+          class="btn btn-compact"
+          onClick=${() => {
+            setActiveRun(null);
+            setActiveRunLiveMsg(null);
+            saveActiveRunId(null);
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  `;
 
-        ${bezierLinks.length > 0 && html`
-          <div class="connector-handles-layer">
-            ${bezierLinks.map((link) => {
-              const targetNode = nodesMap[link.targetId];
-              const roleMeta = getLinkRoleMeta(targetNode);
-              const linkNoteCount = allComments.filter(
-                (c) => !c.resolved && c.node_id === link.targetId && c.scope === 'link'
-              ).length;
-              const isOpen = activeLinkPopover?.id === link.id;
-              return html`
-                <button
-                  key=${`handle-${link.id}`}
-                  type="button"
-                  class="bezier-link-handle ${roleMeta.toneClass} ${isOpen ? 'is-active' : ''}"
-                  style=${{ left: `${link.midX}px`, top: `${link.midY}px` }}
-                  aria-label=${`Inspect or comment on ${roleMeta.label} connection to ${targetNode?.title || link.targetId}`}
-                  onMouseEnter=${() => setHoveredLinkId(link.id)}
-                  onMouseLeave=${() => setHoveredLinkId(null)}
-                  onClick=${(e) => {
-                    e.stopPropagation();
-                    setActiveLinkPopover(isOpen ? null : link);
-                  }}
-                >
-                  <span>${roleMeta.label}</span>
-                  ${linkNoteCount > 0 && html`
-                    <span class="bezier-link-count">· ${linkNoteCount}</span>
-                  `}
-                </button>
-              `;
-            })}
-          </div>
-        `}
+  const l1MobileJump = html`
+    <button
+      type="button"
+      class="btn-link mobile-only-jump"
+      onClick=${() => {
+        const refEl = viewportRef.current?.querySelector(
+          `button[data-ref-node-id="${pinnedClaimId}"]`
+        );
+        refEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }}
+    >
+      <${Icon} name="arrowLeft" size=${12} /> <span>Back to Document</span>
+    </button>
+  `;
 
-        <div class="bounded-canvas-grid ${gridColsClass}" ref=${gridRef}>
-          <!-- COLUMN 1: DOCUMENT -->
-          <div class="column-lane">
-            <div class="lane-header">
-              <span class="lane-title-group">
-                <span class="lane-title">Document</span>
-              </span>
-              <span class="lane-caption">
-                ${showL1
-                  ? 'Click any highlighted claim or curve handle to verify & comment'
-                  : 'Click any highlighted claim to trace supporting proof'}
-              </span>
-            </div>
-
+  const renderL0Document = () => html`
             <article class="artifact-sheet">
               <div class="artifact-header">
                 <h1 class="artifact-title">${bundle.artifact.title}</h1>
@@ -4375,7 +3663,7 @@ function App() {
                           class="btn-link"
                           onClick=${() => loadBundle(ten.conflicting_bundle_id)}
                         >
-                          Open ${ten.conflicting_bundle_title || ten.conflicting_bundle_id} →
+                          <span>Open ${ten.conflicting_bundle_title || ten.conflicting_bundle_id}</span> <${ArrowRightIcon} size=${12} />
                         </button>
                       `}
                     </div>
@@ -4518,44 +3806,9 @@ function App() {
                 `;
               })}
             </article>
-          </div>
+  `;
 
-          <!-- COLUMN 2: PROOF & REASONING -->
-          ${showL1 && html`
-            <div class="column-lane lane-analytical lane-evidence">
-              <div class="lane-header">
-                <span class="lane-title-group">
-                  <span class="lane-title">Proof & Reasoning</span>
-                  <span class="lane-count">(${level1Nodes.length})</span>
-                </span>
-                <div style="display: inline-flex; align-items: center; gap: 10px;">
-                  <button
-                    type="button"
-                    class="btn-link mobile-only-jump"
-                    onClick=${() => {
-                      const refEl = viewportRef.current?.querySelector(
-                        `button[data-ref-node-id="${pinnedClaimId}"]`
-                      );
-                      refEl?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }}
-                  >
-                    ↑ Back to Document
-                  </button>
-                  <button
-                    type="button"
-                    class="btn-link is-muted"
-                    onClick=${() => {
-                      setPinnedClaimId(null);
-                      setExpandedLevel2Ids([]);
-                      setActiveLinkPopover(null);
-                    }}
-                  >
-                    <${Icon} name="close" size=${12} />
-                    <span>Close</span>
-                  </button>
-                </div>
-              </div>
-
+  const renderL1Evidence = () => html`
               <div class="spatial-card-stack">
                 <div class="claim-context-bar">
                   <div class="card-meta-row" style="align-items: flex-start;">
@@ -4629,30 +3882,9 @@ function App() {
                   `
                 )}
               </div>
-            </div>
-          `}
+  `;
 
-          <!-- COLUMN 3: SOURCES & LAW -->
-          ${showL2 && html`
-            <div class="column-lane lane-analytical">
-              <div class="lane-header">
-                <span class="lane-title-group">
-                  <span class="lane-title">Sources & Law</span>
-                  <span class="lane-count">(${level2PlusNodes.length})</span>
-                </span>
-                <button
-                  type="button"
-                  class="btn-link is-muted"
-                  onClick=${() => {
-                    setExpandedLevel2Ids([]);
-                    setActiveLinkPopover(null);
-                  }}
-                >
-                  <${Icon} name="close" size=${12} />
-                  <span>Close</span>
-                </button>
-              </div>
-
+  const renderL2Authorities = () => html`
               <div class="spatial-card-stack">
                 ${level2PlusNodes.map(
                   (node) => html`
@@ -4682,11 +3914,9 @@ function App() {
                   `
                 )}
               </div>
-            </div>
-          `}
-        </div>
-      </main>
+  `;
 
+  const overlaySlots = html`
       <!-- HOVER PREVIEW TOOLTIP -->
       ${hoveredNode && html`
         <div
@@ -4956,7 +4186,58 @@ function App() {
           </form>
         </div>
       </dialog>
-    </div>
+  `;
+
+  return html`
+    <${PlatformShell}
+      activeAppId="research"
+      brandTitle="Audit Canvas"
+      selectorSlot=${selectorSlot}
+      filterSlot=${filterSlot}
+      headerActions=${headerActions}
+      bannerSlot=${bannerSlot}
+      inertOverlay=${Boolean(inspectorNode || queueDrawerOpen)}
+      overlaySlots=${overlaySlots}
+    >
+      <${TraceabilityCanvas}
+        mainId="workspace-main"
+        viewportRef=${viewportRef}
+        gridRef=${gridRef}
+        inert=${Boolean(inspectorNode || queueDrawerOpen)}
+        showL1=${showL1}
+        showL2=${showL2}
+        bezierProps=${{
+          links: bezierLinks,
+          nodesMap,
+          hoveredLinkId,
+          activeLinkPopoverId: activeLinkPopover?.id || null,
+          allComments,
+          onHoverLink: setHoveredLinkId,
+          onClickLink: setActiveLinkPopover,
+        }}
+        l0Title="Document"
+        l0Caption=${showL1
+          ? 'Click any highlighted claim or curve handle to verify & comment'
+          : 'Click any highlighted claim to trace supporting proof'}
+        renderL0=${renderL0Document}
+        l1Title="Proof & Reasoning"
+        l1Count=${level1Nodes.length}
+        l1ExtraHeader=${l1MobileJump}
+        onCloseL1=${() => {
+          setPinnedClaimId(null);
+          setExpandedLevel2Ids([]);
+          setActiveLinkPopover(null);
+        }}
+        renderL1=${renderL1Evidence}
+        l2Title="Sources & Law"
+        l2Count=${level2PlusNodes.length}
+        onCloseL2=${() => {
+          setExpandedLevel2Ids([]);
+          setActiveLinkPopover(null);
+        }}
+        renderL2=${renderL2Authorities}
+      />
+    </${PlatformShell}>
   `;
 }
 

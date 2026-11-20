@@ -28,20 +28,36 @@ def test_bankruptcy_ui_shell_assets_and_both_ca_districts_e2e(tmp_path: Path) ->
     # 1. Verify HTML & JS/CSS static serving.
     html_res = client.get("/")
     assert html_res.status_code == 200
-    assert "/static/bankruptcy.js" in html_res.text
+    assert "/static/apps/bankruptcy/app.js" in html_res.text
     assert "/static/vendor/preact.mjs" in html_res.text
 
-    js_res = client.get("/static/bankruptcy.js")
+    js_res = client.get("/static/apps/bankruptcy/app.js")
     assert js_res.status_code == 200
+    core_texts = [js_res.text]
+    for core_asset in (
+        "/static/core/shell.js",
+        "/static/core/canvas.js",
+        "/static/core/inspector.js",
+        "/static/core/stepper.js",
+    ):
+        core_res = client.get(core_asset)
+        assert core_res.status_code == 200, f"Failed to serve {core_asset}"
+        core_texts.append(core_res.text)
+    combined_js = "\n".join(core_texts)
+
     assert "FilingPacketDrawer" in js_res.text
     assert "NextBlockerStepper" in js_res.text
-    assert "column-lane" in js_res.text
-    assert "artifact-sheet" in js_res.text
-    assert "sheet-table" in js_res.text
-    assert 'aria-modal="true"' in js_res.text
+    assert "PlatformShell" in combined_js
+    assert "TraceabilityCanvas" in combined_js
+    assert "SourceInspectorDrawer" in combined_js
+    assert "TriageStepperFrame" in combined_js
+    assert "column-lane" in combined_js
+    assert "artifact-sheet" in combined_js
+    assert "sheet-table" in combined_js
+    assert 'aria-modal="true"' in combined_js
     # Ensure P0 fake defaults were removed from static JS UI state initializers.
-    assert "Elena Counsel" not in js_res.text
-    assert "useState('2021 Toyota Camry')" not in js_res.text
+    assert "Elena Counsel" not in combined_js
+    assert "useState('2021 Toyota Camry')" not in combined_js
     assert "[attested, setAttested] = useState(false)" in js_res.text
 
     # 2. Complete Case 1: bk_ch7_cacb_martinez (Resolve all Emerging Questions + Contradictions -> CACB Submit).

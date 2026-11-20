@@ -1,8 +1,21 @@
-import { h, render } from 'preact';
-import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks';
-import htm from 'htm';
-
-const html = htm.bind(h);
+import { render } from '/static/vendor/preact.mjs';
+import { useState, useEffect, useRef, useCallback, useMemo } from '/static/vendor/hooks.mjs';
+import {
+  html,
+  CloseIcon,
+  ArrowRightIcon,
+  ExternalIcon,
+  PlatformShell,
+  formatAuditLabel,
+  isCaveat,
+} from '../../core/shell.js';
+import {
+  RichRefBlock,
+  TraceabilityCanvas,
+  getToneForNode,
+} from '../../core/canvas.js';
+import { SourceInspectorDrawer } from '../../core/inspector.js';
+import { TriageStepperFrame } from '../../core/stepper.js';
 
 const RULE_TITLE_MAP = {
   SECURED_LOAN_MISSING_COLLATERAL_VALUE: 'Missing Collateral Property & Market Value',
@@ -62,54 +75,11 @@ const SUBMISSION_MODE_LABELS = {
   firm_attorney: 'Firm Live Attorney Credentials',
 };
 
-function CloseIcon() {
-  return html`
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-      <path d="M3 3l10 10M13 3L3 13" />
-    </svg>
-  `;
-}
-
-function ArrowRightIcon() {
-  return html`
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-      <path d="M3 8h10M9 4l4 4-4 4" />
-    </svg>
-  `;
-}
-
-function ArrowLeftIcon() {
-  return html`
-    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-      <path d="M13 8H3M7 4L3 8l4 4" />
-    </svg>
-  `;
-}
-
-function ExternalIcon() {
-  return html`
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-      <path d="M7 3H3v10h10V9M9 3h4v4M6 10L13 3" />
-    </svg>
-  `;
-}
-
 function formatCurrency(val) {
   if (val === null || val === undefined || val === '') return '$0.00';
   const num = Number(val);
   if (Number.isNaN(num)) return String(val);
   return num.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
-}
-
-function formatAuditLabel(status) {
-  const map = {
-    verified: 'Verified',
-    extrapolation: 'Extrapolation',
-    assumption: 'Unverified',
-    disputed: 'Contradicted',
-    unverified: 'Unverified',
-  };
-  return map[status] || 'Pending';
 }
 
 function formatRegimeLabel(ev) {
@@ -131,132 +101,6 @@ function formatTensionTitle(tension) {
   const key = tension?.tension_id?.split(':')?.[0] || '';
   if (TENSION_TITLE_MAP[key]) return TENSION_TITLE_MAP[key];
   return tension?.severity === 'blocker' ? 'Critical Schedule Contradiction' : 'Financial Plausibility Advisory';
-}
-
-function isCaveat(status) {
-  return status === 'unverified' || status === 'disputed' || status === 'assumption' || status === 'extrapolation';
-}
-
-function getToneForNode(node) {
-  const status = node?.audit?.status || 'verified';
-  if (isCaveat(status)) return { cls: 'plate-caveat', stroke: '#B45309', tag: 'Unverified / Gap' };
-  if (node?.type === 'calculation') return { cls: 'plate-financial', stroke: '#14532D', tag: 'Deterministic Math' };
-  if (node?.type === 'authority') return { cls: 'plate-authority', stroke: '#B84A27', tag: 'Statutory Authority' };
-  if (node?.type === 'reasoning') return { cls: '', stroke: '#14284B', tag: 'Counsel Override' };
-  return { cls: '', stroke: '#14284B', tag: 'Source Record' };
-}
-
-/**
- * Renders section prose + Official Form markdown tables with interactive `<ref id="...">` spans.
- */
-function RichRefBlock({ content, nodes, pinnedClaimId, onSelectClaim }) {
-  if (!content) return null;
-  const lines = content.split('\n');
-  const blocks = [];
-  let i = 0;
-
-  const renderBoldAndCode = (txt) => {
-    const segs = txt.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
-    return segs.map((seg) => {
-      if (seg.startsWith('**') && seg.endsWith('**')) {
-        return html`<strong>${seg.slice(2, -2)}</strong>`;
-      }
-      if (seg.startsWith('`') && seg.endsWith('`')) {
-        return html`<span class="font-mono-data">${seg.slice(1, -1)}</span>`;
-      }
-      return seg;
-    });
-  };
-
-  const renderInline = (raw) => {
-    const parts = [];
-    const regex = /<ref\s+id=['"]([^'"]+)['"]>(.*?)<\/ref>/gs;
-    let last = 0;
-    let m;
-    while ((m = regex.exec(raw)) !== null) {
-      if (m.index > last) {
-        parts.push(renderBoldAndCode(raw.slice(last, m.index)));
-      }
-      const refId = m[1];
-      const inner = m[2];
-      const target = nodes[refId];
-      const active = pinnedClaimId === refId;
-      const caveat = isCaveat(target?.audit?.status);
-      const dimmed = pinnedClaimId && !active;
-      parts.push(html`
-        <button
-          type="button"
-          data-ref-id=${refId}
-          aria-pressed=${active ? 'true' : 'false'}
-          class=${`clause-highlight ${active ? 'is-active' : ''} ${caveat ? 'is-caveat' : ''} ${dimmed ? 'is-dimmed' : ''}`}
-          onClick=${(e) => {
-            e.stopPropagation();
-            onSelectClaim(refId);
-          }}
-        >
-          ${inner}
-        </button>
-      `);
-      last = m.index + m[0].length;
-    }
-    if (last < raw.length) {
-      parts.push(renderBoldAndCode(raw.slice(last)));
-    }
-    return parts;
-  };
-
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    if (!line) {
-      i++;
-      continue;
-    }
-    if (line.startsWith('|')) {
-      const tableLines = [];
-      while (i < lines.length && lines[i].trim().startsWith('|')) {
-        tableLines.push(lines[i].trim());
-        i++;
-      }
-      if (tableLines.length >= 2) {
-        const parseRow = (rowStr) =>
-          rowStr
-            .replace(/^\|/, '')
-            .replace(/\|$/, '')
-            .split('|')
-            .map((c) => c.trim());
-        const headers = parseRow(tableLines[0]);
-        const alignSpecs = parseRow(tableLines[1]);
-        const isNumericCol = alignSpecs.map((spec) => spec.endsWith(':'));
-        const dataRows = tableLines.slice(2).map(parseRow);
-        blocks.push(html`
-          <div class="bk-table-wrap">
-            <table class="sheet-table">
-              <thead>
-                <tr>
-                  ${headers.map((hCell, colIdx) => html`
-                    <th class=${isNumericCol[colIdx] ? 'cell-numeric' : ''}>${hCell}</th>
-                  `)}
-                </tr>
-              </thead>
-              <tbody>
-                ${dataRows.map((row) => html`
-                  <tr>
-                    ${row.map((cell, colIdx) => html`
-                      <td class=${isNumericCol[colIdx] ? 'cell-numeric' : ''}>${renderInline(cell)}</td>
-                    `)}
-                  </tr>
-                `)}
-              </tbody>
-            </table>
-          </div>
-        `);
-        continue;
-      }
-    }
-    blocks.push(html`<p class="bk-prose-line">${renderInline(line)}</p>`);
-    i++;
-  }
-  return html`<div>${blocks}</div>`;
 }
 
 /**
@@ -395,50 +239,21 @@ function NextBlockerStepper({
   const validMoney = (s) => /^\d+(\.\d{1,2})?$/.test(s.trim()) && Number(s.trim()) >= 0;
 
   return html`
-    <div class=${`bk-stepper-panel ${activeItem.severity === 'blocker' ? 'is-blocker' : 'is-advisory'}`}>
-      <div class="bk-stepper-bar">
-        <div class="bk-stepper-counts">
-          <span class=${`bk-severity-pill ${activeItem.severity === 'blocker' ? 'is-blocker' : 'is-advisory'}`}>
-            ${activeItem.severity === 'blocker' ? 'Filing Blocker' : 'Advisory Check'}
-          </span>
-          <span class="kicker-label">
-            Item <span class="font-mono-data">${currentIndex + 1}</span> of <span class="font-mono-data">${triageItems.length}</span>
-            (${blockerCount} Blocker, ${advisoryCount} Advisory)
-          </span>
-        </div>
-        <div class="bk-stepper-nav">
-          <button
-            type="button"
-            class="btn btn-compact"
-            disabled=${currentIndex <= 0}
-            aria-label="Previous audit item"
-            onClick=${() => onChangeIndex(Math.max(0, currentIndex - 1))}
-          >
-            <${ArrowLeftIcon} /> Prev
-          </button>
-          <button
-            type="button"
-            class="btn btn-compact"
-            disabled=${currentIndex >= triageItems.length - 1}
-            aria-label="Next audit item"
-            onClick=${() => onChangeIndex(Math.min(triageItems.length - 1, currentIndex + 1))}
-          >
-            Next <${ArrowRightIcon} />
-          </button>
-        </div>
-      </div>
-
-      <h2 class="bk-stepper-title">
-        ${isQuestion ? formatQuestionTitle(q.rule_id) : formatTensionTitle(t)}
-      </h2>
-
-      <p class="bk-triage-prompt">${isQuestion ? q.prompt : t.description}</p>
-
-      ${isQuestion && q.trigger_forms?.length > 0 && html`
-        <div class="bk-form-tags" aria-label="Affected Official Bankruptcy Forms">
-          ${q.trigger_forms.map((fc) => html`<span class="bk-form-chip">${formatFormChip(fc)}</span>`)}
-        </div>
-      `}
+    <${TriageStepperFrame}
+      currentIndex=${currentIndex}
+      totalItems=${triageItems.length}
+      blockerCount=${blockerCount}
+      advisoryCount=${advisoryCount}
+      severity=${activeItem.severity === 'blocker' ? 'blocker' : 'advisory'}
+      title=${isQuestion ? formatQuestionTitle(q.rule_id) : formatTensionTitle(t)}
+      prompt=${isQuestion ? q.prompt : t.description}
+      tags=${isQuestion && q.trigger_forms ? q.trigger_forms : []}
+      tagsAriaLabel="Affected Official Bankruptcy Forms"
+      formatTag=${formatFormChip}
+      error=${err}
+      onPrev=${() => onChangeIndex(Math.max(0, currentIndex - 1))}
+      onNext=${() => onChangeIndex(Math.min(triageItems.length - 1, currentIndex + 1))}
+    >
 
       ${isQuestion && q.rule_id === 'SECURED_LOAN_MISSING_COLLATERAL_VALUE' && html`
         <div class="bk-stack-form">
@@ -879,77 +694,7 @@ function NextBlockerStepper({
           </div>
         </div>
       `}
-
-      ${err && html`<div class="bk-error-text" role="alert">${err}</div>`}
-    </div>
-  `;
-}
-
-function SourceInspectorDrawer({ node, matterId, onClose }) {
-  useEffect(() => {
-    if (!node) return undefined;
-    const onKey = (e) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [node, onClose]);
-
-  if (!node) return null;
-  const loc = node.locator;
-  const rawUrl =
-    loc?.file_name && matterId
-      ? `/api/v1/bankruptcy/matters/${encodeURIComponent(matterId)}/files/${encodeURIComponent(loc.file_name)}/raw${loc.page ? `#page=${loc.page}` : ''}`
-      : null;
-
-  return html`
-    <div class="inspector-backdrop" onClick=${onClose}>
-      <aside
-        class="source-inspector-drawer"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="bk-src-inspector-title"
-        onClick=${(e) => e.stopPropagation()}
-      >
-        <div class="drawer-header">
-          <div>
-            <h3 id="bk-src-inspector-title" class="card-heading">${node.title}</h3>
-            <div class="kicker-label">Source Verification Inspector</div>
-          </div>
-          <button type="button" class="btn btn-compact" onClick=${onClose}>
-            <${CloseIcon} /> Close
-          </button>
-        </div>
-        <div class="drawer-body">
-          ${loc && html`
-            <div class="pdf-page-simulator">
-              <div class="kicker-label">
-                Document: <span class="font-mono-data">${loc.file_name}</span>
-                ${loc.page ? html` · Page <span class="font-mono-data">${loc.page}</span>` : ''}
-                ${loc.bounding_box ? html` · Coordinates <span class="font-mono-data">[${loc.bounding_box.join(', ')}]</span>` : ''}
-              </div>
-              <div class="pdf-bbox-highlight">
-                “${node.quote || node.body}”
-              </div>
-              <div class="kicker-label">
-                Locator <span class="font-mono-data">${loc.locator_key || 'N/A'}</span> · Digest <span class="font-mono-data">${loc.payload_hash || 'N/A'}</span>
-              </div>
-            </div>
-          `}
-          ${!loc && html`
-            <div class="pdf-page-simulator">
-              <div class="kicker-label">${node.type === 'authority' ? 'Controlling Statutory Authority' : 'Deterministic Calculation'}</div>
-              <p class="card-body-prose">${node.quote || node.body || node.formula}</p>
-            </div>
-          `}
-          ${rawUrl && html`
-            <a class="btn btn-primary" href=${rawUrl} target="_blank" rel="noopener noreferrer">
-              Open Original Client PDF ${loc?.page ? `(Page ${loc.page})` : ''} <${ExternalIcon} />
-            </a>
-          `}
-        </div>
-      </aside>
-    </div>
+    </${TriageStepperFrame}>
   `;
 }
 
@@ -1493,378 +1238,373 @@ function BankruptcyApp() {
   const isReady = readiness?.status === 'READY';
   const plannedForms = bundle?.artifact?.metadata?.planned_pdf_forms || [];
 
-  return html`
-    <div class="app-shell">
-      <header class="top-bar">
-        <div class="top-bar-left">
-          <span class="brand-title">Bankruptcy Case Workbench</span>
-          ${matters.length > 0 && html`
-            <select
-              class="bk-select bk-select-topbar"
-              aria-label="Select bankruptcy matter"
-              value=${activeMatterId || ''}
-              onChange=${(e) => selectMatter(e.target.value)}
-            >
-              ${matters.map((m) => html`
-                <option value=${m.matter_id}>
-                  ${m.matter_id} · Ch. ${m.chapter} (${m.district}) · ${m.readiness_status}
-                </option>
-              `)}
-            </select>
+  const bkRawUrl =
+    inspectorNode?.locator?.file_name && graph?.matter_id
+      ? `/api/v1/bankruptcy/matters/${encodeURIComponent(graph.matter_id)}/files/${encodeURIComponent(inspectorNode.locator.file_name)}/raw${inspectorNode.locator.page ? `#page=${inspectorNode.locator.page}` : ''}`
+      : null;
+
+  const selectorSlot = matters.length > 0 && html`
+    <div class="control-group">
+      <label for="bk-matter-selector" class="visually-hidden">Select Bankruptcy Matter</label>
+      <select
+        id="bk-matter-selector"
+        class="bk-select bk-select-topbar"
+        aria-label="Select bankruptcy matter"
+        value=${activeMatterId || ''}
+        onChange=${(e) => selectMatter(e.target.value)}
+      >
+        ${matters.map((m) => html`
+          <option key=${m.matter_id} value=${m.matter_id}>
+            ${m.matter_id} · Ch. ${m.chapter} (${m.district}) · ${m.readiness_status}
+          </option>
+        `)}
+      </select>
+    </div>
+  `;
+
+  const headerActions = html`
+    ${tableSyncStatus && html`<span class="kicker-label font-mono-data">${tableSyncStatus}</span>`}
+    <button type="button" class="btn btn-compact" onClick=${handleSyncTables}>
+      Sync Statutory Tables
+    </button>
+    <button type="button" class="btn" onClick=${() => { setModalError(null); setShowUploadModal(true); }}>
+      New Case & Upload PDFs
+    </button>
+    ${caseState && html`
+      <button
+        type="button"
+        class=${`btn ${isReady ? 'btn-primary' : ''}`}
+        onClick=${() => setShowPacketDrawer(true)}
+      >
+        Filing Gate: ${readiness?.status || 'BLOCKED'} <${ArrowRightIcon} />
+      </button>
+    `}
+  `;
+
+  const renderL0Pane = () => html`
+    <div class="artifact-sheet">
+      <header class="artifact-header">
+        <h1 class="artifact-title">${bundle?.artifact?.title || `Chapter ${graph.chapter} Official Forms`}</h1>
+        <div class="artifact-meta-ledger">
+          <span class="meta-pair">Chapter <strong>${graph.chapter}</strong></span>
+          <span class="meta-pair">District <strong>${graph.district}</strong></span>
+          <span class="meta-pair">
+            Target Filing Date <span class="font-mono-data">${graph.expected_filing_date}</span>
+          </span>
+          ${plannedForms.length > 0 && html`
+            <span class="meta-pair">Required Court Forms <strong class="font-mono-data">${plannedForms.length}</strong></span>
           `}
         </div>
-        <div class="top-bar-right">
-          ${tableSyncStatus && html`<span class="kicker-label font-mono-data">${tableSyncStatus}</span>`}
-          <button type="button" class="btn btn-compact" onClick=${handleSyncTables}>
-            Sync Statutory Tables
-          </button>
-          <button type="button" class="btn" onClick=${() => { setModalError(null); setShowUploadModal(true); }}>
-            New Case & Upload PDFs
-          </button>
-          ${caseState && html`
-            <button
-              type="button"
-              class=${`btn ${isReady ? 'btn-primary' : ''}`}
-              onClick=${() => setShowPacketDrawer(true)}
-            >
-              Filing Gate: ${readiness?.status || 'BLOCKED'} <${ArrowRightIcon} />
-            </button>
-          `}
-        </div>
+        ${bundle?.artifact?.summary && html`
+          <p class="artifact-summary">${bundle.artifact.summary}</p>
+        `}
+        ${calcs?.exemptions && html`
+          <div class="bk-opt-grid" aria-label="California Exemption Regime Comparison">
+            ${calcs.exemptions.evaluations.map((ev) => {
+              const isRec = ev.regime_id === calcs.exemptions.recommended_regime_id;
+              return html`
+                <div key=${ev.regime_id} class=${`bk-opt-card ${isRec ? 'is-recommended' : ''}`}>
+                  <div class="bk-opt-head">
+                    <span>${formatRegimeLabel(ev)}</span>
+                    ${isRec && html`<span class="bk-severity-pill is-ready">Recommended</span>`}
+                    ${!isRec && ev.has_unbounded_unknown_exposure && html`<span class="bk-severity-pill is-advisory">Unknown Cap Risk</span>`}
+                  </div>
+                  <div class="bk-opt-stat">
+                    <span>Exempt Protected Equity</span>
+                    <strong class="font-mono-data">${formatCurrency(ev.total_exempt_equity)}</strong>
+                  </div>
+                  <div class="bk-opt-stat">
+                    <span>Non-Exempt Exposed</span>
+                    <strong class="font-mono-data">${formatCurrency(ev.total_non_exempt_equity)}</strong>
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        `}
       </header>
 
-      <main id="bk-workspace-main" class="spatial-viewport" ref=${viewportRef}>
-        <svg class="connector-svg-layer" aria-hidden="true">
-          ${paths.map((p) => html`
-            <g>
-              <path d=${p.d} fill="none" stroke=${p.stroke} stroke-width="1.5" />
-              <rect x=${p.x1 - 2.5} y=${p.y1 - 2.5} width="5" height="5" fill=${p.stroke} />
-              <rect x=${p.x2 - 2.5} y=${p.y2 - 2.5} width="5" height="5" fill=${p.stroke} />
-            </g>
-          `)}
-        </svg>
+      ${(bundle?.artifact?.sections || []).map((sec) => html`
+        <article key=${sec.section_id} class="artifact-section">
+          <h2 class="section-heading">${sec.section_title}</h2>
+          <${RichRefBlock}
+            content=${sec.content}
+            nodes=${nodes}
+            pinnedClaimId=${pinnedClaimId}
+            onSelectClaim=${(id) => selectL0Claim(id, false)}
+          />
+        </article>
+      `)}
+    </div>
+  `;
 
-        ${appError && html`
-          <div class="bk-error-banner" role="alert">
-            <span>${appError}</span>
-            <button type="button" class="btn btn-compact" onClick=${() => loadMatters()}>Retry</button>
-          </div>
-        `}
-
-        ${loadingMatters && !caseState && !appError && html`
-          <div class="bk-empty-state">
-            <h2 class="section-heading">Loading Bankruptcy Case Workbench</h2>
-            <p class="bk-triage-prompt">Retrieving case files and verifying statutory exemption and means-test tables...</p>
-          </div>
-        `}
-
-        ${!loadingMatters && !caseState && !appError && html`
-          <div class="bk-empty-state">
-            <h2 class="section-heading">No Bankruptcy Matters Yet</h2>
-            <p class="bk-triage-prompt">
-              Create your first Chapter 7 or Chapter 13 matter and upload uncategorized client financial PDFs (intake sheets, paystubs, bank statements, tax returns, or loan statements).
-            </p>
-            <div>
-              <button type="button" class="btn btn-primary" onClick=${() => setShowUploadModal(true)}>
-                Create First Case
-              </button>
-            </div>
-          </div>
-        `}
-
-        ${caseState && html`
-          <div class=${`bounded-canvas-grid ${colsClass}`}>
-            <!-- Column 1 (L0): Official-Form-Mirrored Broadsheet -->
-            <section class="column-lane lane-analytical" aria-label="Official Forms Schedules Broadsheet">
-              <div class="lane-header">
-                <div class="lane-title-group">
-                  <span class="lane-title">Official Schedules & Forms</span>
-                </div>
-                <span class="lane-count font-mono-data">
-                  ${bundle?.audit_summary?.verified_count || 0}/${bundle?.audit_summary?.total_claims || 0} Verified
-                </span>
-              </div>
-
-              <div class="artifact-sheet">
-                <header class="artifact-header">
-                  <h1 class="artifact-title">${bundle?.artifact?.title || `Chapter ${graph.chapter} Official Forms`}</h1>
-                  <div class="artifact-meta-ledger">
-                    <span class="meta-pair">Chapter <strong>${graph.chapter}</strong></span>
-                    <span class="meta-pair">District <strong>${graph.district}</strong></span>
-                    <span class="meta-pair">
-                      Target Filing Date <span class="font-mono-data">${graph.expected_filing_date}</span>
-                    </span>
-                    ${plannedForms.length > 0 && html`
-                      <span class="meta-pair">Required Court Forms <strong class="font-mono-data">${plannedForms.length}</strong></span>
-                    `}
-                  </div>
-                  ${bundle?.artifact?.summary && html`
-                    <p class="artifact-summary">${bundle.artifact.summary}</p>
-                  `}
-                  ${calcs?.exemptions && html`
-                    <div class="bk-opt-grid" aria-label="California Exemption Regime Comparison">
-                      ${calcs.exemptions.evaluations.map((ev) => {
-                        const isRec = ev.regime_id === calcs.exemptions.recommended_regime_id;
-                        return html`
-                          <div class=${`bk-opt-card ${isRec ? 'is-recommended' : ''}`}>
-                            <div class="bk-opt-head">
-                              <span>${formatRegimeLabel(ev)}</span>
-                              ${isRec && html`<span class="bk-severity-pill is-ready">Recommended</span>`}
-                              ${!isRec && ev.has_unbounded_unknown_exposure && html`<span class="bk-severity-pill is-advisory">Unknown Cap Risk</span>`}
-                            </div>
-                            <div class="bk-opt-stat">
-                              <span>Exempt Protected Equity</span>
-                              <strong class="font-mono-data">${formatCurrency(ev.total_exempt_equity)}</strong>
-                            </div>
-                            <div class="bk-opt-stat">
-                              <span>Non-Exempt Exposed</span>
-                              <strong class="font-mono-data">${formatCurrency(ev.total_non_exempt_equity)}</strong>
-                            </div>
-                          </div>
-                        `;
-                      })}
-                    </div>
-                  `}
-                </header>
-
-                ${(bundle?.artifact?.sections || []).map((sec) => html`
-                  <article class="artifact-section">
-                    <h2 class="section-heading">${sec.section_title}</h2>
-                    <${RichRefBlock}
-                      content=${sec.content}
-                      nodes=${nodes}
-                      pinnedClaimId=${pinnedClaimId}
-                      onSelectClaim=${(id) => selectL0Claim(id, false)}
-                    />
-                  </article>
-                `)}
-              </div>
-            </section>
-
-            <!-- Column 2: Either Next Blocker Stepper (default) OR L1 Evidence/Math when a Schedule Ref is pinned -->
-            ${l1Ids.length === 0 && html`
-              <section class="column-lane" aria-label="Next Audit Blocker Stepper">
-                <div class="lane-header">
-                  <span class="lane-title">Audit Resolution Queue</span>
-                  <span class="lane-count font-mono-data">${triageItems.length} Open</span>
-                </div>
-                <div class="spatial-card-stack">
-                  ${triageItems.length > 0 ? html`
-                    <${NextBlockerStepper}
-                      triageItems=${triageItems}
-                      currentIndex=${Math.min(stepperIndex, triageItems.length - 1)}
-                      onChangeIndex=${setStepperIndex}
-                      matterId=${graph.matter_id}
-                      nodes=${nodes}
-                      onUpdated=${setCaseState}
-                      onLocateRef=${(refId) => selectL0Claim(refId, true)}
-                    />
-                  ` : html`
-                    <div class="bk-stepper-panel is-ready">
-                      <div class="bk-stepper-bar">
-                        <span class="bk-severity-pill is-ready">Zero-Doubt Gate Passed</span>
-                      </div>
-                      <h2 class="bk-stepper-title">Ready to Compile Official Filing Packet</h2>
-                      <p class="bk-triage-prompt">
-                        All extracted figures are matched to source coordinates, all Form 108 elections are set, and zero unresolved contradictions remain across ${plannedForms.length || 14} court forms.
-                      </p>
-                      <div>
-                        <button type="button" class="btn btn-primary" onClick=${() => setShowPacketDrawer(true)}>
-                          Compile & Sign Filing Packet <${ArrowRightIcon} />
-                        </button>
-                      </div>
-                    </div>
-                  `}
-                </div>
-              </section>
-            `}
-
-            ${l1Ids.length > 0 && html`
-              <section class="column-lane" ref=${l1Ref} aria-label="L1 Deterministic Math and Client PDF Evidence">
-                <div class="lane-header">
-                  <span class="lane-title">Source Proof & Math Trace</span>
-                  <button
-                    type="button"
-                    class="btn btn-compact"
-                    onClick=${() => {
-                      setPinnedClaimId(null);
-                      setExpandedL2Ids([]);
-                    }}
-                  >
-                    ${triageItems.length > 0 ? `Return to Blocker (${triageItems.length})` : 'Close Proof'}
-                  </button>
-                </div>
-                <div class="spatial-card-stack">
-                  ${nodes[pinnedClaimId] && html`
-                    <div class="claim-context-bar">
-                      <div class="kicker-label">Selected Schedule Entry</div>
-                      <strong>${nodes[pinnedClaimId].title}</strong>
-                    </div>
-                  `}
-                  ${l1Ids.map((nid) => {
-                    const node = nodes[nid];
-                    if (!node) return null;
-                    const tone = getToneForNode(node);
-                    const childAuths = node.direct_child_ids || [];
-                    return html`
-                      <article class=${`spatial-node-card ${tone.cls}`} data-card-id=${nid}>
-                        <div class="plate-header-strip">
-                          <div class="plate-role-meta">
-                            <span class="plate-role-name">${tone.tag}</span>
-                          </div>
-                          <span class="arch-stamp">${formatAuditLabel(node.audit?.status)}</span>
-                        </div>
-                        <div class="plate-body-stage">
-                          <h3 class="card-heading">${node.title}</h3>
-                          ${node.formula && html`<pre class="font-mono-data bk-formula-box">${node.formula}</pre>`}
-                          ${node.quote && html`<blockquote class="evidence-blockquote">“${node.quote}”</blockquote>`}
-                          ${node.body && html`<p class="card-body-prose">${node.body}</p>`}
-                        </div>
-                        <div class="plate-footer-row">
-                          <div class="plate-actions-group">
-                            <button type="button" class="btn btn-compact" onClick=${() => setInspectorNode(node)}>
-                              Inspect Source PDF
-                            </button>
-                          </div>
-                          ${childAuths.length > 0 && html`
-                            <div class="plate-actions-group">
-                              <button
-                                type="button"
-                                class="btn btn-compact"
-                                onClick=${() => {
-                                  setExpandedL2Ids(childAuths);
-                                  if (window.innerWidth <= 1180) {
-                                    requestAnimationFrame(() => l2Ref.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
-                                  }
-                                }}
-                              >
-                                Governing Law (${childAuths.length}) <${ArrowRightIcon} />
-                              </button>
-                            </div>
-                          `}
-                        </div>
-                      </article>
-                    `;
-                  })}
-                </div>
-              </section>
-            `}
-
-            <!-- Column 3 (L2+): Controlling Statutory Authorities & Reference Tables -->
-            ${expandedL2Ids.length > 0 && html`
-              <section class="column-lane" ref=${l2Ref} aria-label="L2+ Controlling Statutory Authorities">
-                <div class="lane-header">
-                  <span class="lane-title">Controlling Law & Tables</span>
-                  <button type="button" class="btn btn-compact" onClick=${() => setExpandedL2Ids([])}>
-                    <${CloseIcon} /> Close
-                  </button>
-                </div>
-                <div class="spatial-card-stack">
-                  ${expandedL2Ids.map((nid) => {
-                    const node = nodes[nid];
-                    if (!node) return null;
-                    return html`
-                      <article class="spatial-node-card plate-authority" data-card-id=${nid}>
-                        <div class="plate-header-strip">
-                          <div class="plate-role-meta">
-                            <span class="plate-role-name is-copper">Statutory Authority</span>
-                          </div>
-                        </div>
-                        <div class="plate-body-stage">
-                          <h3 class="card-heading">${node.title}</h3>
-                          <blockquote class="evidence-blockquote">${node.quote}</blockquote>
-                        </div>
-                      </article>
-                    `;
-                  })}
-                </div>
-              </section>
-            `}
-          </div>
-        `}
-      </main>
-
-      ${inspectorNode && html`
-        <${SourceInspectorDrawer}
-          node=${inspectorNode}
-          matterId=${graph?.matter_id}
-          onClose=${() => setInspectorNode(null)}
+  const renderDefaultQueuePane = () => html`
+    <div class="spatial-card-stack">
+      ${triageItems.length > 0 ? html`
+        <${NextBlockerStepper}
+          triageItems=${triageItems}
+          currentIndex=${Math.min(stepperIndex, triageItems.length - 1)}
+          onChangeIndex=${setStepperIndex}
+          matterId=${graph.matter_id}
+          nodes=${nodes}
+          onUpdated=${setCaseState}
+          onLocateRef=${(refId) => selectL0Claim(refId, true)}
         />
-      `}
-
-      ${showPacketDrawer && caseState && html`
-        <${FilingPacketDrawer}
-          caseState=${caseState}
-          onClose=${() => setShowPacketDrawer(false)}
-          onStateUpdated=${setCaseState}
-        />
-      `}
-
-      ${showUploadModal && html`
-        <div class="bk-modal-backdrop" onClick=${() => !busyMsg && setShowUploadModal(false)}>
-          <div
-            class="bk-modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="bk-new-case-title"
-            onClick=${(e) => e.stopPropagation()}
-          >
-            <div class="drawer-header">
-              <div>
-                <h3 id="bk-new-case-title" class="card-heading">Create Case & Upload Client PDFs</h3>
-                <div class="kicker-label">Client Intake & OCR Extraction</div>
-              </div>
-              <button type="button" class="btn btn-compact" disabled=${Boolean(busyMsg)} onClick=${() => setShowUploadModal(false)}>
-                <${CloseIcon} /> Close
-              </button>
-            </div>
-            <form class="drawer-body" onSubmit=${handleCreateAndExtract}>
-              <div class="bk-field-group">
-                <label class="bk-label" htmlFor="bk-new-matter-id">Matter Identifier (Slug)</label>
-                <input
-                  id="bk-new-matter-id"
-                  class="bk-input"
-                  required
-                  placeholder="e.g., bk_ch7_doe_2026"
-                  value=${newCaseId}
-                  onInput=${(e) => setNewCaseId(e.target.value)}
-                />
-              </div>
-              <div class="bk-inline-form">
-                <div class="bk-field-group">
-                  <label class="bk-label" htmlFor="bk-new-chapter">Bankruptcy Chapter</label>
-                  <select id="bk-new-chapter" class="bk-select" value=${newChapter} onChange=${(e) => setNewChapter(e.target.value)}>
-                    <option value="7">Chapter 7 (Liquidation)</option>
-                    <option value="13">Chapter 13 (Wage Earner Plan)</option>
-                  </select>
-                </div>
-                <div class="bk-field-group">
-                  <label class="bk-label" htmlFor="bk-new-district">Filing Court District</label>
-                  <select id="bk-new-district" class="bk-select" value=${newDistrict} onChange=${(e) => setNewDistrict(e.target.value)}>
-                    <option value="CACB">CACB (Central District of CA)</option>
-                    <option value="CAEB">CAEB (Eastern District of CA)</option>
-                  </select>
-                </div>
-              </div>
-              <div class="bk-field-group">
-                <label class="bk-label" htmlFor="bk-upload-files">Client Source Documents (PDF, CSV, XLSX, MD)</label>
-                <input
-                  id="bk-upload-files"
-                  type="file"
-                  multiple
-                  accept=".pdf,.csv,.xlsx,.md,.txt"
-                  onChange=${(e) => setUploadFiles(Array.from(e.target.files || []))}
-                />
-              </div>
-              ${modalError && html`<div class="bk-error-text" role="alert">${modalError}</div>`}
-              <button class="btn btn-primary" type="submit" disabled=${Boolean(busyMsg) || !newCaseId.trim()}>
-                ${busyMsg || 'Create Case & Run Audit Extraction'}
-              </button>
-            </form>
+      ` : html`
+        <div class="bk-stepper-panel is-ready">
+          <div class="bk-stepper-bar">
+            <span class="bk-severity-pill is-ready">Zero-Doubt Gate Passed</span>
+          </div>
+          <h2 class="bk-stepper-title">Ready to Compile Official Filing Packet</h2>
+          <p class="bk-triage-prompt">
+            All extracted figures are matched to source coordinates, all Form 108 elections are set, and zero unresolved contradictions remain across ${plannedForms.length || 14} court forms.
+          </p>
+          <div>
+            <button type="button" class="btn btn-primary" onClick=${() => setShowPacketDrawer(true)}>
+              Compile & Sign Filing Packet <${ArrowRightIcon} />
+            </button>
           </div>
         </div>
       `}
     </div>
+  `;
+
+  const renderL1Pane = () => html`
+    <div class="spatial-card-stack">
+      ${nodes[pinnedClaimId] && html`
+        <div class="claim-context-bar">
+          <div class="kicker-label">Selected Schedule Entry</div>
+          <strong>${nodes[pinnedClaimId].title}</strong>
+        </div>
+      `}
+      ${l1Ids.map((nid) => {
+        const node = nodes[nid];
+        if (!node) return null;
+        const tone = getToneForNode(node);
+        const childAuths = node.direct_child_ids || [];
+        return html`
+          <article key=${nid} class=${`spatial-node-card ${tone.cls}`} data-card-id=${nid}>
+            <div class="plate-header-strip">
+              <div class="plate-role-meta">
+                <span class="plate-role-name">${tone.tag}</span>
+              </div>
+              <span class="arch-stamp">${formatAuditLabel(node.audit?.status)}</span>
+            </div>
+            <div class="plate-body-stage">
+              <h3 class="card-heading">${node.title}</h3>
+              ${node.formula && html`<pre class="font-mono-data bk-formula-box">${node.formula}</pre>`}
+              ${node.quote && html`<blockquote class="evidence-blockquote">“${node.quote}”</blockquote>`}
+              ${node.body && html`<p class="card-body-prose">${node.body}</p>`}
+            </div>
+            <div class="plate-footer-row">
+              <div class="plate-actions-group">
+                <button type="button" class="btn btn-compact" onClick=${() => setInspectorNode(node)}>
+                  Inspect Source PDF
+                </button>
+              </div>
+              ${childAuths.length > 0 && html`
+                <div class="plate-actions-group">
+                  <button
+                    type="button"
+                    class="btn btn-compact"
+                    onClick=${() => {
+                      setExpandedL2Ids(childAuths);
+                      if (window.innerWidth <= 1180) {
+                        requestAnimationFrame(() => l2Ref.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+                      }
+                    }}
+                  >
+                    Governing Law (${childAuths.length}) <${ArrowRightIcon} />
+                  </button>
+                </div>
+              `}
+            </div>
+          </article>
+        `;
+      })}
+    </div>
+  `;
+
+  const renderL2Pane = () => html`
+    <div class="spatial-card-stack">
+      ${expandedL2Ids.map((nid) => {
+        const node = nodes[nid];
+        if (!node) return null;
+        return html`
+          <article key=${nid} class="spatial-node-card plate-authority" data-card-id=${nid}>
+            <div class="plate-header-strip">
+              <div class="plate-role-meta">
+                <span class="plate-role-name is-copper">Statutory Authority</span>
+              </div>
+            </div>
+            <div class="plate-body-stage">
+              <h3 class="card-heading">${node.title}</h3>
+              <blockquote class="evidence-blockquote">${node.quote}</blockquote>
+            </div>
+          </article>
+        `;
+      })}
+    </div>
+  `;
+
+  const overlaySlots = html`
+    ${inspectorNode && html`
+      <${SourceInspectorDrawer}
+        node=${inspectorNode}
+        rawUrlOverride=${bkRawUrl}
+        onClose=${() => setInspectorNode(null)}
+      />
+    `}
+
+    ${showPacketDrawer && caseState && html`
+      <${FilingPacketDrawer}
+        caseState=${caseState}
+        onClose=${() => setShowPacketDrawer(false)}
+        onStateUpdated=${setCaseState}
+      />
+    `}
+
+    ${showUploadModal && html`
+      <div class="bk-modal-backdrop" onClick=${() => !busyMsg && setShowUploadModal(false)}>
+        <div
+          class="bk-modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="bk-new-case-title"
+          onClick=${(e) => e.stopPropagation()}
+        >
+          <div class="drawer-header">
+            <div>
+              <h3 id="bk-new-case-title" class="card-heading">Create Case & Upload Client PDFs</h3>
+              <div class="kicker-label">Client Intake & OCR Extraction</div>
+            </div>
+            <button type="button" class="btn btn-compact" disabled=${Boolean(busyMsg)} onClick=${() => setShowUploadModal(false)}>
+              <${CloseIcon} /> Close
+            </button>
+          </div>
+          <form class="drawer-body" onSubmit=${handleCreateAndExtract}>
+            <div class="bk-field-group">
+              <label class="bk-label" htmlFor="bk-new-matter-id">Matter Identifier (Slug)</label>
+              <input
+                id="bk-new-matter-id"
+                class="bk-input"
+                required
+                placeholder="e.g., bk_ch7_doe_2026"
+                value=${newCaseId}
+                onInput=${(e) => setNewCaseId(e.target.value)}
+              />
+            </div>
+            <div class="bk-inline-form">
+              <div class="bk-field-group">
+                <label class="bk-label" htmlFor="bk-new-chapter">Bankruptcy Chapter</label>
+                <select id="bk-new-chapter" class="bk-select" value=${newChapter} onChange=${(e) => setNewChapter(e.target.value)}>
+                  <option value="7">Chapter 7 (Liquidation)</option>
+                  <option value="13">Chapter 13 (Wage Earner Plan)</option>
+                </select>
+              </div>
+              <div class="bk-field-group">
+                <label class="bk-label" htmlFor="bk-new-district">Filing Court District</label>
+                <select id="bk-new-district" class="bk-select" value=${newDistrict} onChange=${(e) => setNewDistrict(e.target.value)}>
+                  <option value="CACB">CACB (Central District of CA)</option>
+                  <option value="CAEB">CAEB (Eastern District of CA)</option>
+                </select>
+              </div>
+            </div>
+            <div class="bk-field-group">
+              <label class="bk-label" htmlFor="bk-upload-files">Client Source Documents (PDF, CSV, XLSX, MD)</label>
+              <input
+                id="bk-upload-files"
+                type="file"
+                multiple
+                accept=".pdf,.csv,.xlsx,.md,.txt"
+                onChange=${(e) => setUploadFiles(Array.from(e.target.files || []))}
+              />
+            </div>
+            ${modalError && html`<div class="bk-error-text" role="alert">${modalError}</div>`}
+            <button class="btn btn-primary" type="submit" disabled=${Boolean(busyMsg) || !newCaseId.trim()}>
+              ${busyMsg || 'Create Case & Run Audit Extraction'}
+            </button>
+          </form>
+        </div>
+      </div>
+    `}
+  `;
+
+  return html`
+    <${PlatformShell}
+      activeAppId="bankruptcy"
+      brandTitle="Bankruptcy Case Workbench"
+      selectorSlot=${selectorSlot}
+      headerActions=${headerActions}
+      inertOverlay=${Boolean(inspectorNode || showPacketDrawer || showUploadModal)}
+      overlaySlots=${overlaySlots}
+    >
+      ${caseState
+        ? html`
+            <${TraceabilityCanvas}
+              mainId="bk-workspace-main"
+              viewportRef=${viewportRef}
+              inert=${Boolean(inspectorNode || showPacketDrawer || showUploadModal)}
+              showL1=${l1Ids.length > 0}
+              showL2=${expandedL2Ids.length > 0}
+              bezierProps=${{ links: paths, nodesMap: nodes }}
+              l0Title="Official Schedules & Forms"
+              l0Count=${`${bundle?.audit_summary?.verified_count || 0}/${bundle?.audit_summary?.total_claims || 0} Verified`}
+              l0LaneClass="column-lane lane-analytical"
+              l0AriaLabel="Official Forms Schedules Broadsheet"
+              renderL0=${renderL0Pane}
+              defaultRightTitle="Audit Resolution Queue"
+              defaultRightCount=${`${triageItems.length} Open`}
+              defaultRightAriaLabel="Next Audit Blocker Stepper"
+              renderDefaultRight=${renderDefaultQueuePane}
+              l1Title="Source Proof & Math Trace"
+              l1Ref=${l1Ref}
+              l1LaneClass="column-lane"
+              l1AriaLabel="L1 Deterministic Math and Client PDF Evidence"
+              onCloseL1=${() => {
+                setPinnedClaimId(null);
+                setExpandedL2Ids([]);
+              }}
+              renderL1=${renderL1Pane}
+              l2Title="Controlling Law & Tables"
+              l2Ref=${l2Ref}
+              l2AriaLabel="L2+ Controlling Statutory Authorities"
+              onCloseL2=${() => setExpandedL2Ids([])}
+              renderL2=${renderL2Pane}
+            />
+          `
+        : html`
+            <main id="bk-workspace-main" class="spatial-viewport" ref=${viewportRef}>
+              ${appError && html`
+                <div class="bk-error-banner" role="alert">
+                  <span>${appError}</span>
+                  <button type="button" class="btn btn-compact" onClick=${() => loadMatters()}>Retry</button>
+                </div>
+              `}
+
+              ${loadingMatters && !appError && html`
+                <div class="bk-empty-state">
+                  <h2 class="section-heading">Loading Bankruptcy Case Workbench</h2>
+                  <p class="bk-triage-prompt">Retrieving case files and verifying statutory exemption and means-test tables...</p>
+                </div>
+              `}
+
+              ${!loadingMatters && !appError && html`
+                <div class="bk-empty-state">
+                  <h2 class="section-heading">No Bankruptcy Matters Yet</h2>
+                  <p class="bk-triage-prompt">
+                    Create your first Chapter 7 or Chapter 13 matter and upload uncategorized client financial PDFs (intake sheets, paystubs, bank statements, tax returns, or loan statements).
+                  </p>
+                  <div>
+                    <button type="button" class="btn btn-primary" onClick=${() => setShowUploadModal(true)}>
+                      Create First Case
+                    </button>
+                  </div>
+                </div>
+              `}
+            </main>
+          `}
+    </${PlatformShell}>
   `;
 }
 

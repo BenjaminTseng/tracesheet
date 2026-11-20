@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     CalculationSummary,
     CanonicalCaseGraph,
@@ -31,9 +31,10 @@ from app.bankruptcy.models import (
     HumanOverrideRecord,
     ProvenanceField,
 )
+from app.core.bundle import TensionObject
+from app.core.gate import GatePolicy, ReadinessGate
+from app.core.llm import LLMProvider
 from app.core.tables import StatutoryTableRegistry
-from app.llm import LLMProvider
-from app.models import TensionObject
 
 
 DEBT_PAYEE_KEYWORDS = (
@@ -935,50 +936,17 @@ class PlausibilityAuditEngine:
 
 
 class FilingReadinessGate:
-    """Enforces the strict zero-doubt compiler gate (`READY` vs `BLOCKED`)."""
+    """Enforces the strict zero-doubt compiler gate (`READY` vs `BLOCKED`) via `core.gate.ReadinessGate`."""
 
     def __init__(self, registry: Optional[StatutoryTableRegistry] = None) -> None:
-        """Initializes the readiness gate with optional statutory table staleness checks.
-
-        Args:
-            registry: Optional `StatutoryTableRegistry` for effective-date staleness enforcement.
-        """
+        """Initializes the readiness gate with strict blocking policy and table staleness checks."""
         self.registry = registry
+        self._core_gate = ReadinessGate(GatePolicy.strict_blocking())
 
     @staticmethod
     def find_unverified_field_paths(graph: CanonicalCaseGraph) -> List[str]:
-        """Recursively locates all `ProvenanceField` paths lacking verified or overridden status.
-
-        Args:
-            graph: `CanonicalCaseGraph` to inspect.
-
-        Returns:
-            Sorted list of dotted paths to unverified or contradicted `ProvenanceField`s.
-        """
-        unverified: List[str] = []
-
-        def _walk(obj: Any, prefix: str) -> None:
-            if isinstance(obj, ProvenanceField):
-                if obj.verification_status not in ("verified", "human_overridden"):
-                    unverified.append(f"{prefix} ({obj.verification_status})")
-                return
-            if isinstance(obj, list):
-                for idx, item in enumerate(obj):
-                    _walk(item, f"{prefix}[{idx}]")
-                return
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    _walk(v, f"{prefix}.{k}" if prefix else str(k))
-                return
-            if isinstance(obj, BaseModel):
-                for fname in type(obj).model_fields:
-                    val = getattr(obj, fname)
-                    if val is not None:
-                        next_prefix = f"{prefix}.{fname}" if prefix else fname
-                        _walk(val, next_prefix)
-
-        _walk(graph, "")
-        return sorted(unverified)
+        """Recursively locates all `ProvenanceField` paths lacking verified or overridden status."""
+        return ReadinessGate.find_unverified_field_paths(graph)
 
     def evaluate(
         self,
@@ -986,27 +954,8 @@ class FilingReadinessGate:
         required_forms: Optional[List[str]] = None,
         packet_validation_errors: Optional[List[str]] = None,
     ) -> FilingReadinessReport:
-        """Evaluates whether `state` meets every strict zero-doubt filing invariant.
-
-        Args:
-            state: Current `BankruptcyCaseState`.
-            required_forms: Form IDs planned by `FormPacketPlanner`.
-            packet_validation_errors: Optional PDF/matrix validation failures.
-
-        Returns:
-            `FilingReadinessReport` with `status == "READY"` only when zero blockers exist.
-        """
+        """Evaluates whether `state` meets every strict zero-doubt filing invariant."""
         unverified_paths = self.find_unverified_field_paths(state.case_graph)
-        open_critical_qs = [
-            f"{q.question_id}: {q.prompt}"
-            for q in state.emerging_questions
-            if q.severity == "critical" and q.status != "answered"
-        ]
-        unresolved_blockers = [
-            f"{t.tension_id}: {t.description}"
-            for t in state.tensions
-            if t.severity == "blocker" and t.tension_id not in state.resolved_tension_records
-        ]
         pkt_errors = list(packet_validation_errors or [])
 
         # District/Chapter capability check (validated CACB Case Upload constraint).
@@ -1015,35 +964,17 @@ class FilingReadinessGate:
                 "CACB CM/ECF Case Upload supports complete Chapter 7 and Chapter 13 only (not Chapter 11)."
             )
 
-        blocking_reasons: List[str] = []
-        if unverified_paths:
-            blocking_reasons.append(
-                f"{len(unverified_paths)} unverified/contradicted field(s) lack provenance or human override."
-            )
-        if open_critical_qs:
-            blocking_reasons.append(
-                f"{len(open_critical_qs)} critical emerging/completeness question(s) remain open."
-            )
-        if unresolved_blockers:
-            blocking_reasons.append(
-                f"{len(unresolved_blockers)} critical contradiction(s) remain unresolved."
-            )
-        if pkt_errors:
-            blocking_reasons.append(
-                f"{len(pkt_errors)} district packet validation error(s) detected."
-            )
-        if self.registry is not None:
-            stale_warnings = self.registry.check_staleness(state.case_graph.expected_filing_date)
-            for sw in stale_warnings:
-                blocking_reasons.append(sw)
-
-        status = "READY" if not blocking_reasons else "BLOCKED"
-        return FilingReadinessReport(
-            status=status,
-            unverified_field_paths=unverified_paths,
-            unresolved_critical_questions=open_critical_qs,
-            unresolved_critical_tensions=unresolved_blockers,
-            packet_validation_errors=pkt_errors,
-            required_forms=list(required_forms or []),
-            blocking_reasons=blocking_reasons,
+        stale_warnings = (
+            self.registry.check_staleness(state.case_graph.expected_filing_date)
+            if self.registry is not None
+            else []
+        )
+        return self._core_gate.evaluate(
+            unverified_fields=unverified_paths,
+            open_questions=state.emerging_questions,
+            tensions=state.tensions,
+            resolved_tension_ids=set(state.resolved_tension_records.keys()),
+            stale_warnings=stale_warnings,
+            extra_errors=pkt_errors,
+            required_artifacts=required_forms,
         )

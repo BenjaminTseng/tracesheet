@@ -7,7 +7,7 @@ import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, Tuple
 
-from app.bankruptcy.models import CanonicalCaseGraph, MeansTestResult
+from app.compilers.bankruptcy.schema import CanonicalCaseGraph, MeansTestResult
 from app.core.tables import StatutoryTableRegistry
 
 

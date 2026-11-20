@@ -8,7 +8,7 @@ from typing import List
 
 import pymupdf
 
-from app.bankruptcy.service import BankruptcyCaseService
+from app.compilers.bankruptcy.service import BankruptcyCaseService
 
 
 def _write_client_pdf(path: Path, lines: List[str]) -> None:

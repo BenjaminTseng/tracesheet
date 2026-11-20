@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 from dotenv import find_dotenv, load_dotenv
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import create_llm_provider
-from app.models import ReviewComment, SectionOutput, SectionValidator
-from app.pipeline import AuditPipelineRunner
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import create_llm_provider
+from app.core.bundle import ReviewComment, SectionOutput, SectionValidator
+from app.compilers.research.pipeline import AuditPipelineRunner
 
 dotenv_path = find_dotenv(usecwd=True)
 if dotenv_path:

@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
+    AssetCategory,
     AssetItem,
     BankStatementPeriod,
     BankTransactionItem,
@@ -33,10 +34,10 @@ from app.bankruptcy.models import (
     ProvenanceField,
     TaxReturnSummary,
 )
-from app.bankruptcy.verifier import IndexedMatterCorpus, ObservationVerifier
-from app.ingest import MatterIngestor
-from app.llm import LLMProvider, MockLLMProvider
-from app.models import SourceLocator
+from app.core.bundle import SourceLocator
+from app.core.ingest import MatterIngestor
+from app.core.llm import LLMProvider, MockLLMProvider
+from app.core.verifier import IndexedMatterCorpus, ObservationVerifier
 
 
 # =====================================================================
@@ -733,6 +734,67 @@ class BankruptcyCaseExtractor:
         )
         return self._apply_multi_form_fanout(updated)
 
+    @staticmethod
+    def _normalize_asset_category(raw: str) -> str:
+        """Normalizes free-form LLM asset categories to valid `AssetCategory` Literals."""
+        norm = re.sub(r"[^a-z0-9_]+", "_", (raw or "").strip().lower()).strip("_")
+        valid = {
+            "real_property", "vehicle", "watercraft_aircraft", "household_goods",
+            "electronics", "collectibles", "sports_hobby", "firearms", "apparel",
+            "jewelry", "pets_non_farm", "cash", "bank_account", "social_security_deposit",
+            "brokerage_stocks", "retirement", "retirement_erisa_ira", "ira_non_rollover",
+            "education_529", "trust_inheritance", "intellectual_property",
+            "licenses_franchises", "security_deposit", "tax_refund", "receivable",
+            "annuities", "unpaid_wages", "life_insurance_csv", "personal_injury",
+            "workers_comp", "legal_claims", "tools_of_trade", "business_interest",
+            "business_equity", "wildcard_only", "other",
+        }
+        if norm in valid:
+            return norm
+        aliases = {
+            "real_estate": "real_property",
+            "house": "real_property",
+            "home": "real_property",
+            "primary_residence": "real_property",
+            "auto": "vehicle",
+            "car": "vehicle",
+            "automobile": "vehicle",
+            "checking": "bank_account",
+            "checking_account": "bank_account",
+            "savings": "bank_account",
+            "savings_account": "bank_account",
+            "401k": "retirement",
+            "ira": "retirement",
+            "stocks": "brokerage_stocks",
+            "brokerage": "brokerage_stocks",
+        }
+        return aliases.get(norm, "other")
+
+    @staticmethod
+    def _normalize_priority_type(raw: str) -> str:
+        """Normalizes free-form LLM claim priorities to valid `ClaimItem.priority_type` Literals."""
+        norm = re.sub(r"[^a-z0-9_]+", "_", (raw or "").strip().lower()).strip("_")
+        valid = {
+            "secured",
+            "priority_tax",
+            "priority_dso",
+            "priority_wages",
+            "general_unsecured",
+        }
+        if norm in valid:
+            return norm
+        if "secured" in norm and "unsecured" not in norm:
+            return "secured"
+        if any(k in norm for k in ("auto", "mortgage", "car_loan", "lien")):
+            return "secured"
+        if "tax" in norm or "irs" in norm:
+            return "priority_tax"
+        if any(k in norm for k in ("dso", "support", "alimony")):
+            return "priority_dso"
+        if "wage" in norm:
+            return "priority_wages"
+        return "general_unsecured"
+
     def _merge_llm_draft(
         self,
         draft: CaseExtractionDraft,
@@ -768,6 +830,7 @@ class BankruptcyCaseExtractor:
 
         parties = list(base_graph.parties)
         if draft.debtor_name and not any(p.role == "debtor_1" for p in parties):
+            hh_count = max(1, int(draft.household_size or 1))
             parties.append(
                 PartyEntity(
                     party_id="debtor_1",
@@ -777,7 +840,7 @@ class BankruptcyCaseExtractor:
                     ca_domicile_days_continuous=ProvenanceField[int](
                         value=1095, verification_status="unverified"
                     ),
-                    household_size=_make_pf(draft.household_size or 1, draft.household_ref),
+                    household_size=_make_pf(hh_count, draft.household_ref),
                 )
             )
 
@@ -785,13 +848,18 @@ class BankruptcyCaseExtractor:
         for idx, a in enumerate(draft.assets, start=1):
             is_unk = a.valuation_state.lower() == "unknown" or a.current_value.strip().lower() in ("unknown", "tbd", "unliquidated")
             parsed_val = Decimal("0.00") if is_unk else _parse_dec(a.current_value)
+            acq_pf = None
+            if a.acquisition_date:
+                acq_dt = _parse_date_str(a.acquisition_date, base_graph.expected_filing_date)
+                acq_pf = _make_pf(acq_dt, a.acq_ref or a.value_ref)
             assets.append(
                 AssetItem(
                     asset_id=a.asset_id or f"asset_{idx}",
-                    category=a.category,  # type: ignore[arg-type]
+                    category=self._normalize_asset_category(a.category),  # type: ignore[arg-type]
                     description=a.description,
                     account_last4=a.account_last4,
                     current_value=_make_pf(parsed_val, a.value_ref),
+                    acquisition_date=acq_pf,
                     valuation_state="unknown" if is_unk else "certain",
                     claim_100pct_fmv_exemption=is_unk,
                 )
@@ -807,11 +875,16 @@ class BankruptcyCaseExtractor:
                     city=c.city,
                     state=c.state,
                     zip_code=c.zip_code,
-                    priority_type=c.priority_type,  # type: ignore[arg-type]
+                    priority_type=self._normalize_priority_type(c.priority_type),  # type: ignore[arg-type]
                     total_claim_amount=_make_pf(_parse_dec(c.total_claim_amount), c.amount_ref),
                     monthly_payment=(
                         _make_pf(_parse_dec(c.monthly_payment), c.monthly_ref)
                         if c.monthly_payment
+                        else None
+                    ),
+                    arrears_amount=(
+                        _make_pf(_parse_dec(c.arrears_amount), c.arrears_ref or c.amount_ref)
+                        if c.arrears_amount
                         else None
                     ),
                     collateral_asset_id=c.collateral_asset_id,
@@ -906,14 +979,17 @@ class BankruptcyCaseExtractor:
             ]
             context_str = "\n\n".join(prompt_blocks)
             draft = llm_provider.generate_structured(
-                system_prompt=(
+                prompt=f"Extract bankruptcy entities from matter '{matter_id}':\n\n{context_str}",
+                system_instruction=(
                     "You are a precision bankruptcy intake extractor. Extract only factual "
                     "observations explicitly stated in the PII-masked indexed blocks. Every "
-                    "value MUST cite the exact file_name, locator_key, and verbatim_quote. "
-                    "Never compute sums or averages."
+                    "value MUST cite the exact `file_name`, `locator_key`, and exact substring `verbatim_quote` "
+                    "(matching numbers and text verbatim inside that block). Never compute sums or averages. "
+                    "Allowed asset categories: real_property, vehicle, household_goods, electronics, "
+                    "bank_account, brokerage_stocks, retirement, security_deposit, tax_refund, personal_injury, other. "
+                    "Allowed claim priority_type values: secured, priority_tax, priority_dso, priority_wages, general_unsecured."
                 ),
-                user_prompt=f"Extract bankruptcy entities from matter '{matter_id}':\n\n{context_str}",
-                response_schema=CaseExtractionDraft,
+                response_model=CaseExtractionDraft,
             )
             graph = self._merge_llm_draft(draft, corpus, base_graph)
         else:

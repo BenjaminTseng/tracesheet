@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple
 
 import pymupdf
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     CanonicalCaseGraph,
     ChapterType,
@@ -112,8 +112,8 @@ def get_district_adapter(
     district: DistrictCode, max_pdf_bytes: Optional[int] = None
 ) -> DistrictAdapter:
     """Factory returning the concrete `DistrictAdapter` for `CACB` or `CAEB`."""
-    from app.bankruptcy.districts.cacb import CACBDistrictAdapter
-    from app.bankruptcy.districts.caeb import CAEBDistrictAdapter
+    from app.compilers.bankruptcy.districts.cacb import CACBDistrictAdapter
+    from app.compilers.bankruptcy.districts.caeb import CAEBDistrictAdapter
 
     if district == "CACB":
         return CACBDistrictAdapter(max_pdf_bytes=max_pdf_bytes)

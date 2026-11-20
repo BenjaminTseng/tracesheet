@@ -14,13 +14,12 @@ import datetime
 from decimal import Decimal
 from typing import Dict, List, Optional
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.form_binder import FormPacketPlanner
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     ProvenanceField,
 )
-from app.bankruptcy.pdf_engine import FormPacketPlanner
-from app.core.tables import StatutoryTableRegistry
-from app.models import (
+from app.core.bundle import (
     ArtifactEnvelope,
     AuditSummary,
     CompiledBundle,
@@ -29,6 +28,8 @@ from app.models import (
     SectionObject,
     TensionObject,
 )
+from app.core.provenance import VerifiedLedgerSnapshot
+from app.core.tables import StatutoryTableRegistry
 
 ASSET_CATEGORY_LINE_MAP: Dict[str, tuple[str, str]] = {
     "real_property": ("106A/B Pt. 1 · 1.1", "Real Estate"),
@@ -834,3 +835,75 @@ class BankruptcyBundleCompiler:
             ),
             nodes=nodes,
         )
+
+
+def build_ledger_snapshot(state: BankruptcyCaseState) -> VerifiedLedgerSnapshot:
+    """Exports deterministic bankruptcy calculations as a sibling-readable `VerifiedLedgerSnapshot`."""
+    graph = state.case_graph
+    calcs = state.calculations
+    debtor_1 = next((p for p in graph.parties if p.role == "debtor_1"), None)
+    facts: Dict[str, object] = {
+        "matter_id": graph.matter_id,
+        "chapter": graph.chapter,
+        "district": graph.district,
+        "expected_filing_date": graph.expected_filing_date.isoformat(),
+        "debtor_name": debtor_1.full_name.value if debtor_1 else "Unknown",
+    }
+    if calcs is not None:
+        facts.update(
+            {
+                "total_assets": f"{calcs.total_assets:.2f}",
+                "total_secured_debt": f"{calcs.total_secured_debt:.2f}",
+                "total_priority_debt": f"{calcs.total_priority_debt:.2f}",
+                "total_general_unsecured_debt": f"{calcs.total_general_unsecured_debt:.2f}",
+                "schedule_i_monthly_gross": f"{calcs.schedule_i_monthly_gross:.2f}",
+                "schedule_j_monthly_expenses": f"{calcs.schedule_j_monthly_expenses:.2f}",
+                "schedule_ij_monthly_net": f"{calcs.schedule_ij_monthly_net:.2f}",
+                "current_monthly_income": f"{calcs.means_test.current_monthly_income:.2f}",
+                "annualized_cmi": f"{calcs.means_test.annualized_cmi:.2f}",
+                "is_above_median": calcs.means_test.is_above_median,
+                "recommended_regime_id": calcs.exemptions.recommended_regime_id,
+                "eligible_for_target_chapter": calcs.eligibility.eligible,
+            }
+        )
+        rec = next(
+            (e for e in calcs.exemptions.evaluations if e.regime_id == calcs.exemptions.recommended_regime_id),
+            None,
+        )
+        if rec is not None:
+            facts["total_exempt_equity"] = f"{rec.total_exempt_equity:.2f}"
+            facts["total_non_exempt_equity"] = f"{rec.total_non_exempt_equity:.2f}"
+        if calcs.ch13_plan is not None:
+            facts["ch13_estimated_monthly_payment"] = f"{calcs.ch13_plan.estimated_monthly_plan_payment:.2f}"
+            facts["ch13_liquidation_floor"] = f"{calcs.ch13_plan.best_interests_liquidation_floor:.2f}"
+            facts["ch13_commitment_months"] = calcs.ch13_plan.applicable_commitment_months
+
+    line_items: List[Dict[str, object]] = [
+        {
+            "kind": "asset",
+            "id": a.asset_id,
+            "category": a.category,
+            "description": a.description,
+            "value": f"{a.current_value.value:.2f}",
+            "verification_status": a.current_value.verification_status,
+        }
+        for a in graph.assets
+    ] + [
+        {
+            "kind": "claim",
+            "id": c.claim_id,
+            "priority_type": c.priority_type,
+            "creditor_name": c.creditor_name,
+            "amount": f"{c.total_claim_amount.value:.2f}",
+            "verification_status": c.total_claim_amount.verification_status,
+        }
+        for c in graph.claims
+    ]
+
+    return VerifiedLedgerSnapshot(
+        matter_id=graph.matter_id,
+        app_id="bankruptcy",
+        readiness_status=state.readiness.status if state.readiness else "BLOCKED",
+        facts=facts,
+        line_items=line_items,
+    )

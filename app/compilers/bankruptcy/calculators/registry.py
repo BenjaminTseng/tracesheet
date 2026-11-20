@@ -1,35 +1,31 @@
-"""Pure-Python deterministic statutory calculators for Bankruptcy v1.
-
-Provides `Decimal`-exact calculations driven strictly by effective-dated JSON
-reference tables (`StatutoryTableRegistry`), never LLM arithmetic.
-"""
+"""Chapter-dispatched calculator pipeline registry (Ch. 7, Ch. 13, extensible to Ch. 11 SubV)."""
 
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_HALF_UP
+from typing import Callable, Dict
 
-from app.bankruptcy.calculators.ch13_plan import Chapter13PlanCalculator
-from app.bankruptcy.calculators.eligibility import EligibilityEngine
-from app.bankruptcy.calculators.exemptions import ExemptionOptimizer
-from app.bankruptcy.calculators.means_test import CMIAndMeansTestEngine
-from app.bankruptcy.models import CalculationSummary, CanonicalCaseGraph
+from app.compilers.bankruptcy.calculators.ch13_plan import Chapter13PlanCalculator
+from app.compilers.bankruptcy.calculators.eligibility import EligibilityEngine
+from app.compilers.bankruptcy.calculators.exemptions import ExemptionOptimizer
+from app.compilers.bankruptcy.calculators.means_test import CMIAndMeansTestEngine
+from app.compilers.bankruptcy.schema import (
+    CalculationSummary,
+    CanonicalCaseGraph,
+    ChapterType,
+)
 from app.core.tables import StatutoryTableRegistry
 
 
-def compute_case_calculations(
-    graph: CanonicalCaseGraph, registry: StatutoryTableRegistry
+ChapterPipelineFn = Callable[[CanonicalCaseGraph, StatutoryTableRegistry], CalculationSummary]
+
+
+def _compute_common(
+    graph: CanonicalCaseGraph,
+    registry: StatutoryTableRegistry,
+    include_ch13_plan: bool = False,
 ) -> CalculationSummary:
-    """Runs all statutory calculators deterministically against `graph`.
-
-    Args:
-        graph: Populated `CanonicalCaseGraph` for the matter.
-        registry: Effective-dated `StatutoryTableRegistry`.
-
-    Returns:
-        Aggregated `CalculationSummary` containing Eligibility, Means Test,
-        Universal Exemption Optimization, Chapter 13 Plan math (if Ch. 13),
-        and schedule totals.
-    """
+    """Computes Eligibility, Means Test, Exemptions, Schedule I/J totals, and optional Ch. 13 plan."""
     eligibility = EligibilityEngine(registry).evaluate(graph)
     means_test = CMIAndMeansTestEngine(registry).evaluate(graph)
     exemptions = ExemptionOptimizer(registry).optimize(graph)
@@ -44,14 +40,16 @@ def compute_case_calculations(
     ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     sched_ij_net = (sched_i - sched_j).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    ch13_plan = None
-    if graph.chapter == "13":
-        ch13_plan = Chapter13PlanCalculator().calculate(
+    ch13_plan = (
+        Chapter13PlanCalculator().calculate(
             graph=graph,
             means_test=means_test,
             exemptions=exemptions,
             schedule_ij_monthly_net=sched_ij_net,
         )
+        if include_ch13_plan
+        else None
+    )
 
     total_assets = sum(
         (a.current_value.value for a in graph.assets), Decimal("0.00")
@@ -92,10 +90,28 @@ def compute_case_calculations(
     )
 
 
-__all__ = [
-    "EligibilityEngine",
-    "CMIAndMeansTestEngine",
-    "ExemptionOptimizer",
-    "Chapter13PlanCalculator",
-    "compute_case_calculations",
-]
+class ChapterCalculatorDispatch:
+    """Dispatches statutory calculator pipelines by target bankruptcy chapter (`7`, `13`, `11_subv`)."""
+
+    def __init__(self) -> None:
+        self._pipelines: Dict[ChapterType, ChapterPipelineFn] = {
+            "7": lambda g, r: _compute_common(g, r, include_ch13_plan=False),
+            "13": lambda g, r: _compute_common(g, r, include_ch13_plan=True),
+            "11_subv": lambda g, r: _compute_common(g, r, include_ch13_plan=False),
+        }
+
+    def register(self, chapter: ChapterType, fn: ChapterPipelineFn) -> None:
+        """Registers or overrides a chapter-specific statutory calculation pipeline."""
+        self._pipelines[chapter] = fn
+
+    def compute(
+        self, graph: CanonicalCaseGraph, registry: StatutoryTableRegistry
+    ) -> CalculationSummary:
+        """Executes the deterministic calculator pipeline registered for `graph.chapter`."""
+        handler = self._pipelines.get(graph.chapter)
+        if handler is None:
+            raise ValueError(f"Unsupported bankruptcy chapter for calculation: {graph.chapter}")
+        return handler(graph, registry)
+
+
+DEFAULT_CHAPTER_DISPATCH = ChapterCalculatorDispatch()

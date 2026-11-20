@@ -21,9 +21,9 @@ from fastapi.staticfiles import StaticFiles
 from dotenv import find_dotenv, load_dotenv
 import uvicorn
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import create_llm_provider
-from app.pipeline import AuditPipelineRunner
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import create_llm_provider
+from app.compilers.research.pipeline import AuditPipelineRunner
 from app.routes import router
 
 load_dotenv(dotenv_path=find_dotenv(usecwd=True), override=False)

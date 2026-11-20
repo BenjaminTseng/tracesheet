@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import MockLLMProvider
-from app.pipeline import CrossSectionAuditOutput, FeedbackTriageDecision, StitchedDocumentOutput
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import MockLLMProvider
+from app.compilers.research.pipeline import CrossSectionAuditOutput, FeedbackTriageDecision, StitchedDocumentOutput
 from app.routes import BUNDLE_STORE
 from main import app, parse_args
 
@@ -597,9 +597,9 @@ def test_corpus_file_management_streaming_and_checkpoint_runs(tmp_path: Path) ->
 def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path: Path) -> None:
     """Verifies reliability metadata upload/PATCH, blueprint CRUD, canonical domains, and strict ask."""
     from fastapi.testclient import TestClient
-    from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-    from app.llm import MockLLMProvider
-    from app.pipeline import BlueprintStore
+    from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+    from app.core.llm import MockLLMProvider
+    from app.compilers.research.pipeline import BlueprintStore
 
     canonical_dir = tmp_path / "canonical"
     (canonical_dir / "raw" / "legal").mkdir(parents=True)
@@ -758,8 +758,8 @@ def test_file_reliability_metadata_blueprints_and_domain_ask_endpoints(tmp_path:
 def test_raw_file_serving_and_bundle_available_files_metadata(tmp_path: Path) -> None:
     """Verifies raw file serving for matters/canonical sources and bundle raw-file metadata."""
     from fastapi.testclient import TestClient
-    from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-    from app.llm import MockLLMProvider
+    from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+    from app.core.llm import MockLLMProvider
 
     canonical_dir = tmp_path / "canonical"
     matters_root = tmp_path / "matters"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List
 
-from app.bankruptcy.models import CanonicalCaseGraph, ChapterType, EligibilityResult
+from app.compilers.bankruptcy.schema import CanonicalCaseGraph, ChapterType, EligibilityResult
 from app.core.tables import StatutoryTableRegistry
 
 

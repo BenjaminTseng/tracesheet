@@ -9,7 +9,7 @@ from pathlib import Path
 import pymupdf
 from fastapi.testclient import TestClient
 
-from app.bankruptcy.routes import create_bankruptcy_app
+from app.compilers.bankruptcy.routes import create_bankruptcy_app
 
 
 def _make_pdf_bytes(lines: list[str]) -> bytes:

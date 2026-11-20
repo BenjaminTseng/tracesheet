@@ -15,7 +15,8 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from app.bankruptcy.models import BankruptcyCaseState
+from app.compilers.bankruptcy.schema import BankruptcyCaseState
+from app.core.gate import SignOffGate, SignOffToken
 
 
 SubmissionMode = Literal["ecf_train", "filing_agent", "firm_attorney"]
@@ -156,19 +157,13 @@ class Rule9011SignOffGate:
     """Enforces attorney Rule 9011 sign-off and signed declaration prerequisites before submission."""
 
     def __init__(self, signing_secret: Optional[str] = None) -> None:
-        """Initializes the Rule 9011 gate with an HMAC signing secret."""
-        self._secret = (
-            signing_secret or os.getenv("JD_SCREEN_RULE9011_SECRET", "jd-screen-rule9011-secret")
-        ).encode("utf-8")
+        """Initializes the Rule 9011 gate delegating cryptographic signing to `core.gate.SignOffGate`."""
+        self._gate = SignOffGate(signing_secret=signing_secret)
 
     @staticmethod
     def compute_packet_hash(packet_files: List[Path]) -> str:
         """Computes a deterministic SHA-256 hash over all compiled packet files."""
-        h = hashlib.sha256()
-        for p in sorted(packet_files, key=lambda item: item.name):
-            h.update(p.name.encode("utf-8"))
-            h.update(p.read_bytes())
-        return f"sha256:{h.hexdigest()}"
+        return SignOffGate.compute_files_hash(packet_files)
 
     def mint_token(
         self,
@@ -178,21 +173,7 @@ class Rule9011SignOffGate:
         attorney_bar_number: str,
         attested: bool,
     ) -> Rule9011SignOffToken:
-        """Mints a `Rule9011SignOffToken` after validating readiness and wet-sig declaration.
-
-        Args:
-            state: Current `BankruptcyCaseState` (must have `readiness.status == "READY"`).
-            packet_files: Compiled district packet files on disk.
-            attorney_name: Admitted supervising attorney signing the filing.
-            attorney_bar_number: Attorney's California State Bar number.
-            attested: Explicit True confirmation of Rule 9011 certification.
-
-        Returns:
-            Signed `Rule9011SignOffToken`.
-
-        Raises:
-            PermissionError: If any strict gate, declaration, or bar requirement is unmet.
-        """
+        """Mints a `Rule9011SignOffToken` after validating readiness and wet-sig declaration."""
         if not attested:
             raise PermissionError("Explicit Rule 9011 attorney attestation is required.")
         if state.readiness is None or state.readiness.status != "READY":
@@ -206,37 +187,45 @@ class Rule9011SignOffGate:
         if not attorney_name.strip() or not attorney_bar_number.strip():
             raise PermissionError("Admitted attorney name and CA Bar number are required.")
 
-        pkt_hash = self.compute_packet_hash(packet_files)
-        signed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        payload = (
-            f"{state.case_graph.matter_id}|{attorney_name.strip()}|{attorney_bar_number.strip()}|"
-            f"{state.case_graph.signed_declaration_sha256}|{pkt_hash}|{signed_at}"
-        )
-        sig = hmac.new(self._secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        return Rule9011SignOffToken(
+        core_tok = self._gate.mint(
             matter_id=state.case_graph.matter_id,
-            attorney_name=attorney_name.strip(),
-            attorney_bar_number=attorney_bar_number.strip(),
+            artifact_files=packet_files,
+            actor_name=attorney_name,
+            actor_role="attorney",
+            actor_credential_id=attorney_bar_number,
+            attested=attested,
             declaration_sha256=state.case_graph.signed_declaration_sha256,
-            packet_sha256=pkt_hash,
-            signed_at=signed_at,
-            token_digest=sig,
+            readiness_status=state.readiness.status,
+            allow_advisory=False,
+        )
+        return Rule9011SignOffToken(
+            matter_id=core_tok.matter_id,
+            attorney_name=core_tok.actor_name,
+            attorney_bar_number=core_tok.actor_credential_id,
+            declaration_sha256=core_tok.declaration_sha256,
+            packet_sha256=core_tok.artifact_sha256,
+            signed_at=core_tok.signed_at,
+            token_digest=core_tok.token_digest,
         )
 
     def verify_token(
         self, token: Rule9011SignOffToken, state: BankruptcyCaseState, packet_files: List[Path]
     ) -> bool:
         """Verifies HMAC signature and confirms packet hash has not drifted since sign-off."""
-        if token.matter_id != state.case_graph.matter_id:
-            return False
-        if token.declaration_sha256 != state.case_graph.signed_declaration_sha256:
-            return False
-        current_pkt_hash = self.compute_packet_hash(packet_files)
-        if token.packet_sha256 != current_pkt_hash:
-            return False
-        payload = (
-            f"{token.matter_id}|{token.attorney_name}|{token.attorney_bar_number}|"
-            f"{token.declaration_sha256}|{token.packet_sha256}|{token.signed_at}"
+        core_tok = SignOffToken(
+            matter_id=token.matter_id,
+            actor_name=token.attorney_name,
+            actor_role="attorney",
+            actor_credential_id=token.attorney_bar_number,
+            artifact_sha256=token.packet_sha256,
+            declaration_sha256=token.declaration_sha256,
+            attested=True,
+            signed_at=token.signed_at,
+            token_digest=token.token_digest,
         )
-        expected = hmac.new(self._secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(expected, token.token_digest)
+        return self._gate.verify(
+            token=core_tok,
+            matter_id=state.case_graph.matter_id,
+            artifact_files=packet_files,
+            expected_declaration_sha256=state.case_graph.signed_declaration_sha256 or "",
+        )

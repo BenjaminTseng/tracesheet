@@ -9,8 +9,8 @@ from typing import List, Optional, Tuple
 
 import pymupdf
 
-from app.bankruptcy.districts.base import DistrictAdapter
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.districts.base import DistrictAdapter
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     CanonicalCaseGraph,
     ChapterType,

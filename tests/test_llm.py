@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import pytest
 from pydantic import BaseModel
 
-from app.llm import (
+from app.core.llm import (
     AnthropicProvider,
     GeminiInteractionsProvider,
     MockLLMProvider,

@@ -9,19 +9,23 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import HTTPException
+from fastapi import APIRouter, HTTPException
 
-from app.bankruptcy.audit import (
+from app.compilers.bankruptcy.bundle_adapter import (
+    BankruptcyBundleCompiler,
+    build_ledger_snapshot,
+)
+from app.compilers.bankruptcy.calculators import compute_case_calculations
+from app.compilers.bankruptcy.districts import get_district_adapter
+from app.compilers.bankruptcy.extractor import BankruptcyCaseExtractor
+from app.compilers.bankruptcy.form_binder import AcroFormFillerAndBaker, FormPacketPlanner
+from app.compilers.bankruptcy.rules_auditor import (
     DeclarativeDependencyAuditor,
     FilingReadinessGate,
     PlausibilityAuditEngine,
     QuantitativeForensicAuditor,
 )
-from app.bankruptcy.bundle_compiler import BankruptcyBundleCompiler
-from app.bankruptcy.calculators import compute_case_calculations
-from app.bankruptcy.districts import get_district_adapter
-from app.bankruptcy.extractor import BankruptcyCaseExtractor
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     BankruptcyCaseState,
     CanonicalCaseGraph,
@@ -35,13 +39,19 @@ from app.bankruptcy.models import (
     HumanOverrideRecord,
     ProvenanceField,
 )
-from app.bankruptcy.pdf_engine import AcroFormFillerAndBaker, FormPacketPlanner
-from app.bankruptcy.vault import CredentialAndTOTPVault, SubmissionMode, Rule9011SignOffGate
+from app.compilers.bankruptcy.vault import (
+    CredentialAndTOTPVault,
+    Rule9011SignOffGate,
+    SubmissionMode,
+)
+from app.core.compiler import AppDescriptor, PlatformContext
+from app.core.ingest import MatterIngestor
+from app.core.llm import LLMProvider
 from app.core.ocr import LocalOCRProvider, OCRProvider
 from app.core.pii import PIITokenizer
+from app.core.provenance import CaseSummaryRow
 from app.core.tables import StatutoryTableRegistry
-from app.ingest import MatterIngestor
-from app.llm import LLMProvider
+from app.core.workspace import MatterWorkspace
 
 
 class BankruptcyCaseService:
@@ -202,7 +212,11 @@ class BankruptcyCaseService:
         interim = interim.model_copy(update={"readiness": readiness})
         bundle = self.bundle_compiler.compile(interim)
         final_state = interim.model_copy(update={"compiled_bundle": bundle})
-        return self.save_case(final_state)
+        saved = self.save_case(final_state)
+        MatterWorkspace(self.matters_root, saved.case_graph.matter_id).write_ledger(
+            "bankruptcy", build_ledger_snapshot(saved)
+        )
+        return saved
 
     def extract_matter(
         self,
@@ -806,3 +820,46 @@ class BankruptcyCaseService:
         )
         self.save_case(final_state)
         return receipt
+
+
+class BankruptcyCompilerApp:
+    """`CompilerApp` adapter registering Bankruptcy Case Workbench into `app.server`."""
+
+    descriptor = AppDescriptor(
+        app_id="bankruptcy",
+        label="Bankruptcy Workbench",
+        description="Chapter 7 & 13 statutory calculators, exemptions, means test, and baked court PDFs.",
+        ui_route="/bankruptcy",
+        api_prefix="/api/v1/bankruptcy",
+        gate_mode="strict_blocking",
+    )
+
+    def __init__(self, service: BankruptcyCaseService) -> None:
+        self.service = service
+
+    def list_cases(self) -> List[CaseSummaryRow]:
+        """Returns standardized `CaseSummaryRow` items for all bankruptcy cases."""
+        rows: List[CaseSummaryRow] = []
+        for item in self.service.list_cases():
+            rows.append(
+                CaseSummaryRow(
+                    matter_id=item["matter_id"],
+                    app_id="bankruptcy",
+                    title=f"{item['matter_id']} — Ch. {item['chapter']} ({item['district']})",
+                    status=item["readiness_status"],
+                    open_blockers=int(item.get("open_questions", 0)) + int(item.get("open_tensions", 0)),
+                    metrics={
+                        "chapter": str(item["chapter"]),
+                        "district": str(item["district"]),
+                        "filing_date": str(item["expected_filing_date"]),
+                    },
+                    updated_at=str(item.get("updated_at", "")),
+                )
+            )
+        return rows
+
+    def build_router(self, ctx: PlatformContext) -> APIRouter:
+        """Builds the `/api/v1/bankruptcy` router mounted on the shared platform app."""
+        from app.compilers.bankruptcy.routes import build_bankruptcy_router
+
+        return build_bankruptcy_router(self.service)

@@ -7,14 +7,14 @@ import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from app.bankruptcy.audit import (
+from app.compilers.bankruptcy.rules_auditor import (
     DeclarativeDependencyAuditor,
     FilingReadinessGate,
     PlausibilityAuditEngine,
     QuantitativeForensicAuditor,
 )
-from app.bankruptcy.calculators import compute_case_calculations
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.calculators import compute_case_calculations
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     BankStatementPeriod,
     BankTransactionItem,
@@ -29,7 +29,7 @@ from app.bankruptcy.models import (
     PaystubRecord,
     ProvenanceField,
 )
-from app.bankruptcy.service import BankruptcyCaseService
+from app.compilers.bankruptcy.service import BankruptcyCaseService
 from app.core.tables import StatutoryTableRegistry
 
 
@@ -412,7 +412,7 @@ def test_hidden_injury_claim_and_bidirectional_sofa_sync_and_paystub_gap(tmp_pat
 def test_statutory_table_staleness_and_sync(tmp_path: Path) -> None:
     """Verifies StatutoryTableRegistry staleness detection, CLI/API table sync, and gate blocking."""
     import shutil
-    from app.bankruptcy.routes import create_bankruptcy_app
+    from app.compilers.bankruptcy.routes import create_bankruptcy_app
     from fastapi.testclient import TestClient
 
     ws = tmp_path / "ws_sync"

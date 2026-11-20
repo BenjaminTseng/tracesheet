@@ -11,7 +11,7 @@ import pymupdf
 import pytest
 from pydantic import ValidationError
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     CanonicalCaseGraph,
     HumanOverrideRecord,
@@ -19,9 +19,9 @@ from app.bankruptcy.models import (
     PaystubRecord,
     ProvenanceField,
 )
-from app.bankruptcy.verifier import IndexedMatterCorpus, ObservationVerifier
-from app.ingest import MatterIngestor
-from app.models import SourceLocator
+from app.core.bundle import SourceLocator
+from app.core.ingest import MatterIngestor
+from app.core.verifier import IndexedMatterCorpus, ObservationVerifier
 
 
 def _write_paystub_pdf(path: Path, text: str) -> None:

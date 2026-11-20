@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import List
 import openpyxl
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import MockLLMProvider
-from app.models import (
+from app.core.bundle import (
     CanonicalAuthorityRef,
     CanonicalDocumentSynopsisDraft,
     SectionOutput,
     VerifiedFactLedger,
 )
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import MockLLMProvider
 
 
 def _create_minimal_pdf(path: Path, lines: List[str]) -> None:
@@ -491,8 +491,8 @@ def test_verify_and_hydrate_ledger_and_section_citations(tmp_path: Path) -> None
 
 def test_canonical_synopsis_cache_and_file_management(tmp_path: Path) -> None:
     """Verifies SHA-256 synopsis caching, document inspection, and canonical/matter deletion."""
-    from app.llm import MockLLMProvider
-    from app.models import CanonicalDocumentSynopsisDraft
+    from app.core.llm import MockLLMProvider
+    from app.core.bundle import CanonicalDocumentSynopsisDraft
 
     canonical_dir = tmp_path / "canonical"
     raw_dir = canonical_dir / "raw" / "tax"

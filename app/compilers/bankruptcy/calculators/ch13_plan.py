@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     CanonicalCaseGraph,
     Chapter13PlanResult,

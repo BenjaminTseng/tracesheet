@@ -8,8 +8,8 @@ import uuid
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from app.bankruptcy.districts.base import DistrictAdapter
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.districts.base import DistrictAdapter
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     CanonicalCaseGraph,
     ChapterType,

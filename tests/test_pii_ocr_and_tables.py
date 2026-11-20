@@ -13,7 +13,7 @@ import pytest
 from app.core.ocr import LocalOCRProvider, MockOCRProvider, OCRBlock
 from app.core.pii import PIITokenizer
 from app.core.tables import StatutoryTableRegistry, TableIntegrityError
-from app.ingest import MatterIngestor
+from app.core.ingest import MatterIngestor
 
 
 def _create_raster_only_pdf(path: Path) -> None:

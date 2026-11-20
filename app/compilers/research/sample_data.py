@@ -10,7 +10,7 @@ cross-section tension warnings.
 from __future__ import annotations
 
 from typing import Dict
-from app.models import CompiledBundle
+from app.core.bundle import CompiledBundle
 
 
 RAW_BUNDLES: Dict[str, dict] = {

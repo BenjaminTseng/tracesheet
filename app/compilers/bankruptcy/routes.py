@@ -14,16 +14,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.sample_cases import seed_bankruptcy_sample_cases
+from app.compilers.bankruptcy.schema import (
     BankruptcyCaseState,
     ChapterType,
     CourtFilingReceipt,
     DistrictCode,
 )
-from app.bankruptcy.sample_cases import seed_bankruptcy_sample_cases
-from app.bankruptcy.service import BankruptcyCaseService
-from app.bankruptcy.vault import SubmissionMode
-from app.llm import LLMProvider
+from app.compilers.bankruptcy.service import BankruptcyCaseService
+from app.compilers.bankruptcy.vault import SubmissionMode
+from app.core.llm import LLMProvider
 
 
 class InitBankruptcyCaseRequest(BaseModel):
@@ -96,45 +96,9 @@ class SubmitCourtRequest(BaseModel):
     attested: bool = True
 
 
-def create_bankruptcy_app(
-    base_dir: Optional[Path] = None,
-    llm_provider: Optional[LLMProvider] = None,
-    seed_samples: bool = True,
-) -> FastAPI:
-    """Creates and configures the standalone Bankruptcy Case Workbench FastAPI application.
-
-    Args:
-        base_dir: Workspace root containing `templates/`, `static/`, `matters/`, `canonical/`.
-        llm_provider: Optional `LLMProvider` instance for live LLM extraction/decisions.
-        seed_samples: Whether to pre-seed sample CA bankruptcy cases when missing.
-
-    Returns:
-        Configured `FastAPI` instance ready to run via Uvicorn or `TestClient`.
-    """
-    root_dir = base_dir or Path(__file__).resolve().parent.parent.parent
-    templates = Jinja2Templates(directory=str(root_dir / "templates"))
-    service = BankruptcyCaseService(base_dir=root_dir, llm_provider=llm_provider)
-
-    if seed_samples:
-        seed_bankruptcy_sample_cases(service)
-
-    api = FastAPI(
-        title="Bankruptcy Case Workbench (v1)",
-        description="Standalone audit-grounded personal & small-business bankruptcy filing workbench.",
-        version="1.0.0",
-    )
-    api.state.bankruptcy_service = service
-
-    static_dir = root_dir / "static"
-    if static_dir.exists():
-        api.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
+def build_bankruptcy_router(service: BankruptcyCaseService) -> APIRouter:
+    """Builds the `/api/v1/bankruptcy` API router bound to `service`."""
     router = APIRouter()
-
-    @router.get("/", response_class=HTMLResponse)
-    async def bankruptcy_index(request: Request) -> HTMLResponse:
-        """Serves the standalone Bankruptcy Case Workbench shell."""
-        return templates.TemplateResponse(request, "bankruptcy.html")
 
     @router.get("/api/v1/bankruptcy/tables")
     async def list_statutory_tables() -> Dict[str, Any]:
@@ -333,5 +297,35 @@ def create_bankruptcy_app(
             attested=req.attested,
         )
 
-    api.include_router(router)
+    return router
+
+
+def create_bankruptcy_app(
+    base_dir: Optional[Path] = None,
+    llm_provider: Optional[LLMProvider] = None,
+    seed_samples: bool = True,
+) -> FastAPI:
+    """Creates a FastAPI app serving Bankruptcy Workbench routes (replaced by `app.server` in Commit 4)."""
+    root_dir = base_dir or Path(__file__).resolve().parent.parent.parent.parent
+    templates = Jinja2Templates(directory=str(root_dir / "templates"))
+    service = BankruptcyCaseService(base_dir=root_dir, llm_provider=llm_provider)
+    if seed_samples:
+        seed_bankruptcy_sample_cases(service)
+
+    api = FastAPI(
+        title="Bankruptcy Case Workbench (v1)",
+        description="Standalone audit-grounded personal & small-business bankruptcy filing workbench.",
+        version="1.0.0",
+    )
+    api.state.bankruptcy_service = service
+
+    static_dir = root_dir / "static"
+    if static_dir.exists():
+        api.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    @api.get("/", response_class=HTMLResponse)
+    async def bankruptcy_index(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(request, "bankruptcy.html")
+
+    api.include_router(build_bankruptcy_router(service))
     return api

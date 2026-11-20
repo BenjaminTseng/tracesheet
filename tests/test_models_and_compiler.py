@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from app.models import (
+from app.core.bundle import (
     CompiledBundle,
     CompiledGraphBuilder,
     OutlinePlan,
@@ -14,7 +14,7 @@ from app.models import (
     StitchInvariantGate,
     VerifiedFactLedger,
 )
-from app.sample_data import get_sample_bundles
+from app.compilers.research.sample_data import get_sample_bundles
 
 
 def test_sample_bundles_deserialize_cleanly() -> None:

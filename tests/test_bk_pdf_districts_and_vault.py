@@ -12,9 +12,10 @@ import pdfplumber
 import pymupdf
 import pytest
 
-from app.bankruptcy.calculators import compute_case_calculations
-from app.bankruptcy.districts import CACBDistrictAdapter, CAEBDistrictAdapter
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.calculators import compute_case_calculations
+from app.compilers.bankruptcy.districts import CACBDistrictAdapter, CAEBDistrictAdapter
+from app.compilers.bankruptcy.form_binder import AcroFormFillerAndBaker
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     BankruptcyCaseState,
     BudgetLineItem,
@@ -26,8 +27,7 @@ from app.bankruptcy.models import (
     PaystubRecord,
     ProvenanceField,
 )
-from app.bankruptcy.pdf_engine import AcroFormFillerAndBaker
-from app.bankruptcy.vault import CredentialAndTOTPVault, Rule9011SignOffGate
+from app.compilers.bankruptcy.vault import CredentialAndTOTPVault, Rule9011SignOffGate
 from app.core.pii import PIITokenizer
 from app.core.tables import StatutoryTableRegistry
 

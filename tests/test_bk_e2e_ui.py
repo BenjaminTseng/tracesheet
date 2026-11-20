@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.bankruptcy.routes import create_bankruptcy_app
+from app.compilers.bankruptcy.routes import create_bankruptcy_app
 
 
 def _copy_real_ui_workspace(tmp_path: Path) -> Path:

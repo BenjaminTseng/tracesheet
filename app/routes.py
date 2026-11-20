@@ -17,9 +17,9 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import LLMProvider, MockLLMProvider, create_llm_provider
-from app.models import (
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import LLMProvider, MockLLMProvider, create_llm_provider
+from app.core.bundle import (
     AuditStatus,
     BlueprintMode,
     CommentScope,
@@ -36,8 +36,8 @@ from app.models import (
     StitchInvariantGate,
     TensionObject,
 )
-from app.pipeline import AuditPipelineRunner, BlueprintStore
-from app.sample_data import get_sample_bundles
+from app.compilers.research.pipeline import AuditPipelineRunner, BlueprintStore
+from app.compilers.research.sample_data import get_sample_bundles
 
 logger = logging.getLogger("jd_screen")
 

@@ -19,8 +19,8 @@ from typing import List, Optional
 import uvicorn
 from dotenv import load_dotenv
 
-from app.bankruptcy.routes import create_bankruptcy_app
-from app.llm import create_llm_provider
+from app.compilers.bankruptcy.routes import create_bankruptcy_app
+from app.core.llm import create_llm_provider
 
 
 def configure_logging(log_prefix: str = "bk_workbench") -> Path:

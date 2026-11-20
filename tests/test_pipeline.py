@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from app.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
-from app.llm import MockLLMProvider
-from app.models import (
+from app.core.ingest import CanonicalIngestor, CanonicalRouter, MatterIngestor
+from app.core.llm import MockLLMProvider
+from app.core.bundle import (
     AuditStatus,
     NodeAudit,
     PipelineRunRecord,
@@ -17,7 +17,7 @@ from app.models import (
     SectionPlan,
     VerifiedFactLedger,
 )
-from app.pipeline import (
+from app.compilers.research.pipeline import (
     AuditPipelineRunner,
     CrossSectionAuditOutput,
     FeedbackTriageDecision,
@@ -1586,7 +1586,7 @@ def test_canonical_domain_selection_explicit_and_auto_decision_routing(tmp_path:
 
 def test_stage4_enforces_self_reported_assumption_floor(tmp_path: Path) -> None:
     """Claims backed solely by `self_reported` files must be downgraded from `verified` to `assumption`."""
-    from app.models import SectionOutput
+    from app.core.bundle import SectionOutput
 
     canonical_dir = tmp_path / "canonical"
     canonical_dir.mkdir(parents=True)
@@ -1929,7 +1929,7 @@ def test_document_blueprint_strict_and_guided_execution(tmp_path: Path) -> None:
     starters = runner.blueprint_store.list_blueprints()
     assert {bp.blueprint_id for bp in starters} >= {"ch11_wage_motion", "clinical_intervention_synthesis"}
 
-    from app.models import CanonicalAuthorityRef, DocumentBlueprint
+    from app.core.bundle import CanonicalAuthorityRef, DocumentBlueprint
 
     custom_bp = runner.blueprint_store.save_blueprint(
         DocumentBlueprint(

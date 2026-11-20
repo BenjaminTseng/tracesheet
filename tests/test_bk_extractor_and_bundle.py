@@ -9,15 +9,24 @@ from pathlib import Path
 
 import pymupdf
 
-from app.bankruptcy.audit import DeclarativeDependencyAuditor, QuantitativeForensicAuditor
-from app.bankruptcy.bundle_compiler import BankruptcyBundleCompiler
-from app.bankruptcy.calculators import compute_case_calculations
-from app.bankruptcy.extractor import BankruptcyCaseExtractor
-from app.bankruptcy.models import BankruptcyCaseState
+from app.compilers.bankruptcy.calculators import compute_case_calculations
+from app.compilers.bankruptcy.extractor import (
+    BankruptcyCaseExtractor,
+    CaseExtractionDraft,
+    ExtractedClaimDraft,
+    ExtractedLocatorRef,
+    ExtractedPaystubDraft,
+)
+from app.compilers.bankruptcy.bundle_adapter import BankruptcyBundleCompiler
+from app.compilers.bankruptcy.rules_auditor import (
+    DeclarativeDependencyAuditor,
+    QuantitativeForensicAuditor,
+)
+from app.compilers.bankruptcy.schema import BankruptcyCaseState
+from app.core.ingest import MatterIngestor
 from app.core.ocr import LocalOCRProvider
 from app.core.pii import PIITokenizer
 from app.core.tables import StatutoryTableRegistry
-from app.ingest import MatterIngestor
 
 
 def _write_pdf(path: Path, lines: list[str]) -> None:
@@ -144,3 +153,102 @@ def test_uncategorized_multi_form_fanout_and_compiled_bundle_dag(tmp_path: Path)
         assert len(claim_node.direct_child_ids) >= 1
         for child_id in claim_node.direct_child_ids:
             assert cid in bundle.nodes[child_id].parent_claim_ids
+
+
+def test_llm_extractor_wire_contract_pii_masking_and_enum_normalization(tmp_path: Path) -> None:
+    """Spy-provider offline test verifying `BankruptcyCaseExtractor` LLM wire contract and normalization."""
+    matters_root = tmp_path / "matters"
+    tokenizer = PIITokenizer(matters_root)
+    ingestor = MatterIngestor(
+        matters_root=matters_root,
+        ocr_provider=LocalOCRProvider(),
+        pii_tokenizer=tokenizer,
+    )
+    matter_dir = ingestor.create_matter("bk_spy_llm")
+    raw_dir = matter_dir / "inputs" / "raw"
+
+    _write_pdf(
+        raw_dir / "paystub_spy.pdf",
+        [
+            "Acme Payroll Statement",
+            "Debtor Name: Jordan Lee",
+            "SSN: 123-45-6789",
+            "Employer: Acme Robotics",
+            "Pay Date: 2026-10-15",
+            "Gross Pay: $4,200.00 Net Pay: $3,100.00 Tax Withheld: $800.00",
+        ],
+    )
+    ingestor.ingest_matter("bk_spy_llm")
+    from app.core.verifier import IndexedMatterCorpus
+
+    corpus = IndexedMatterCorpus.load_for_matter(ingestor, "bk_spy_llm")
+    (fname, lkey), _ = next(iter(corpus.blocks_by_key.items()))
+
+    captured_calls = []
+
+    class SpyLLMProvider:
+        def generate_structured(self, prompt: str, system_instruction: str, response_model):
+            captured_calls.append(
+                {
+                    "prompt": prompt,
+                    "system_instruction": system_instruction,
+                    "response_model": response_model,
+                }
+            )
+            ref = ExtractedLocatorRef(
+                file_name=fname,
+                locator_key=lkey,
+                verbatim_quote="Gross Pay: $4,200.00 Net Pay: $3,100.00 Tax Withheld: $800.00",
+            )
+            name_ref = ExtractedLocatorRef(
+                file_name=fname,
+                locator_key=lkey,
+                verbatim_quote="Debtor Name: Jordan Lee",
+            )
+            return CaseExtractionDraft(
+                debtor_name="Jordan Lee",
+                debtor_name_ref=name_ref,
+                county_of_residence="Los Angeles",
+                household_size=1,
+                paystubs=[
+                    ExtractedPaystubDraft(
+                        employer="Acme Robotics",
+                        pay_period_start="2026-10-01",
+                        pay_period_end="2026-10-15",
+                        pay_date="2026-10-15",
+                        gross_pay="$4,200.00",
+                        gross_ref=ref,
+                        net_pay="$3,100.00",
+                        net_ref=ref,
+                        tax_withheld="$800.00",
+                        tax_ref=ref,
+                    )
+                ],
+                claims=[
+                    ExtractedClaimDraft(
+                        claim_id="c_spy_1",
+                        creditor_name="Pacific Auto Finance",
+                        priority_type="auto_loan",
+                        total_claim_amount="3100.00",
+                        amount_ref=ref,
+                    )
+                ],
+            )
+
+    graph = BankruptcyCaseExtractor().extract(
+        matter_id="bk_spy_llm",
+        ingestor=ingestor,
+        chapter="7",
+        district="CACB",
+        llm_provider=SpyLLMProvider(),  # type: ignore[arg-type]
+    )
+
+    assert len(captured_calls) == 1
+    call = captured_calls[0]
+    assert call["response_model"] is CaseExtractionDraft
+    assert "[PII:SSN_" in call["prompt"]
+    assert "123-45-6789" not in call["prompt"]
+    assert graph.parties[0].full_name.verification_status == "verified"
+    assert graph.paystubs[0].gross_pay.verification_status == "verified"
+    assert graph.claims[0].priority_type == "secured"
+

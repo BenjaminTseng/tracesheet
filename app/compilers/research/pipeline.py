@@ -25,9 +25,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from app.ingest import CanonicalRouter, MatterIngestor, _sha256_short
-from app.llm import LLMProvider, ToolDefinition
-from app.models import (
+from app.core.ingest import CanonicalRouter, MatterIngestor, _sha256_short
+from app.core.llm import LLMProvider, ToolDefinition
+from app.core.bundle import (
     AuditStatus,
     BlueprintMode,
     CompiledBundle,
@@ -600,15 +600,26 @@ class AuditPipelineRunner:
         `MatterIngestor.verify_and_hydrate_ledger`, and persists newly verified facts into
         `matters/<matter_id>/shared_facts.json`.
         """
-        # Ensure deterministic ingestion has run before harvesting
-        _, _, indexed_dir, _ = self.matter_ingestor._matter_dirs(matter_id)
-        if not (indexed_dir / "manifest.json").exists():
+        # Ensure deterministic ingestion has run (and sibling ledgers are indexed) before harvesting
+        matter_dir, _, indexed_dir, _ = self.matter_ingestor._matter_dirs(matter_id)
+        manifest_file = indexed_dir / "manifest.json"
+        ledgers_dir = matter_dir / "ledgers"
+        needs_incremental = False
+        if manifest_file.exists() and ledgers_dir.exists():
+            manifest_mtime = manifest_file.stat().st_mtime
+            for lp in ledgers_dir.glob("*.json"):
+                expected_idx = indexed_dir / f"ledger__{lp.stem}.indexed.md"
+                if not expected_idx.exists() or lp.stat().st_mtime > manifest_mtime:
+                    needs_incremental = True
+                    break
+
+        if not manifest_file.exists() or needs_incremental:
             self._emit_progress(
                 progress_callback,
                 "stage_2",
-                f"Indexing raw matter files for '{matter_id}' before fact search...",
+                f"Indexing raw matter files and verified ledgers for '{matter_id}' before fact search...",
             )
-            self.matter_ingestor.ingest_matter(matter_id)
+            self.matter_ingestor.ingest_matter(matter_id, incremental=manifest_file.exists())
 
         raw_tools = (
             self.matter_ingestor.build_stage2_tools(matter_id)
@@ -648,6 +659,9 @@ class AuditPipelineRunner:
             "(2) For spreadsheet/CSV or extracted table cell sources, set `locator.source_type`, set "
             "`locator.file_name`, and ALWAYS populate BOTH `locator.sheet` (e.g. `'CSV'`, `'DOCX_TBL_1'`, "
             "`'PDF_P1_TBL1'`) AND exact `locator.cell_range` (e.g. `'C2'`). "
+            "(3) For verified sibling calculation ledgers or event logs returned by grep_indexed_inputs, "
+            "preserve `locator.source_type` (`'calculation_ledger'` or `'event_log'`), `locator.file_name`, "
+            "`locator.locator_key`, and `locator.json_path`. "
             "If evidence reveals an unanticipated issue governed by a canonical rule not listed "
             "under Governing Authorities, use the canonical browse/search/read tools to fetch it "
             "and list it in `additional_authorities`. Record unanswerable queries in `unresolved_gaps`, "

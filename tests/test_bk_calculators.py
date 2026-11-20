@@ -7,13 +7,13 @@ import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from app.bankruptcy.calculators import (
+from app.compilers.bankruptcy.calculators import (
     CMIAndMeansTestEngine,
     EligibilityEngine,
     ExemptionOptimizer,
     compute_case_calculations,
 )
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     BudgetLineItem,
     CanonicalCaseGraph,

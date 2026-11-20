@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.bankruptcy.models import (
+from app.compilers.bankruptcy.schema import (
     AssetItem,
     BankruptcyCaseState,
     CanonicalCaseGraph,

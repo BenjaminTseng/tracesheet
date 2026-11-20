@@ -906,14 +906,13 @@ class PlausibilityAuditEngine:
                     f"Total Debt=${total_debt}"
                 )
                 batch = llm_provider.evaluate_decisions(
-                    context=summary_prompt,
-                    questions=[
-                        {
-                            "question_id": "missing_accounts_likelihood",
-                            "question_type": "noul",
-                            "question": "Is it likely key accounts or debts are omitted from this case?",
+                    input_text=summary_prompt,
+                    questions={
+                        "missing_accounts_likelihood": {
+                            "type": "noul",
+                            "instructions": "Is it likely key accounts or debts are omitted from this case?",
                         }
-                    ],
+                    },
                 )
                 ans = batch.answers.get("missing_accounts_likelihood")
                 if ans and ans.noul is not None and ans.noul >= 0.70:

@@ -41,31 +41,33 @@ flowchart LR
 ## 2. Progressive Disclosure & Interaction Architecture
 
 ### 2.1 Three-Stage Column Expansion
-Implemented in [static/app.js](file:///home/ben/restructure/jd_screen/static/app.js) and [static/styles.css](file:///home/ben/restructure/jd_screen/static/styles.css):
+Implemented across shared core ([static/core/](file:///home/ben/restructure/jd_screen/static/core/)), compiler views ([static/apps/](file:///home/ben/restructure/jd_screen/static/apps/)), and [static/styles.css](file:///home/ben/restructure/jd_screen/static/styles.css):
 
 1. **Stage 1 — `L0` Reading Mode (`.bounded-canvas-grid.cols-1`):**
    - **Initial State:** `pinnedClaimId = null`, `expandedLevel2Ids = []`.
    - **Behavior:** Only Column 1 (`L0 · Synthesized Document`) is rendered, centered at a comfortable legal brief reading measure (`max-width: 800px` plate, `68ch` prose line width).
    - **Hover Preview:** Hovering over any highlighted `<ref>` clause displays a compact floating editorial plate (`.hover-tooltip-preview`) showing the target node's category, audit status (`Verified`, `Extrapolation`, `Assumption`), title, and number of linked `L1` support plates—without shifting the page layout.
 2. **Stage 2 — `L1` Primary Support Expansion (`.bounded-canvas-grid.cols-2`):**
-   - **Trigger:** Clicking any `<ref>` clause in `L0` (or clicking an `"Inspect ... →"` link inside a cross-section tension callout) sets `pinnedClaimId` and clears `expandedLevel2Ids`.
+   - **Trigger:** Clicking any `<ref>` clause in `L0` (or clicking an `"Inspect ..."` link inside a cross-section tension callout) sets `pinnedClaimId` and clears `expandedLevel2Ids`.
    - **Behavior:** Column 2 (`L1 · Primary Support`) opens alongside `L0`. It renders a `.claim-context-bar` summarizing the selected claim and its audit verdict, followed by `SpatialNodeCard` editorial plates (`FIG. 1.1`, `FIG. 1.2`, etc.) representing the direct `evidence`, `reasoning`, `calculation`, and `assumption` nodes from the task input documents `(a)`.
    - **SVG Bezier Connectors:** `.connector-svg-layer` dynamically computes smooth cubic Bezier paths (`M x1 y1 C ...`) with `5×5` square terminal anchors connecting the active `L0` clause button to each `L1` plate header.
 3. **Stage 3 — `L2+` Backing Authorities Expansion (`.bounded-canvas-grid.cols-3`):**
-   - **Trigger:** Clicking an inline `<ref>` phrase inside an `L1` `reasoning` or `calculation` card—or clicking `"View Backing (N) →"` in the plate footer—adds the child node IDs to `expandedLevel2Ids`.
+   - **Trigger:** Clicking an inline `<ref>` phrase inside an `L1` `reasoning` or `calculation` card—or clicking `"View Backing (N)"` in the plate footer—adds the child node IDs to `expandedLevel2Ids`.
    - **Behavior:** Column 3 (`L2+ · Backing Authorities`) opens to the right of `L1`, rendering the canonical `authority` or secondary `evidence` plates (`FIG. 2.1`, etc.) from `(b)` and drawing secondary Bezier connectors from the `L1` inline reference to the `L2+` plate.
 4. **Step-by-Step Dismissal:**
    - Clicking the active `L0` clause again or clicking `× Close L1` collapses everything back to `cols-1`.
    - Clicking `× Close L2+` collapses only Column 3 back to `cols-2`.
    - Pressing `Escape` progressively closes the deepest active layer (`SourceInspectorDrawer` → `L2+` → `L1`).
 
-### 2.2 Slide-Over Source Inspector Drawer (`SourceInspectorDrawer`)
-When a reviewer clicks **`Inspect Source`** on any plate in `L1` or `L2+`, a slide-over drawer opens on the right (`inline-size: min(560px, 100vw)`), setting `inert` on background landmarks for keyboard and screen-reader focus isolation. The drawer renders a specialized verification view polymorphic on `locator.source_type`:
+### 2.2 Slide-Over Source Inspector Drawer (`static/core/inspector.js`)
+When a reviewer clicks **`Source`** / **`Inspect Source PDF`** on any plate in `L1` or `L2+`, the shared `SourceInspectorDrawer` opens on the right (`inline-size: min(560px, 100vw)`), setting `inert` on background landmarks for keyboard and screen-reader focus isolation. The drawer renders a specialized verification view polymorphic on `locator.source_type`:
 - **`pdf`:** Simulated document page header, section locator key, highlighted bounding-box region (`BBOX [x1, y1, x2, y2]`) with verbatim quote, and cryptographic SHA-256 file digest.
 - **`spreadsheet`:** Workbook and `Sheet!Cell` coordinate header, formula bar (`fx =SUM(...)`), and a high-density financial table (`.sheet-table`) highlighting the target cell alongside its raw numeric primitive (`tabular-nums`).
+- **`calculation_ledger`:** Dedicated `.ledger-inspector-box` inspecting deterministic cross-compiler `VerifiedLedgerSnapshot` files (`ledgers/<app>.json`), rendering the JSONPath key, SHA-256 snapshot digest, key/value metric table, and link to inspect the full verified ledger JSON.
+- **`event_log`:** Dedicated `.event-log-box` displaying structured event log IDs, JSONPath coordinates, formatted event JSON, and verbatim excerpts.
 - **`api`:** HTTP method and endpoint bar, `JSONPath` selector, payload SHA-256 digest, and formatted JSON response excerpt inside `<figure>` + `<pre tabindex="0"><code>`.
 - **`internal_db`:** Database/table/row-key metadata, executed read-only SQL query block, and extracted record quote.
-- **`web` / `authority`:** Snapshot timestamp, DOM selector key, `<blockquote cite="...">` excerpt, and external link (`Open Source URL ↗` / `Open Controlling Authority ↗`).
+- **`web` / `markdown` / `docx` / `authority`:** Snapshot timestamp or `.doc-excerpt-frame`, `<blockquote cite="...">` excerpt, and SVG `<ExternalIcon />` action links (`Open Controlling Authority` / `Open Original PDF`).
 
 ---
 
@@ -99,7 +101,7 @@ Over 90% of the viewport consists of pure crisp white paper, cool stone header s
 - **Editorial Crimson (`#991B1B`):** Reserved strictly for cross-section logical contradictions (`.tension-callout`).
 
 ### 3.3 Typography & Strict Monospace Discipline
-Loaded via Google Fonts in [templates/index.html](file:///home/ben/restructure/jd_screen/templates/index.html):
+Loaded via Google Fonts in [templates/bankruptcy.html](file:///home/ben/restructure/jd_screen/templates/bankruptcy.html) and [templates/research.html](file:///home/ben/restructure/jd_screen/templates/research.html):
 1. **Editorial Serif (`'Source Serif 4'`, Georgia, serif):**
    - Used for `.brand-title` (`17px`), `.artifact-title` (`28px`), `.section-heading` (`20px`), `.card-heading` (`17px`), `.section-prose` (`17px`, line-height `1.72`, `68ch` measure), and `.evidence-blockquote` (`14.5px italic`).
    - All serif headings use `font-weight: 500` (never `600`+ semi-bold) to preserve crisp stroke contrast.
@@ -110,83 +112,79 @@ Loaded via Google Fonts in [templates/index.html](file:///home/ben/restructure/j
 
 ### 3.4 Architectural Geometry (`2px + 1px` Broadsheet Rules)
 - **Zero Pill Lozenges or Rounded SaaS Cards:** All structural plates, callouts, and document sheets use `0px` sharp corners (`--radius-plate: 0px`) anchored by a `2px solid` top rule and `1px solid #E5E7EB` side/bottom hairlines. Interactive buttons, selects, and `.arch-stamp` badges use `2px` corners (`--radius-xs: 2px`).
-- **Geometric Square Markers (`▪`):** Replaced circular dot indicators with geometric square markers (`▪`) in the masthead telemetry summary, category kickers, and SVG connector endpoints.
+- **Geometric Square Markers & SVG Icons:** Replaced circular dot indicators with geometric square markers and replaced raw Unicode arrow characters with uniform 16px vector SVG primitives (`Icon`, `ExternalIcon`, `ArrowLeftIcon`, `ArrowRightIcon`).
 
 ---
 
-## 4. Codebase Structure & API Endpoints (`~/restructure/jd_screen`)
+## 4. Codebase Structure & `/api/v1/` Endpoints (`~/restructure/jd_screen`)
 
 ```text
 ~/restructure/jd_screen/
-├── main.py                              # FastAPI entrypoint + CLI runner (--provider, --model, --ingest-matter, --ask)
-├── pyproject.toml                       # uv project metadata & dependencies (FastAPI, google-genai, pdfplumber, openpyxl, etc.)
-├── README.md                            # Quickstart & WSL2 execution commands
-├── audit_pipeline_specification.md      # Data contracts, storage architecture, 4-stage prompts & verification code
-├── frontend_architecture_and_design.md  # This frontend architecture & design specification
-├── canonical/                           # Standing canonical corpus (b): INDEX.md + [AUTH:...] domain markdown files
-├── matters/                             # Isolated project/task workspaces (<matter_id>/inputs/raw, indexed, bundles)
+├── main.py                                   # Unified platform server & CLI (--apps, --default-app, --sync-tables, port 8000)
+├── bankruptcy_main.py                        # Single-app Bankruptcy preset (port 8001, hides App Switcher)
+├── pyproject.toml                            # uv project metadata & dependencies
+├── canonical/                                # Standing canonical corpus (b): INDEX.md + [AUTH:...] domain files + tables/
+├── matters/                                  # Isolated matter workspaces (<id>/inputs/{raw,indexed}, ledgers/*.json, bundles/)
 ├── app/
-│   ├── __init__.py
-│   ├── models.py                        # Pydantic schemas (Tier-1/Tier-2, stage plans, ReviewComment) + Validator/Gate/Compiler
-│   ├── llm.py                           # Provider-agnostic LLMProvider (Gemini Interactions API, Anthropic, OpenAI, Mock)
-│   ├── ingest.py                        # CanonicalRouter + MatterIngestor (pdfplumber, openpyxl, CSV, Markdown + Stage 2 tools)
-│   ├── pipeline.py                      # 4-stage AuditPipelineRunner + FeedbackTriageDecision smart batch regenerator
-│   ├── routes.py                        # FastAPI HTTP & SSE routes (/api/bundles, /api/matters, /api/bundles/*/comments|regenerate)
-│   └── sample_data.py                   # Pre-loaded legal motion (28 U.S.C. § 1332) & executive candidate screen bundles
+│   ├── server.py                             # COMPILER_REGISTRY, create_platform_app, /api/v1/{apps,tables,canonical,matters}/*
+│   ├── core/                                 # Shared platform spine: bundle, provenance, workspace, gate, compiler, verifier, ingest, llm, ocr, pii, tables, pdf_forms
+│   └── compilers/
+│       ├── research/                         # /research compiler (pipeline, sample_data, service, routes)
+│       └── bankruptcy/                       # /bankruptcy compiler (schema, extractor, calculators/, rules_auditor, bundle_adapter, form_binder, districts/, vault, service, routes)
 ├── templates/
-│   └── index.html                       # HTML5 shell, Google Fonts, local ESM importmap
+│   ├── bankruptcy.html                       # Default `/` (`/bankruptcy`) ESM shell
+│   └── research.html                         # Research `/research` ESM shell
 ├── static/
-│   ├── styles.css                       # Layered CSS (@layer tokens, base, layout, components, utilities)
-│   ├── app.js                           # Preact + HTM spatial canvas, inline comment composers, review queue & Ask modal
-│   └── vendor/                          # Locally vendored ESM modules (zero external CDN dependency at runtime)
-│       ├── preact.mjs
-│       ├── hooks.mjs
-│       └── htm.mjs
-└── tests/
-    ├── test_api.py                      # FastAPI route, ingestion, /ask, comment/regenerate & CLI integration tests
-    ├── test_ingest.py                   # CanonicalRouter, MatterIngestor & Stage 2 tool unit tests
-    ├── test_llm.py                      # LLMProvider, Gemini Interactions API & MockLLMProvider unit tests
-    ├── test_pipeline.py                 # 4-stage pipeline & smart Stage-2 fallback unit tests
-    └── test_models_and_compiler.py      # Unit tests for SectionValidator, StitchInvariantGate, CompiledGraphBuilder
+│   ├── styles.css                            # Layered CSS (@layer tokens, base, layout, components, utilities)
+│   ├── core/
+│   │   ├── shell.js                          # PlatformShell (auto-hiding App Switcher), SVG icons, formatters, resolveSourceFileUrl
+│   │   ├── canvas.js                         # TraceabilityCanvas, BezierConnectorLayer, RichRefBlock, renderAnnotatedText
+│   │   ├── inspector.js                      # Polymorphic SourceInspectorDrawer (PDF, XLSX, calculation_ledger, event_log, API, DB, web)
+│   │   └── stepper.js                        # TriageStepperFrame (blocker/advisory triage frame)
+│   ├── apps/
+│   │   ├── bankruptcy/app.js                 # Bankruptcy Workbench slots (Official Form L0 tables, 12-rule stepper, FilingPacketDrawer)
+│   │   └── research/app.js                   # Research Broadsheet slots (AskPipelineDialog, CorpusManagerModal, CheckpointReviewModal)
+│   └── vendor/                               # Locally vendored ESM modules (preact.mjs, hooks.mjs, htm.mjs)
+└── tests/                                    # Unit, integration, UI craft/static serving, ledger bridge, and granular live eval tests
 ```
 
-### Backend Endpoints ([app/routes.py](file:///home/ben/restructure/jd_screen/app/routes.py))
-- `GET /`: Serves [templates/index.html](file:///home/ben/restructure/jd_screen/templates/index.html).
-- `GET /api/bundles` / `GET /api/bundles/{bundle_id}` / `POST /api/bundles`: Lists, retrieves, and registers Tier-2 `CompiledBundle` JSON payloads (including persisted bundles from `matters/*/bundles/`).
-- `POST /api/compile`: Compiles Tier-1 `SectionOutput` blocks through `SectionValidator`, `StitchInvariantGate`, and `CompiledGraphBuilder`.
-- `GET /api/matters` / `POST /api/matters` / `POST /api/matters/{matter_id}/upload` / `POST /api/matters/{matter_id}/ingest`: Lists/creates project matters, uploads task inputs, and runs deterministic coordinate stamping.
-- `POST /api/matters/{matter_id}/ask` & `POST /api/matters/{matter_id}/ask/stream`: Executes the 4-stage agentic pipeline for a question `(c)` (with SSE stage progress streaming).
-- `POST /api/bundles/{bundle_id}/comments`, `DELETE /api/bundles/{bundle_id}/comments/{comment_id}`, and `POST /api/bundles/{bundle_id}/regenerate`: Anchors Antigravity-style inline comments onto `L0`/`L1`/`L2+` nodes and executes batched regeneration with smart Stage-2 fallback.
+### Backend Endpoints ([app/server.py](file:///home/ben/restructure/jd_screen/app/server.py), [app/compilers/research/routes.py](file:///home/ben/restructure/jd_screen/app/compilers/research/routes.py), [app/compilers/bankruptcy/routes.py](file:///home/ben/restructure/jd_screen/app/compilers/bankruptcy/routes.py))
+- **Platform Discovery & UI Routes:**
+  - `GET /` → `307 /bankruptcy` (or configured `default_app`); `GET /bankruptcy` (`templates/bankruptcy.html`); `GET /research` (`templates/research.html`).
+  - `GET /api/v1/apps` & `GET /api/v1/apps/cases` — Lists mounted compiler descriptors (drives auto-hiding `PlatformShell` App Switcher) and case summaries.
+  - `GET /api/v1/tables/{domain}` & `POST /api/v1/tables/{domain}/sync` — Reference table inspection and SHA-256/staleness verification.
+  - `GET/POST /api/v1/canonical/*` & `GET/POST /api/v1/matters/*` (including `/api/v1/matters/{matter_id}/ledgers`) — Shared corpus management, coordinate ingestion, and cross-compiler ledger inspection.
+- **Research Compiler Routes (`/api/v1/research/*`):**
+  - `GET/POST /api/v1/research/bundles*`, `POST /api/v1/research/compile`, `GET/POST /api/v1/research/blueprints*`, `POST /api/v1/research/matters/{id}/ask[/stream]`, `GET/POST /api/v1/research/runs/{id}[/stream|/resume/stream]`, `POST /api/v1/research/bundles/{id}/comments|regenerate`.
+- **Bankruptcy Compiler Routes (`/api/v1/bankruptcy/*`):**
+  - `GET/POST /api/v1/bankruptcy/tables*`, `GET/POST /api/v1/bankruptcy/matters*`, `/upload`, `/extract`, `/recalculate`, `PATCH /fields`, `POST /questions/{qid}/answer`, `POST /tensions/{tid}/resolve`, `POST /declaration`, `POST /compile-packet`, `GET /packet/files/{fn}`, `GET /credentials`, `POST /submit`.
 
 ---
 
-## 5. Running & Extending in WSL2
+## 5. Running & Verification in WSL2
 
 ```bash
 cd ~/restructure/jd_screen
 
-# Run the full test suite
+# Run full offline suite (syntax, UI craft, and unit/API tests)
 uv run pytest tests/ -v
+uv run python main.py --sync-tables bankruptcy
+node --check static/core/*.js static/apps/*/*.js
 
-# Ingest raw project inputs deterministically
-uv run python main.py --ingest-matter legal_motion_1332
+# Start unified server co-mounting /bankruptcy (default) and /research on port 8000
+uv run python main.py --host 127.0.0.1 --port 8000 --apps bankruptcy,research --default-app bankruptcy
 
-# Start the development server
-uv run python main.py --host 127.0.0.1 --port 8000 --name jd_screen --provider gemini --model gemini-4-argon
+# Or start Bankruptcy-only on port 8001 (auto-hides App Switcher)
+uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001
 ```
-
-### Completed Interactive Workflows
-1. **Matter & Canonical Ingestion Harness (`app/ingest.py`):** Deterministic parsers for `matters/<matter_id>/inputs/` (PDF bounding-box extraction via `pdfplumber`, Excel/CSV formula/value indexing via `openpyxl`, Markdown block locators) and `canonical/INDEX.md` loader.
-2. **Four-Stage Agentic Runner (`app/pipeline.py`):** Full 4-stage pipeline via `LLMProvider` (defaulting to the Gemini Interactions API) runnable via CLI or the UI's **Ask Question** modal.
-3. **Antigravity-Style Inline Review & Batch Regeneration:** Reviewers can queue comments and optional status overrides on any `L0` claim or `L1`/`L2+` plate, inspect the batch queue, and click **Apply Feedback & Re-compile** to incrementally regenerate affected sections.
 
 ---
 
-## 6. Standalone Bankruptcy Case Workbench UI (`templates/bankruptcy.html`, `static/bankruptcy.js`)
+## 6. Three-Tier Slot-Based Sharing Across Applications
 
-Launched independently on port `8001` via `uv run python bankruptcy_main.py`, the Bankruptcy Workbench reuses the exact same `Swiss Quantitative Broadsheet + Archival Press` tokens (`static/styles.css`) and SVG cubic Bezier `L0 → L1 → L2+` interaction pattern while adapting the right-hand lane to deterministic filing preparation:
-
-- **Official-Form-Aligned `L0` Broadsheet (`RichRefBlock`):** Renders markdown tables mapped directly to Official Form line numbers (`B 101`, `106Sum`, `Schedule A/B` 53 lines + Best Case aliases, `Schedule C` `"100% of FMV (Schwab v. Reilly)"`, `Schedules D/E/F/I/J`, `Form 122A/C` Marital Adjustment, and Chapter 13 Plan cramdown/feasibility summaries), plus side-by-side Exemption Regime Comparison cards (`bk-opt-grid`) with `Unknown Cap Risk` indicators.
-- **`NextBlockerStepper` Resolution Queue (Column 2 Default):** Replaces unstructured banner stacks with a single-item Prev/Next triage workflow enforcing zero pre-filled defaults, persistent `<label htmlFor>` associations, and specialized handlers for collateral valuation, `"Unknown"` FMV toggles, bidirectional `SOFA Line 9` lawsuit sync, `§ 522(p)(2)(B)` rollover amounts, `CCP § 703.140(a)(2)` spousal waivers, and Tier-2 asset/180-day windfall confirmations. Clicking any `<ref>` cell switches Column 2 into `L1 · Source Proof & Math Trace` with SVG Bezier curves.
-- **Header Table Sync & Drawers:** Includes **Sync Statutory Tables** (`POST /api/v1/bankruptcy/tables/sync`), `SourceInspectorDrawer` (coordinate bbox PDF highlighter), and `FilingPacketDrawer` (baked Official PDFs + `Form_B121_RESTRICTED.pdf`, wet-signed declaration upload, and Rule 9011 `attested = false` sign-off gate).
-- **UI Craft Verification:** Audited with `impeccable detect --json static/bankruptcy.js templates/bankruptcy.html` (`[]`, zero P0/P1 violations) and `node --check static/bankruptcy.js`.
+Both `/bankruptcy` and `/research` (and any future compiler such as Clinical Case Triage or Applicant Review) share `static/core/{shell,canvas,inspector,stepper}.js` and adapt UI behavior purely through props/slots:
+1. **`PlatformShell` (`static/core/shell.js`):** Renders `.top-bar`, mounts the App Switcher `<select>` automatically when `GET /api/v1/apps` reports `apps.length > 1` (and hides it in single-app deploys), and fills `selectorSlot`, `filterSlot`, `headerActions`, `bannerSlot`, and `overlaySlots`.
+2. **`TraceabilityCanvas` (`static/core/canvas.js`):** Supports both Research's progressive `1 → 2 → 3` expansion (`cols-1` → `cols-2` → `cols-3` with interactive `BezierConnectorLayer` link comment handles) and Bankruptcy's queue-to-trace default (`cols-2` with Column 2 defaulting to `NextBlockerStepper` and flipping to `L1 · Source Proof` on `<ref>` click).
+3. **`TriageStepperFrame` (`static/core/stepper.js`):** Houses Prev/Next triage navigation and blocker/advisory counters while delegating each rule's domain inputs via `children`.
+4. **`SourceInspectorDrawer` (`static/core/inspector.js`):** Polymorphically renders PDF bboxes, spreadsheets, SQL/API snapshots, `calculation_ledger` tables, and `event_log` entries across every compiler.
+5. **UI Craft Verification:** Audited with `impeccable detect --json` across all 6 JS modules + both HTML templates (`[]`, zero P0/P1 findings) and `node --check` exit `0`.

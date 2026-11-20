@@ -49,3 +49,16 @@ This plan breaks the implementation defined in [BANKRUPTCY_V1_ARCHITECTURE.md](f
    - **Federal Caps on State Exemptions:** Form 106C Line 3 `check 3` / `check 3-1`, `§ 522(p)(2)(B)` rollover, `§ 522(o)` reduction, `§ 522(n)` `$1,711,975` IRA cap, and `§ 541(b)(5)–(6)` 529 lookbacks.
    - **Chapter 13 Upgrade & Table Sync:** `910-day` vehicle cramdown, *Lam/Zimmer* junior lien strip, trustee/attorney fee math, `§ 1325(a)(6)` feasibility gate, `§ 1308` 4-year tax return check, `--sync-statutory-tables`, and `POST /api/v1/bankruptcy/tables/sync`.
    - Verified with `73 passed, 2 skipped` across `uv run pytest tests/ -v`.
+
+---
+
+## Phase 3: Unified Audit-Grounded Platform & Pluggable Compilers Refactor
+
+Reorganized the repository from two ad-hoc stacks into a shared verification platform spine (`app/core/`) + pluggable domain compilers (`app/compilers/{bankruptcy,research}/`) + single server (`app/server.py`) + three-tier slot-based frontend (`static/core/` + `static/apps/`):
+
+1. **Commit 1 (`e6e2444`) — Core Platform Spine (`app/core/`):** Extracted `bundle.py`, `provenance.py`, `workspace.py` (`MatterWorkspace` + atomic `VerifiedLedgerSnapshot`), `gate.py`, `compiler.py` (`BaseCompiler`), `verifier.py`, `ingest.py`, `llm.py`, and generalized `ReferenceTableRegistry` in `tables.py`.
+2. **Commit 2 (`c7cc3bc`) — Generic `AcroFormEngine` (`app/core/pdf_forms.py`):** Extracted page-bound widget mutation, checkbox/combo handling, transforms, overflow sheets, `.bake(annots=True, widgets=True)`, and `field_lineage.json` emission.
+3. **Commit 3 (`088e59f`) — Reorganize Compilers (`app/compilers/`), `ChapterCalculatorDispatch`, Ledger Bridge & Live Extractor Fix:** Moved bankruptcy & research modules under `app/compilers/`, added `ChapterCalculatorDispatch`, wired `ledgers/bankruptcy.json` publishing + Stage 2 auto-indexing (`tests/test_hybrid_ledger_bridge.py`), and fixed live `BankruptcyCaseExtractor.extract` kwargs/enum normalization.
+4. **Commit 4 (`4b0bebb`) — Unified Single Server & Clean `/api/v1/` Break:** Added `app/server.py` (`COMPILER_REGISTRY`, `create_platform_app`), unified `main.py` (`--apps`, `--default-app`, `--sync-tables`, port `8000`) and single-app `bankruptcy_main.py` (port `8001`), and migrated `tests/test_api.py`.
+5. **Commit 5 (`7023a17`) — Three-Tier Slot-Based Frontend (`static/core/` + `static/apps/`):** Extracted `shell.js` (`PlatformShell` with auto-hiding App Switcher), `canvas.js` (`TraceabilityCanvas`, `RichRefBlock`), `inspector.js` (polymorphic `calculation_ledger` + `event_log`), and `stepper.js` (`TriageStepperFrame`); refactored both app views onto `/api/v1/`; passed `node --check` and `impeccable detect --json` (`[]`).
+6. **Commit 6 — Granular Live Gemini Eval Suite (`tests/test_live_eval.py`) & Docs:** Split live evals into 5 `-k`/`--lf`-selectable sub-tests (`test_live_01`..`test_live_05`, reusing pre-encoded `canonical/` and cached bundle), fixed `PlausibilityAuditEngine.evaluate_decisions` kwargs/schema, and refreshed documentation.

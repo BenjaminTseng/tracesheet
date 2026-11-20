@@ -1,37 +1,38 @@
-# Audit-Grounded Spatial Document Canvas & Agentic Q&A Platform (`jd_screen`)
+# Audit-Grounded Platform & Pluggable Domain Compilers (`jd_screen`)
 
-An agentic question-answering and verification workspace that synthesizes grounded documents from a standing canonical corpus `(b)` and project-specific task inputs `(a)` with full Toulmin-graph traceability (`L0` → `L1` → `L2+`), deterministic coordinate verification, and an Antigravity-style inline review queue for batched regeneration.
+A unified verification platform that compiles client documents `(a)`, controlling rules/tables `(b)`, and structured output schemas `(c)` into `L0 → L1 → L2+` traceability graphs (`CompiledBundle`), coordinate-verified calculations, and court-ready packets across pluggable domain compilers.
 
 ## Architecture Overview
 
-1. **Provider-Agnostic LLM Gateway (`app/llm.py`):**
-   - Defines `LLMProvider` (`generate_structured`, `generate_text`, `run_tool_loop`, `evaluate_decisions`).
-   - Primary implementation: `GeminiInteractionsProvider` built on the Google Gemini Interactions API (`client.interactions.create`) + Gemini Decisions API (`client.decisions.create`), with automatic `.env` loading via `python-dotenv`.
-   - Includes drop-in adapters for `AnthropicProvider` and `OpenAIProvider`, plus `MockLLMProvider` for offline tests.
+1. **Core Platform Spine (`app/core/`):**
+   - **LLM Gateway (`app/core/llm.py`):** Provider-agnostic `LLMProvider` (`GeminiInteractionsProvider` via `google-genai` Interactions + Decisions API, `AnthropicProvider`, `OpenAIProvider`, and `MockLLMProvider`).
+   - **Ingestion & PII/OCR (`app/core/ingest.py`, `app/core/pii.py`, `app/core/ocr.py`):** `CanonicalIngestor`/`CanonicalRouter` (`canonical/raw/<domain>/` → Tier 1/2/3 `[AUTH:...]` Markdown + `INDEX.md` + `catalog.json`), `MatterIngestor` (coordinate-stamped `*.indexed.md`, `sheets_index.jsonl`, `event_log`, and `calculation_ledger` snapshots in `ledgers/*.json`), `PIITokenizer` local vault masking (`[PII:SSN_001]`), and pluggable `OCRProvider` (`modal`, `local`, `mock`).
+   - **Provenance, Gates & Compiler Contracts (`app/core/{bundle,provenance,workspace,gate,compiler,verifier,tables,pdf_forms}.py`):** Normalized `CompiledBundle`, generic `ProvenanceField[T]` & `EmergingQuestionItem`, `MatterWorkspace` with atomic SHA-256 `VerifiedLedgerSnapshot` cross-compiler publishing (`ledgers/<app>.json`), `ObservationVerifier`, `ReadinessGate` & `SignOffGate`, `ReferenceTableRegistry` (and `StatutoryTableRegistry` staleness/sync), and generic `AcroFormEngine` (`.bake(annots=True, widgets=True)`, overflow sheets, `field_lineage.json`).
 
-2. **Deterministic Ingestion & 3-Tier Canonical Indexing (`app/ingest.py`):**
-   - `CanonicalIngestor` & `CanonicalRouter`: Converts raw documents under `canonical/raw/<domain>/` (`.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`, `.xlsm`, `.csv`) into Tier 3 `[AUTH:...]` Markdown blocks, Tier 2 per-document `.toc.md` tables, and Tier 1 `canonical/INDEX.md` + `canonical/catalog.json` cards.
-   - `MatterIngestor`: Indexes `matters/<matter_id>/inputs/raw/` into coordinate-stamped `*.indexed.md` blocks (`pdfplumber` `[x1, y1, x2, y2]` bounding boxes, Markdown block locators, SHA-256 digests) and `sheets_index.jsonl` (dual-pass `openpyxl` formulas + evaluated primitives, plus CSV), and verifies L1/L2 citations deterministically.
+2. **Pluggable Domain Compilers (`app/compilers/`):**
+   - **Bankruptcy Compiler (`app/compilers/bankruptcy/`, default UI at `/bankruptcy`):**
+     - **Schema, Extractor & Dispatch (`schema.py`, `extractor.py`, `calculators/registry.py`):** 53-line Form 106A/B taxonomy ([schedule_ab_taxonomy.json](file:///home/ben/restructure/jd_screen/canonical/tables/bankruptcy/schedule_ab_taxonomy.json)), entity-first multi-form extractor with deterministic fallback, and pluggable `ChapterCalculatorDispatch` (`"7"`, `"13"`, `"11_subv"`).
+     - **Deterministic Calculators (`calculators/`):** `exemptions.py` (`CA_CCP_704`, `CA_CCP_703_140`, `FEDERAL_522D`, *Schwab v. Reilly* `"100% of FMV"`, `§§ 522(p)/(n)/(o)`, `§ 541(b)(5)–(6)`), `means_test.py` (6-month CMI, Married Filing Separately Column B & Line 3 Marital Adjustment), `eligibility.py` (`$2.75M` Ch. 13, `$7.5M` SubV), and `ch13_plan.py` (910-day cramdown, *Lam/Zimmer* lien strip, trustee/RARA fees, `§ 1325(a)(6)` feasibility).
+     - **Auditors, Binder, Districts & Vault (`rules_auditor.py`, `bundle_adapter.py`, `form_binder.py`, `districts/`, `vault.py`, `service.py`):** Trauma PI detector, bidirectional `SOFA Line 9 ↔ A/B ↔ E/F`, 60-day paystub gap check, Tier-2 asset/180-day windfall sweep, `CACB`/`CAEB` adapters (`8 MB` splitter), Rule 9011 TOTP vault, and automatic `ledgers/bankruptcy.json` publishing.
+   - **Research Broadsheet Compiler (`app/compilers/research/`, UI at `/research`):**
+     - **4-Stage Agentic Pipeline (`pipeline.py`, `service.py`, `routes.py`):** Outline & `[AUTH:...]` routing → Tool-loop harvesting (including sibling compiler `calculation_ledger` files) → `SectionValidator` drafting → Decisions API auditing, `StitchInvariantGate` smoothing, DAG compilation, and smart batch feedback regeneration (`apply_comments_and_recompile`).
 
-3. **Four-Stage Agentic Pipeline & Smart Feedback Regenerator (`app/pipeline.py`):**
-   - **Stage 1:** Question decomposition & canonical `[AUTH:...]` hydration (`OutlinePlan`).
-   - **Stage 2:** Tool-loop fact harvesting over indexed inputs (`VerifiedFactLedger`).
-   - **Stage 3:** Constrained Tier-1 `SectionOutput` drafting with `SectionValidator` auto-retries.
-   - **Stage 4:** Surrounding-context congruence auditing, cross-section tension detection, `StitchInvariantGate`-protected editorial smoothing, and `CompiledGraphBuilder` DAG compilation.
-   - **Smart Batch Feedback (`apply_comments_and_recompile`):** Triages queued human comments per section to either re-run Stage 3→4 (prose/reasoning/caveat edits) or Stage 2→3→4 (new/different factual queries), preserving unaffected sections verbatim.
+3. **Unified Host & Clean `/api/v1/` Surface (`app/server.py`, `main.py`, `bankruptcy_main.py`):**
+   - `main.py` (default port `8000`) mounts `--apps` (default `bankruptcy,research`, `--default-app bankruptcy` so `GET / → 307 /bankruptcy`).
+   - Shared platform routes: `/api/v1/apps`, `/api/v1/apps/cases`, `/api/v1/tables/*`, `/api/v1/canonical/*`, `/api/v1/matters/*` (including `/api/v1/matters/{id}/ledgers`).
+   - Compiler routes: `/api/v1/bankruptcy/*` and `/api/v1/research/*`.
 
-4. **Frontend (`static/app.js`, `static/styles.css` — Preact + HTM, zero build step):**
-   - Implements the **Swiss Quantitative Broadsheet + Archival Press** aesthetic (`L0` → `L1` → `L2+`), dynamic SVG cubic Bezier connectors, slide-over **Source Inspector Drawer**, **Ask Question** pipeline modal, and **Inline Commenting + Sticky Batch Review Queue** across `L0` claims and `L1`/`L2+` plates.
+4. **Three-Tier Slot-Based Frontend (`static/core/` + `static/apps/` — Preact + HTM, zero build step):**
+   - `static/core/shell.js`: `PlatformShell` top-bar chrome with App Switcher dropdown from `GET /api/v1/apps` (auto-hiding when only one app is mounted), SVG icon primitives, formatters, and `/api/v1/` source resolution.
+   - `static/core/canvas.js`, `inspector.js`, `stepper.js`: Shared `TraceabilityCanvas` (`L0 → L1 → L2+`), `BezierConnectorLayer`, polymorphic `SourceInspectorDrawer` (including `calculation_ledger` & `event_log`), and `TriageStepperFrame`.
+   - `static/apps/bankruptcy/app.js` (`templates/bankruptcy.html`) & `static/apps/research/app.js` (`templates/research.html`): Domain-tailored views composing shared core slots.
 
-5. **Standalone Bankruptcy Case Workbench (`bankruptcy_main.py`, Port 8001 — `app/bankruptcy/`):**
-   - **Entity-First Multi-Form Routing & 53-Line Taxonomy:** Maps uncategorized PDFs onto `CanonicalCaseGraph` with [schedule_ab_taxonomy.json](file:///home/ben/restructure/jd_screen/canonical/tables/bankruptcy/schedule_ab_taxonomy.json) (all 53 Official Form 106A/B lines paired with Best Case 35-item aliases and orthogonal `exemption_pool`s).
-   - **Deterministic Calculators (`app/bankruptcy/calculators/`):**
-     - **Exemptions (`exemptions.py`):** Evaluates `CA_CCP_704`, `CA_CCP_703_140`, and `FEDERAL_522D`, including `"Unknown"` valuations & *Schwab v. Reilly* (`560 U.S. 770`) `"100% of FMV"` Schedule C elections (`workers_comp`, `personal_injury`, `75%` `unpaid_wages`), `11 U.S.C. § 522(p)` `$214,000` / `1,215-day` homestead cap with `§ 522(p)(2)(B)` same-state rollover and `§ 522(o)` reduction, `§ 522(n)` `$1,711,975` non-rollover IRA cap, and `§ 541(b)(5)–(6)` 529 education lookbacks (`0%` within 365 days; `$7,575` cap for 365–720 days).
-     - **Means Test (`means_test.py`):** Strict 6-calendar-month CMI lookback with **Married Filing Separately** `Column B` non-filing spouse CMI, `marital_adjustment_deduction` (`Form 122A-2 Line 3`), and separate-and-apart exclusion.
-     - **Chapter 13 Plan (`ch13_plan.py`):** `910-day` PMSI vehicle cramdown (`11 U.S.C. § 1325(a)`), *Lam/Zimmer* wholly-unsecured junior mortgage lien strip, trustee percentage fee & RARA attorney fee plan math, and `11 U.S.C. § 1325(a)(6)` `Schedule I - J` feasibility gating.
-   - **Cross-Schedule Auditors & Statutory Sync (`app/bankruptcy/audit.py`, `app/core/tables.py`):** Includes trauma/medical personal injury & workers' comp claim detection, bidirectional `SOFA Line 9 ↔ Schedule A/B ↔ Schedule E/F` lawsuit sync, 60-day paystub continuity checking, `CCP § 703.140(a)(2)` spousal waiver gate, `11 U.S.C. § 1308` 4-year tax return compliance, Tier-2 negative confirmation (`MANDATORY_ASSET_AND_WINDFALL_SWEEP` covering `11 U.S.C. § 541(a)(5)`), and effective-dated table staleness & SHA-256 sync (`--sync-statutory-tables`).
-   - **Official PDF Filling & Baking (`app/bankruptcy/pdf_engine.py`, `form_field_maps.json`):** Maps values and checkboxes directly onto 25 official U.S. Courts, CACB, and CAEB fillable PDFs under `canonical/tables/bankruptcy/templates/`, flattens with `pymupdf.Document.bake(annots=True, widgets=True)`, isolates full SSNs in `Form_B121_RESTRICTED.pdf`, and emits `field_lineage.json`.
-   - **Workbench UI (`templates/bankruptcy.html`, `static/bankruptcy.js`):** Official-form-aligned `L0` broadsheet tables, right-hand `NextBlockerStepper` resolution queue, `SourceInspectorDrawer`, `FilingPacketDrawer`, and header statutory table sync.
+## Adding a New Domain Compiler (4-Step Guide)
+
+1. **Create Compiler Package (`app/compilers/<app_id>/`):** Implement schema/calculators/auditors implementing `BaseCompiler` and register any effective-dated tables with `ReferenceTableRegistry` (optionally emit `VerifiedLedgerSnapshot` via `MatterWorkspace.publish_ledger_snapshot` or bind fillable PDFs via `AcroFormEngine`).
+2. **Expose FastAPI Router (`app/compilers/<app_id>/routes.py`):** Mount app-specific endpoints under `/api/v1/<app_id>/*`.
+3. **Register in `COMPILER_REGISTRY` (`app/server.py`):** Add the compiler descriptor (`app_id`, `label`, `ui_route`, `api_prefix`, router factory) so `GET /api/v1/apps` and `--apps` discover it automatically.
+4. **Add Thin Slot UI (`templates/<app_id>.html` + `static/apps/<app_id>/app.js`):** Compose `PlatformShell`, `TraceabilityCanvas`, `SourceInspectorDrawer`, and `TriageStepperFrame` from `static/core/*.js`.
 
 ## WSL2 Execution & Testing Commands
 
@@ -39,53 +40,41 @@ An agentic question-answering and verification workspace that synthesizes ground
 ```bash
 cd ~/restructure/jd_screen
 cp .env.example .env
-# Edit .env with GEMINI_API_KEY and optional JD_SCREEN_MODEL (e.g., gemini-4-argon or gemini-4-hydrogen)
+# Set GEMINI_API_KEY and optional JD_SCREEN_MODEL
 ```
 
-### 1. Run Offline Unit, Retry & API Integration Tests (and Opt-In Live Eval)
+### 1. Run Offline Unit, Integration & UI Craft Verification
 ```bash
 cd ~/restructure/jd_screen
 uv run pytest tests/ -v
-
-# Opt-in live Gemini evaluation suite (requires GEMINI_API_KEY in .env or environment):
-RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py -v -s
+uv run python main.py --sync-tables bankruptcy
+node --check static/core/*.js static/apps/*/*.js
 ```
 
-### 2. Ingest Canonical Corpus & Project Matter via CLI
+### 2. Run Opt-In, Token-Disciplined Live Gemini Evaluation (`tests/test_live_eval.py`)
+Live tests reuse pre-encoded `canonical/` and cache Stage 1–4 output in `.pytest_cache/live_eval_bundle_1332.json` to avoid wasted tokens, and can be run selectively:
+```bash
+cd ~/restructure/jd_screen
+# Run all 5 granular live tests:
+RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py -v -s
+
+# Run a single live sub-test (e.g., bankruptcy PII masking + extractor, or hybrid ledger bridge):
+RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py -k test_live_02 -v -s
+RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py -k test_live_05 -v -s
+
+# Re-run only failed live tests:
+RUN_LIVE_API_TESTS=1 uv run pytest tests/test_live_eval.py --lf -v -s
+```
+
+### 3. Ingest Canonical Corpus & Start Servers
 ```bash
 cd ~/restructure/jd_screen
 uv run python main.py --ingest-canonical --purge-canonical
 uv run python main.py --ingest-matter legal_motion_1332
+
+# Start unified server co-mounting /bankruptcy (default) and /research on port 8000:
+uv run python main.py --host 127.0.0.1 --port 8000 --apps bankruptcy,research --default-app bankruptcy
+
+# Or start single-app Bankruptcy Workbench on port 8001 (auto-hides App Switcher):
+uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001
 ```
-
-### 3. Run the 4-Stage Agentic Pipeline via CLI
-```bash
-cd ~/restructure/jd_screen
-GEMINI_API_KEY="your-key" uv run python main.py \
-  --provider gemini --model gemini-4-argon \
-  --matter legal_motion_1332 \
-  --ask "Evaluate whether complete diversity and the $75,000 threshold are met."
-```
-
-### 4. Start the Web UI Server (Broadsheet Research App — Port 8000)
-```bash
-cd ~/restructure/jd_screen
-GEMINI_API_KEY="your-key" uv run python main.py \
-  --host 127.0.0.1 --port 8000 --name jd_screen \
-  --provider gemini --model gemini-4-argon
-```
-
-Then open `http://127.0.0.1:8000` in your browser.
-
-### 5. Start the Standalone Bankruptcy Case Workbench Webapp (Port 8001)
-```bash
-cd ~/restructure/jd_screen
-
-# Verify SHA-256 integrity and effective-date freshness of canonical statutory tables:
-uv run python bankruptcy_main.py --sync-statutory-tables
-
-# Start the standalone Bankruptcy Case Workbench server:
-uv run python bankruptcy_main.py --host 127.0.0.1 --port 8001 --name bk_workbench
-```
-
-Then open `http://127.0.0.1:8001` in your browser to test pre-seeded cases (`bk_ch7_cacb_martinez`, `bk_ch13_caeb_chen`) or upload client PDFs.

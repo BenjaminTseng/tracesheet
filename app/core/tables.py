@@ -1,8 +1,8 @@
-"""Effective-dated JSON statutory reference table registry with SHA-256 verification.
+"""Effective-dated JSON reference table registry with SHA-256 verification.
 
-Loads versioned federal bankruptcy thresholds, DOJ U.S. Trustee Means Testing
-standards, multi-jurisdiction exemption regimes, and declarative cross-schedule
-dependency rules from `canonical/tables/bankruptcy/`.
+Provides the generic `ReferenceTableRegistry` (supporting arbitrary compiler
+domains under `canonical/tables/<domain>/`) and `StatutoryTableRegistry` for
+federal/state bankruptcy thresholds, means-test standards, exemptions, and rules.
 """
 
 from __future__ import annotations
@@ -11,34 +11,33 @@ import datetime
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class TableIntegrityError(RuntimeError):
-    """Raised when a statutory JSON reference table fails schema or checksum verification."""
+    """Raised when a JSON reference table fails schema or checksum verification."""
 
 
-class StatutoryTableRegistry:
-    """Loads, verifies, and selects effective-dated statutory reference JSON tables.
+class ReferenceTableRegistry:
+    """Loads, verifies, and selects effective-dated reference JSON tables."""
 
-    Attributes:
-        tables_dir: Directory containing `*.json` statutory reference files.
-    """
+    REQUIRED_TABLES: Tuple[str, ...] = ()
 
-    REQUIRED_TABLES = (
-        "federal_thresholds_2026.json",
-        "ustp_ca_means_test_2026.json",
-        "exemptions_2026.json",
-        "dependency_rules.json",
-    )
-
-    def __init__(self, tables_dir: Path) -> None:
-        """Initializes the statutory table registry.
+    def __init__(
+        self,
+        tables_dir: Path,
+        required_tables: Optional[Tuple[str, ...]] = None,
+    ) -> None:
+        """Initializes a domain reference table registry.
 
         Args:
-            tables_dir: Path to `canonical/tables/bankruptcy/`.
+            tables_dir: Directory containing `*.json` reference tables.
+            required_tables: Optional explicit tuple of required table filenames.
         """
         self.tables_dir = tables_dir
+        self.required_tables: Tuple[str, ...] = (
+            required_tables if required_tables is not None else self.REQUIRED_TABLES
+        )
         self._cache: Dict[str, Dict[str, Any]] = {}
         self._hashes: Dict[str, str] = {}
 
@@ -177,71 +176,24 @@ class StatutoryTableRegistry:
         selected["_table_sha256"] = self._hashes[filename]
         return selected
 
-    def get_federal_thresholds(self, filing_date: datetime.date) -> Dict[str, Any]:
-        """Returns active federal statutory thresholds (`109(e)`, `1182`, `522(p)`, `707(b)`).
-
-        Args:
-            filing_date: Petition filing date.
-
-        Returns:
-            Effective period payload from `federal_thresholds_2026.json`.
-        """
-        return self.select_effective_period("federal_thresholds_2026.json", filing_date)
-
-    def get_ustp_ca_means_test(self, filing_date: datetime.date) -> Dict[str, Any]:
-        """Returns active DOJ USTP California median income & IRS standards.
-
-        Args:
-            filing_date: Petition filing date.
-
-        Returns:
-            Effective period payload from `ustp_ca_means_test_2026.json`.
-        """
-        return self.select_effective_period("ustp_ca_means_test_2026.json", filing_date)
-
-    def get_exemption_regimes(self, filing_date: datetime.date) -> Dict[str, Any]:
-        """Returns active exemption regime specifications (`CA_CCP_704`, `CA_CCP_703_140`, `FEDERAL_522D`).
-
-        Args:
-            filing_date: Petition filing date.
-
-        Returns:
-            Effective period payload from `exemptions_2026.json`.
-        """
-        return self.select_effective_period("exemptions_2026.json", filing_date)
-
-    def get_dependency_rules(self) -> Dict[str, Any]:
-        """Returns the declarative cross-schedule dependency specification.
-
-        Returns:
-            Parsed dictionary from `dependency_rules.json`.
-        """
-        return self.load_table("dependency_rules.json")
-
-    def get_schedule_ab_taxonomy(self) -> Dict[str, Any]:
-        """Returns Official Form 106A/B 53-line taxonomy mapped to Best Case aliases.
-
-        Returns:
-            Parsed dictionary from `schedule_ab_taxonomy.json`.
-        """
-        return self.load_table("schedule_ab_taxonomy.json")
+    def _target_filenames(self) -> List[str]:
+        """Returns filenames to inspect for staleness and sync."""
+        if not self.tables_dir.exists():
+            return list(self.required_tables)
+        discovered = [
+            p.name
+            for p in sorted(self.tables_dir.glob("*.json"))
+            if not p.name.startswith(".")
+        ]
+        if self.required_tables:
+            seen = set(self.required_tables)
+            return list(self.required_tables) + [f for f in discovered if f not in seen]
+        return discovered
 
     def check_staleness(self, filing_date: datetime.date) -> List[str]:
-        """Checks whether any versioned statutory table is stale relative to `filing_date`.
-
-        Args:
-            filing_date: Expected or actual petition filing date.
-
-        Returns:
-            List of descriptive staleness warning/blocker messages.
-        """
+        """Checks whether any versioned table is stale relative to `filing_date`."""
         warnings: List[str] = []
-        for fname in (
-            "ustp_ca_means_test_2026.json",
-            "exemptions_2026.json",
-            "federal_thresholds_2026.json",
-            "schedule_ab_taxonomy.json",
-        ):
+        for fname in self._target_filenames():
             path = self.tables_dir / fname
             if not path.exists():
                 continue
@@ -257,35 +209,16 @@ class StatutoryTableRegistry:
                     )
         return warnings
 
-    def sync_statutory_tables(
+    def sync_tables(
         self, reference_date: Optional[datetime.date] = None
     ) -> Dict[str, Any]:
-        """Verifies SHA-256 checksums and staleness across canonical bankruptcy tables.
-
-        Clears in-memory caches, recomputes SHA-256 digests for all registered JSON
-        tables under `self.tables_dir`, writes `.sync_status.json`, and returns a
-        structured audit summary.
-
-        Args:
-            reference_date: Optional filing date for staleness evaluation (defaults to today).
-
-        Returns:
-            Summary dict containing `synced_at`, `tables_verified`, and `stale_warnings`.
-        """
+        """Verifies SHA-256 checksums and staleness across tables in `self.tables_dir`."""
         self._cache.clear()
         self._hashes.clear()
         ref = reference_date or datetime.date.today()
 
         verified: List[Dict[str, str]] = []
-        target_files = (
-            "federal_thresholds_2026.json",
-            "ustp_ca_means_test_2026.json",
-            "exemptions_2026.json",
-            "dependency_rules.json",
-            "schedule_ab_taxonomy.json",
-            "form_field_maps.json",
-        )
-        for fname in target_files:
+        for fname in self._target_filenames():
             if not (self.tables_dir / fname).exists():
                 continue
             data = self.load_table(fname)
@@ -306,9 +239,47 @@ class StatutoryTableRegistry:
             "tables_verified": verified,
             "stale_warnings": stale_warnings,
         }
-        status_path = self.tables_dir / ".sync_status.json"
-        status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if self.tables_dir.exists():
+            status_path = self.tables_dir / ".sync_status.json"
+            status_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return payload
+
+
+class StatutoryTableRegistry(ReferenceTableRegistry):
+    """Bankruptcy-specific effective-dated statutory reference table registry."""
+
+    REQUIRED_TABLES = (
+        "federal_thresholds_2026.json",
+        "ustp_ca_means_test_2026.json",
+        "exemptions_2026.json",
+        "dependency_rules.json",
+    )
+
+    def get_federal_thresholds(self, filing_date: datetime.date) -> Dict[str, Any]:
+        """Returns active federal statutory thresholds (`109(e)`, `1182`, `522(p)`, `707(b)`)."""
+        return self.select_effective_period("federal_thresholds_2026.json", filing_date)
+
+    def get_ustp_ca_means_test(self, filing_date: datetime.date) -> Dict[str, Any]:
+        """Returns active DOJ USTP California median income & IRS standards."""
+        return self.select_effective_period("ustp_ca_means_test_2026.json", filing_date)
+
+    def get_exemption_regimes(self, filing_date: datetime.date) -> Dict[str, Any]:
+        """Returns active exemption regime specifications (`CA_CCP_704`, `CA_CCP_703_140`, `FEDERAL_522D`)."""
+        return self.select_effective_period("exemptions_2026.json", filing_date)
+
+    def get_dependency_rules(self) -> Dict[str, Any]:
+        """Returns the declarative cross-schedule dependency specification."""
+        return self.load_table("dependency_rules.json")
+
+    def get_schedule_ab_taxonomy(self) -> Dict[str, Any]:
+        """Returns Official Form 106A/B 53-line taxonomy mapped to Best Case aliases."""
+        return self.load_table("schedule_ab_taxonomy.json")
+
+    def sync_statutory_tables(
+        self, reference_date: Optional[datetime.date] = None
+    ) -> Dict[str, Any]:
+        """Alias maintaining bankruptcy table sync semantics."""
+        return self.sync_tables(reference_date=reference_date)
 
 
 StatutoryTableLoader = StatutoryTableRegistry

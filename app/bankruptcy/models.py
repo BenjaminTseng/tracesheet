@@ -13,65 +13,23 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
-from typing import Any, Dict, Generic, List, Literal, Optional, TypeVar
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from app.models import CompiledBundle, SourceLocator, TensionObject
+from app.core.bundle import CompiledBundle, SourceLocator, TensionObject
+from app.core.provenance import (
+    EmergingQuestionItem,
+    FieldLineageEntry,
+    FilingReadinessReport,
+    HumanOverrideRecord,
+    ProvenanceField,
+    VerificationStatus,
+)
 
-
-T = TypeVar("T")
 
 ChapterType = Literal["7", "13", "11_subv"]
 DistrictCode = Literal["CACB", "CAEB"]
-VerificationStatus = Literal["verified", "human_overridden", "unverified", "contradicted"]
-
-
-class HumanOverrideRecord(BaseModel):
-    """Audited human attestation or override attached to a `ProvenanceField`.
-
-    Attributes:
-        actor_name: Full name of the paralegal or supervising attorney.
-        actor_role: Role performing the override (`"paralegal"` or `"attorney"`).
-        rationale: Substantive explanation justifying the value or confirmation.
-        supporting_locator: Optional client source coordinate backing the override.
-        overridden_at: ISO-8601 UTC timestamp when recorded.
-    """
-
-    actor_name: str = Field(min_length=1)
-    actor_role: Literal["paralegal", "attorney"]
-    rationale: str = Field(min_length=5)
-    supporting_locator: Optional[SourceLocator] = None
-    overridden_at: str = Field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
-    )
-
-
-class ProvenanceField(BaseModel, Generic[T]):
-    """Wraps a typed domain value with mandatory coordinate and audit provenance.
-
-    Attributes:
-        value: Typed primitive value (`Decimal`, `str`, `int`, `datetime.date`, etc.).
-        verification_status: Current deterministic verification state.
-        locators: Non-empty coordinate references for AI-extracted observations.
-        verbatim_quotes: Exact source text snippets grounding `value`.
-        override: Mandatory audit record whenever `verification_status == "human_overridden"`.
-    """
-
-    value: T
-    verification_status: VerificationStatus = "unverified"
-    locators: List[SourceLocator] = Field(default_factory=list)
-    verbatim_quotes: List[str] = Field(default_factory=list)
-    override: Optional[HumanOverrideRecord] = None
-
-    @model_validator(mode="after")
-    def _enforce_override_invariant(self) -> "ProvenanceField[T]":
-        """Ensures `"human_overridden"` fields carry a valid `HumanOverrideRecord`."""
-        if self.verification_status == "human_overridden" and self.override is None:
-            raise ValueError(
-                "ProvenanceField with verification_status='human_overridden' requires a non-null override."
-            )
-        return self
 
 
 class PartyEntity(BaseModel):
@@ -502,34 +460,6 @@ class HistoricalTransaction(BaseModel):
     linked_claim_id: Optional[str] = None
 
 
-class EmergingQuestionItem(BaseModel):
-    """Relational or completeness gap surfaced by `DeclarativeDependencyAuditor`.
-
-    Attributes:
-        question_id: Unique question ID inside the case.
-        rule_id: Dependency rule ID from `dependency_rules.json`.
-        severity: `"critical"` (blocks filing) or `"warning"`.
-        trigger_forms: Official form IDs impacted by this gap.
-        prompt: Plain-English question explaining what is missing and why.
-        entity_id: Related asset/claim/month identifier if applicable.
-        resolution_options: Allowed UI action keys.
-        status: `"open"` or `"answered"`.
-        selected_option: Action chosen by paralegal/attorney when answered.
-        override: Audit trail attached when answered.
-    """
-
-    question_id: str
-    rule_id: str
-    severity: Literal["critical", "warning"] = "critical"
-    trigger_forms: List[str] = Field(default_factory=list)
-    prompt: str
-    entity_id: Optional[str] = None
-    resolution_options: List[str] = Field(default_factory=list)
-    status: Literal["open", "answered"] = "open"
-    selected_option: Optional[str] = None
-    override: Optional[HumanOverrideRecord] = None
-
-
 class CanonicalCaseGraph(BaseModel):
     """Complete generalized case state feeding calculators, audits, and form generation."""
 
@@ -715,32 +645,6 @@ class CalculationSummary(BaseModel):
     total_secured_debt: Decimal = Decimal("0.00")
     total_priority_debt: Decimal = Decimal("0.00")
     total_general_unsecured_debt: Decimal = Decimal("0.00")
-
-
-class FieldLineageEntry(BaseModel):
-    """Cryptographic provenance record emitted for every filled PDF widget."""
-
-    form_id: str
-    pdf_field_name: str
-    form_line_ref: Optional[str] = None
-    rendered_value: str
-    derivation_type: Literal["direct_provenance", "deterministic_calculation", "human_override", "system_constant"]
-    case_graph_path: str
-    formula: Optional[str] = None
-    source_locators: List[SourceLocator] = Field(default_factory=list)
-    human_override: Optional[HumanOverrideRecord] = None
-
-
-class FilingReadinessReport(BaseModel):
-    """Strict zero-doubt compiler gate verdict for a bankruptcy matter."""
-
-    status: Literal["READY", "BLOCKED"]
-    unverified_field_paths: List[str] = Field(default_factory=list)
-    unresolved_critical_questions: List[str] = Field(default_factory=list)
-    unresolved_critical_tensions: List[str] = Field(default_factory=list)
-    packet_validation_errors: List[str] = Field(default_factory=list)
-    required_forms: List[str] = Field(default_factory=list)
-    blocking_reasons: List[str] = Field(default_factory=list)
 
 
 class CourtFilingReceipt(BaseModel):

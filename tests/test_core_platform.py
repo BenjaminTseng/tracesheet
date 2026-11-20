@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import List
 
+import pymupdf
 import pytest
 from pydantic import BaseModel, Field
 
@@ -16,6 +17,7 @@ from app.core.bundle import SourceLocator, TensionObject
 from app.core.compiler import AppDescriptor, CompilerApp
 from app.core.gate import GatePolicy, ReadinessGate, SignOffGate
 from app.core.ingest import MatterIngestor
+from app.core.pdf_forms import AcroFormEngine
 from app.core.provenance import (
     CaseSummaryRow,
     EmergingQuestionItem,
@@ -252,3 +254,44 @@ def test_reference_table_registry_custom_domain_and_protocols(tmp_path: Path) ->
     )
     assert desc.app_id == row.app_id
     assert hasattr(CompilerApp, "build_router")
+
+
+def test_acroform_engine_standalone_bake_overflow_and_lineage(tmp_path: Path) -> None:
+    """Verifies `AcroFormEngine` handles generic non-bankruptcy templates, baking, overflow, and lineage."""
+    templates_dir = tmp_path / "templates"
+    output_dir = tmp_path / "out"
+    engine = AcroFormEngine(templates_dir=templates_dir)
+
+    pdfs, lineage_path, entries = engine.compile_packet(
+        specs=[
+            {
+                "form_id": "PRIOR_AUTH_REQ",
+                "output_filename": "Prior_Auth_Request.pdf",
+                "fallback_title": "Medical Prior Authorization Request",
+                "fallback_fields": ["Patient_Name", "Member_ID", "CPT_Code"],
+                "bindings": {
+                    "Patient_Name": ("Jane Doe", "direct_provenance", "$.patient.name", None, [], None),
+                    "Member_ID": ("MEM-90125", "direct_provenance", "$.patient.member_id", None, [], None),
+                    "CPT_Code": ("99214", "deterministic_calculation", "$.coding.primary_cpt", "=LOOKUP(CPT)", [], None),
+                },
+                "overflow_lines": [f"Supporting Lab Observation #{i}" for i in range(1, 5)],
+            }
+        ],
+        output_dir=output_dir,
+        watermark_draft=True,
+    )
+
+    assert len(pdfs) == 1
+    assert pdfs[0].name == "Prior_Auth_Request.pdf"
+    assert lineage_path.exists()
+    assert len(entries) == 3
+
+    with pymupdf.open(str(pdfs[0])) as doc:
+        assert len(doc) == 2
+        assert all(list(page.widgets() or []) == [] for page in doc)
+        combined = "\n".join(page.get_text() for page in doc)
+        assert "Jane Doe" in combined
+        assert "99214" in combined
+        assert "Supporting Lab Observation #4" in combined
+        assert "DRAFT ONLY" in combined
+
